@@ -244,8 +244,8 @@ class TextureSuppressedMuSCoWERT:
 
 if __name__ == "__main__":
 
-    img_path = r"D:\dataset\Hashmani's Dataset\MU-SID\DSC_1186_6.JPG"
+    img_path = r"Hashmani's Dataset/MU-SID/DSC_1186_6.JPG"
     img = cv2.imread(img_path)
     detector = TextureSuppressedMuSCoWERT(scales=[1, 2, 3])
-    final_res, candidates, debug_info = detector.detect(img)
+    final_res, candidates, debug_info, collected_sinograms = detector.detect(img)
     detector.visualize_all(img, final_res, candidates, debug_info)

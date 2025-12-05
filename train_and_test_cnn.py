@@ -14,8 +14,8 @@ from cnn_model import HorizonDetNet
 
 def train_and_evaluate():
     # --- 1. 配置路径与参数 ---
-    CSV_PATH = r"D:\dataset\Hashmani's Dataset\GroundTruth.csv"
-    IMG_DIR = r"D:\dataset\Hashmani's Dataset\MU-SID"
+    CSV_PATH = r"Hashmani's Dataset/GroundTruth.csv"
+    IMG_DIR = r"Hashmani's Dataset/MU-SID"
 
     BATCH_SIZE = 8
     LEARNING_RATE = 1e-4
