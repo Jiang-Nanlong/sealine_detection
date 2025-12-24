@@ -214,15 +214,28 @@ class TextureSuppressedMuSCoWERT:
             angle_rad = np.deg2rad(angle_deg)
             if np.abs(np.sin(angle_rad)) < 1e-4: continue
 
+            #CPU
+            # # --- 修正 1: Y轴位置 ---
+            # # 图像坐标系Y向下，数学坐标系Y向上，所以由于 rho 产生的偏移量方向相反
+            # y_offset = rho / np.sin(angle_rad)
+            # Y_img = h_center - y_offset
+            #
+            # # --- 修正 2: 斜率方向 ---
+            # # 同样因为Y轴反转，斜率 dy/dx 也变成了 -dy/dx
+            # # 原本是 (angle_deg - 90)，现在要取反，变成 (90 - angle_deg)
+            # alpha = 90 - angle_deg
+
+            #GPU
             # --- 修正 1: Y轴位置 ---
-            # 图像坐标系Y向下，数学坐标系Y向上，所以由于 rho 产生的偏移量方向相反
+            # GPU版本导致 rho 的方向定义反了，所以这里改成【加号】
+            # 这样原本算出是负偏移(去上面)的，现在变成正偏移(去下面)
             y_offset = rho / np.sin(angle_rad)
-            Y_img = h_center - y_offset
+            Y_img = h_center + y_offset  # <--- 改这里：由减变加
 
             # --- 修正 2: 斜率方向 ---
-            # 同样因为Y轴反转，斜率 dy/dx 也变成了 -dy/dx
-            # 原本是 (angle_deg - 90)，现在要取反，变成 (90 - angle_deg)
-            alpha = 90 - angle_deg
+            # 旋转方向不同导致角度定义反转
+            # 改成 angle_deg - 90 即可修正“左高右低”的问题
+            alpha = angle_deg - 90  # <--- 改这里：交换顺序
 
             # 边界检查
             h_img = weighted_map.shape[0]
