@@ -9,9 +9,20 @@ import matplotlib.pyplot as plt
 
 
 class TextureSuppressedMuSCoWERT:
-    def __init__(self, scales=[1, 2, 3], full_scan=True):
+    def __init__(self, scales=[1, 2, 3], full_scan=False):
         self.scales = scales
         self.full_scan = full_scan
+
+        # 检查 GPU 设备
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        print(f"Radon Transform running on: {self.device}")
+
+        # 定义角度范围 (numpy 用于逻辑，torch 用于计算)
+        if self.full_scan:
+            self.theta = np.linspace(0., 180., 180, endpoint=False)
+        else:
+            # 聚焦扫描：只看 85-95 度 (垂直线附近)
+            self.theta = np.linspace(85., 95., 180, endpoint=False)
 
     def _suppress_texture(self, binary_edges, window_size=15):
         """纹理抑制：杀掉密集区域"""
