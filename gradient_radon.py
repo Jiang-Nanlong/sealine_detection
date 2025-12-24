@@ -1,5 +1,7 @@
 import numpy as np
 import cv2
+import torch
+import torch.nn.functional as F
 from skimage.transform import radon
 from skimage.measure import label, regionprops
 from skimage.morphology import skeletonize
@@ -90,13 +92,94 @@ class TextureSuppressedMuSCoWERT:
 
         return weighted_map, blurred
 
+    def _radon_gpu(self, image, theta):
+        """
+        基于 PyTorch Grid Sample 的 GPU 加速 Radon 变换
+        :param image: numpy array (H, W)
+        :param theta: numpy array (Angles,)
+        :return: sinogram numpy array (Diagonal, Angles)
+        """
+        # 1. 准备数据
+        h, w = image.shape
+        diagonal = int(np.ceil(np.sqrt(h ** 2 + w ** 2)))
+        pad_h = (diagonal - h) // 2
+        pad_w = (diagonal - w) // 2
+
+        # 转为 Tensor 并移动到 GPU
+        img_tensor = torch.from_numpy(image).float().to(self.device)
+        img_tensor = img_tensor.unsqueeze(0).unsqueeze(0)  # (1, 1, H, W)
+
+        # 填充为正方形 (Diagonal, Diagonal) 以允许任意旋转不丢失
+        # F.pad 顺序是 (left, right, top, bottom)
+        # 注意：padding 可能会少 1 像素如果 diff 是奇数，这里简单处理
+        pad_left = pad_w
+        pad_right = diagonal - w - pad_left
+        pad_top = pad_h
+        pad_bottom = diagonal - h - pad_top
+
+        img_padded = F.pad(img_tensor, (pad_left, pad_right, pad_top, pad_bottom))
+
+        # 2. 循环处理每个角度 (循环比Batch更省显存，适合大图)
+        sinogram_cols = []
+
+        # 将角度转为弧度
+        theta_rad = torch.deg2rad(torch.from_numpy(theta).float().to(self.device))
+
+        N, C, H_new, W_new = img_padded.shape
+
+        # 我们使用 affine_grid 和 grid_sample 进行旋转
+        # grid_sample 是反向采样。如果我们想获得旋转 theta 的投影，
+        # 实际上我们需要对采样网格旋转 theta，这样图像看起来就像旋转了 -theta。
+        # Radon 标准定义是逆时针旋转图像。
+        # 为了得到角度 theta 的投影（即旋转 theta 后垂直向下投影），
+        # 我们需要让图像旋转 -theta。
+        # 在 grid_sample 中，旋转网格 theta 对应图像旋转 -theta。
+        # 所以这里的 Grid 角度就是 theta。
+
+        for angle in theta_rad:
+            cos_a = torch.cos(angle)
+            sin_a = torch.sin(angle)
+
+            # 构建旋转矩阵 (2, 3)
+            # PyTorch affine grid 的坐标是 (x, y)
+            rot_mat = torch.tensor([
+                [cos_a, -sin_a, 0],
+                [sin_a, cos_a, 0]
+            ], device=self.device).unsqueeze(0)  # (1, 2, 3)
+
+            # 生成网格
+            grid = F.affine_grid(rot_mat, img_padded.size(), align_corners=False)
+
+            # 采样 (旋转图像)
+            rotated_img = F.grid_sample(img_padded, grid, mode='bilinear', padding_mode='zeros', align_corners=False)
+
+            # 垂直求和 (沿着 Height 维度 sum，即 dim=2)
+            # 结果形状 (1, 1, 1, W_new) -> (1, W_new)
+            # 注意：标准的 Radon 结果通常是 (Distance, Angle)
+            # 这里的 W_new 就是 Distance 轴
+            projection = torch.sum(rotated_img, dim=2).squeeze()
+
+            sinogram_cols.append(projection)
+
+        # 3. 堆叠结果
+        # sinogram_cols 是一个 list，每个元素是 (Diagonal,)
+        # stack 后变成 (Angles, Diagonal)
+        sinogram_tensor = torch.stack(sinogram_cols, dim=0)
+
+        # 转置为 (Diagonal, Angles) 以匹配 skimage 格式
+        sinogram_tensor = sinogram_tensor.t()
+
+        return sinogram_tensor.cpu().numpy()
+
     def _radon_candidates(self, weighted_map, h_center, scale_idx):
         # 1. 角度范围 (垂直于海天线的法线角度)
         if self.full_scan:
             theta = np.linspace(0., 180., 180, endpoint=False)  # 0-180度
         else:
             theta = np.linspace(85., 95., 180, endpoint=False)  # 局部扫描
-        sinogram = radon(weighted_map, theta=theta, circle=False)
+        # 替换为gpu版本的radon
+        # sinogram = radon(weighted_map, theta=theta, circle=False)
+        sinogram = self._radon_gpu(weighted_map, self.theta)
 
         max_score = np.max(sinogram)
         if max_score == 0: return [], sinogram
@@ -157,6 +240,8 @@ class TextureSuppressedMuSCoWERT:
             w_map, blurred = self._get_feature_map(gray, s)
             debug_info[s] = {'map': w_map, 'blurred': blurred}
 
+            #candidates, sinogram = self._radon_candidates(w_map, h_center, s)
+            #使用gpu版本的radon
             candidates, sinogram = self._radon_candidates(w_map, h_center, s)
 
             all_candidates.extend(candidates)
