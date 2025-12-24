@@ -5,6 +5,8 @@ import torch.nn.functional as F
 from skimage.transform import radon
 from skimage.measure import label, regionprops
 from skimage.morphology import skeletonize
+import matplotlib
+matplotlib.use('TkAgg')  # 强制使用 TkAgg 后端，弹出独立窗口
 import matplotlib.pyplot as plt
 
 
@@ -356,5 +358,11 @@ if __name__ == "__main__":
     img_path = r"Hashmani's Dataset/MU-SID/DSC_1186_6.JPG"
     img = cv2.imread(img_path)
     detector = TextureSuppressedMuSCoWERT(scales=[1, 2, 3])
+    import time
+
+    t0 = time.time()
     final_res, candidates, debug_info, collected_sinograms = detector.detect(img)
+    t1 = time.time()
+
+    print(f"Total Inference Time: {t1 - t0:.4f} seconds")
     detector.visualize_all(img, final_res, candidates, debug_info)
