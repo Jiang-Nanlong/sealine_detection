@@ -19,7 +19,7 @@ def train_and_evaluate():
     # 训练超参数
     BATCH_SIZE = 8
     LEARNING_RATE = 1e-4
-    EPOCHS = 50  # 建议稍微多一点，30可能刚收敛
+    EPOCHS = 35  # 建议稍微多一点，30可能刚收敛
 
     # 网络输入尺寸 (必须与 Dataset 里的 resize 对应)
     RESIZE_H = 362  # Rho 轴 (对应 Dataset 的 resize_h)
@@ -36,14 +36,14 @@ def train_and_evaluate():
     # ===========================================
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"🚀 使用设备: {device}")
+    print(f"使用设备: {device}")
 
     # --- 1. 加载数据 ---
-    print("📂 正在加载数据集...")
+    print("正在加载数据集...")
     # 关键：这里 resize_h/w 必须传入，确保 Dataset 内部缩放正确
     full_dataset = HorizonFusionDataset(CSV_PATH, IMG_DIR, resize_h=RESIZE_H, resize_w=RESIZE_W)
     total_len = len(full_dataset)
-    print(f"📊 数据集总数: {total_len}")
+    print(f"数据集总数: {total_len}")
 
     if total_len < SPLIT_INDEX:
         raise ValueError("数据集数量不足，请检查路径是否正确！")
@@ -58,8 +58,8 @@ def train_and_evaluate():
 
     # --- 2. 检查数据形状 (防止跑一半报错) ---
     first_batch, first_label = next(iter(train_loader))
-    print(f"🔍 输入形状检查: {first_batch.shape}")  # 应为 [8, 3, 362, 180]
-    print(f"🔍 标签形状检查: {first_label.shape}")  # 应为 [8, 2]
+    print(f"输入形状检查: {first_batch.shape}")  # 应为 [8, 3, 362, 180]
+    print(f"标签形状检查: {first_label.shape}")  # 应为 [8, 2]
 
     if first_batch.shape[2] != RESIZE_H:
         raise ValueError(f"尺寸不匹配！Dataset输出H={first_batch.shape[2]}, 预期{RESIZE_H}")
@@ -76,7 +76,7 @@ def train_and_evaluate():
 
     # --- 4. 训练循环 ---
     loss_history = []
-    print("\n🔥 开始训练...")
+    print("\n开始训练...")
 
     for epoch in range(EPOCHS):
         model.train()
@@ -105,10 +105,10 @@ def train_and_evaluate():
 
     # 保存模型
     torch.save(model.state_dict(), "horizon_cnn_gpu.pth")
-    print("💾 模型已保存: horizon_cnn_gpu.pth")
+    print("模型已保存: horizon_cnn_gpu.pth")
 
     # --- 5. 评估 (Evaluation) ---
-    print("\n🧪 正在评估测试集...")
+    print("\n正在评估测试集...")
     model.eval()
 
     total_mae_rho_pixel = 0.0
@@ -147,9 +147,9 @@ def train_and_evaluate():
     avg_theta_error = total_mae_theta_degree / count
 
     print("=" * 40)
-    print(f"📊 测试集评估结果 (共 {count} 张):")
-    print(f"   平均 Rho 误差: {avg_rho_error:.2f} 像素 (在1080P图像中)")
-    print(f"   平均 Theta 误差: {avg_theta_error:.2f} 度")
+    print(f"测试集评估结果 (共 {count} 张):")
+    print(f"平均 Rho 误差: {avg_rho_error:.2f} 像素 (在1080P图像中)")
+    print(f"平均 Theta 误差: {avg_theta_error:.2f} 度")
     print("=" * 40)
 
     # 绘图
