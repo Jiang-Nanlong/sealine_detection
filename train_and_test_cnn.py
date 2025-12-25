@@ -5,6 +5,7 @@ from torch.utils.data import DataLoader, Subset
 import matplotlib.pyplot as plt
 import numpy as np
 import cv2
+from tqdm import tqdm
 
 # 导入你的模块
 from dataset_loader_gradient_radon_cnn import HorizonFusionDataset
@@ -82,6 +83,8 @@ def train_and_evaluate():
         model.train()
         running_loss = 0.0
 
+        progress_bar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{EPOCHS}", unit="batch")
+
         for i, (inputs, labels) in enumerate(train_loader):
             inputs = inputs.to(device)
             labels = labels.to(device).float()  # 标签已经在 Dataset 里归一化到 0-1 了
@@ -94,6 +97,7 @@ def train_and_evaluate():
             optimizer.step()
 
             running_loss += loss.item()
+            progress_bar.set_postfix({'loss': loss.item()})
 
         epoch_loss = running_loss / len(train_loader)
         loss_history.append(epoch_loss)
@@ -101,7 +105,7 @@ def train_and_evaluate():
 
         # 打印进度
         current_lr = optimizer.param_groups[0]['lr']
-        print(f"Epoch [{epoch + 1}/{EPOCHS}] | Loss: {epoch_loss:.6f} | LR: {current_lr:.6f}")
+        print(f"Epoch {epoch + 1} Finished | Avg Loss: {epoch_loss:.6f} | LR: {current_lr:.6f}")
 
     # 保存模型
     torch.save(model.state_dict(), "horizon_cnn_gpu.pth")
@@ -117,6 +121,7 @@ def train_and_evaluate():
     count = 0
 
     with torch.no_grad():
+        test_bar = tqdm(test_loader, desc="Testing", unit="batch")
         for inputs, labels in test_loader:
             inputs = inputs.to(device)
             labels = labels.to(device)
