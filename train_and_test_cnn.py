@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from sympy import false
 from torch.utils.data import DataLoader, Subset
 import matplotlib.pyplot as plt
 import numpy as np
@@ -46,10 +47,9 @@ def train_and_evaluate():
     total_len = len(full_dataset)
     print(f"数据集总数: {total_len}")
 
-    FAST_DEBUG = True
+    FAST_DEBUG = False
 
     if FAST_DEBUG:
-        # 这里的数字随便改，只要很小就行
         debug_train_size = 32
         debug_test_size = 8
 
@@ -60,13 +60,12 @@ def train_and_evaluate():
         train_indices = list(range(0, debug_train_size))
         test_indices = list(range(debug_train_size, debug_train_size + debug_test_size))
     else:
-        # --- 原始的全量逻辑 ---
+        # 全量
         if total_len < SPLIT_INDEX:
             raise ValueError("数据集数量不足，请检查路径是否正确！")
 
         train_indices = list(range(0, SPLIT_INDEX))
         test_indices = list(range(SPLIT_INDEX, total_len))
-    # ================= 修改结束 =================
 
     # 划分训练/测试集
     train_dataset = Subset(full_dataset, train_indices)
@@ -129,6 +128,22 @@ def train_and_evaluate():
     # 保存模型
     torch.save(model.state_dict(), "horizon_cnn_gpu.pth")
     print("模型已保存: horizon_cnn_gpu.pth")
+
+    print("\n回测训练集...")
+    model.eval()
+    train_mae_rho = 0.0
+    with torch.no_grad():
+        # 只测一个 Batch 看看就行
+        for inputs, labels in train_loader:
+            inputs = inputs.to(device)
+            labels = labels.to(device)
+            outputs = model(inputs)
+
+            diff = torch.abs(outputs[:, 0] - labels[:, 0])
+            train_mae_rho += torch.sum(diff * APPROX_MAX_DIAG).item()
+            break  # 只看第一批
+
+    print(f"训练集 Batch 1 平均 Rho 误差: {train_mae_rho / BATCH_SIZE:.2f} 像素")
 
     # --- 5. 评估 (Evaluation) ---
     print("\n正在评估测试集...")
