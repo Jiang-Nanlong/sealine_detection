@@ -46,12 +46,31 @@ def train_and_evaluate():
     total_len = len(full_dataset)
     print(f"数据集总数: {total_len}")
 
-    if total_len < SPLIT_INDEX:
-        raise ValueError("数据集数量不足，请检查路径是否正确！")
+    FAST_DEBUG = True
+
+    if FAST_DEBUG:
+        # 这里的数字随便改，只要很小就行
+        debug_train_size = 32
+        debug_test_size = 8
+
+        # 确保不会越界
+        if total_len < (debug_train_size + debug_test_size):
+            raise ValueError(f"数据总数 {total_len} 太少了，不够调试用")
+
+        train_indices = list(range(0, debug_train_size))
+        test_indices = list(range(debug_train_size, debug_train_size + debug_test_size))
+    else:
+        # --- 原始的全量逻辑 ---
+        if total_len < SPLIT_INDEX:
+            raise ValueError("数据集数量不足，请检查路径是否正确！")
+
+        train_indices = list(range(0, SPLIT_INDEX))
+        test_indices = list(range(SPLIT_INDEX, total_len))
+    # ================= 修改结束 =================
 
     # 划分训练/测试集
-    train_dataset = Subset(full_dataset, range(0, SPLIT_INDEX))
-    test_dataset = Subset(full_dataset, range(SPLIT_INDEX, total_len))
+    train_dataset = Subset(full_dataset, train_indices)
+    test_dataset = Subset(full_dataset, test_indices)
 
     # DataLoader (必须 num_workers=0，因为 Dataset 用到了 CUDA)
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=0)
@@ -85,7 +104,7 @@ def train_and_evaluate():
 
         progress_bar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{EPOCHS}", unit="batch")
 
-        for i, (inputs, labels) in enumerate(train_loader):
+        for i, (inputs, labels) in enumerate(progress_bar):
             inputs = inputs.to(device)
             labels = labels.to(device).float()  # 标签已经在 Dataset 里归一化到 0-1 了
 
@@ -105,7 +124,7 @@ def train_and_evaluate():
 
         # 打印进度
         current_lr = optimizer.param_groups[0]['lr']
-        print(f"Epoch {epoch + 1} Finished | Avg Loss: {epoch_loss:.6f} | LR: {current_lr:.6f}")
+        print(f"Epoch {epoch + 1} Done | Loss: {epoch_loss:.6f}")
 
     # 保存模型
     torch.save(model.state_dict(), "horizon_cnn_gpu.pth")
