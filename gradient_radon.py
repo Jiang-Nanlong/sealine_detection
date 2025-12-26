@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 
 
 class TextureSuppressedMuSCoWERT:
-    def __init__(self, scales=[1, 2, 3], full_scan=False):
+    def __init__(self, scales=[1, 2, 3], full_scan=True):
         self.scales = scales
         self.full_scan = full_scan
 
@@ -71,7 +71,7 @@ class TextureSuppressedMuSCoWERT:
 
         # --- 核心修改 D: 强力形态学开运算 ---
         # 物理擦除短线。只有连续长度超过 40 的横线才能活下来
-        kernel_open = cv2.getStructuringElement(cv2.MORPH_RECT, (40, 1))
+        kernel_open = cv2.getStructuringElement(cv2.MORPH_RECT, (10, 1))
         clean_edges = cv2.morphologyEx(binary_edges, cv2.MORPH_OPEN, kernel_open)
 
         # 骨架化 (变细)
@@ -355,7 +355,7 @@ class TextureSuppressedMuSCoWERT:
 
 if __name__ == "__main__":
 
-    img_path = r"Hashmani's Dataset/MU-SID/DSC_1186_6.JPG"
+    img_path = r"Hashmani's Dataset/MU-SID/DSC_0120_6.JPG"
     img = cv2.imread(img_path)
     detector = TextureSuppressedMuSCoWERT(scales=[1, 2, 3])
     import time
