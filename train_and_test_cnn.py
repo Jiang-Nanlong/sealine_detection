@@ -205,6 +205,9 @@
 # if __name__ == "__main__":
 #     train_and_evaluate()
 
+import matplotlib
+matplotlib.use('TkAgg')
+import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
 import torch.optim as optim
