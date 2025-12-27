@@ -1,92 +1,119 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
-class ChannelAttention(nn.Module):
-    """
-    SE-Block (通道注意力模块)
-    作用：显式地建模通道之间的相互依赖关系，自适应地重新校准通道式的特征响应。
-    通俗解释：让网络学会“看哪个通道更准”。
-    """
+class BasicBlock(nn.Module):
+    expansion = 1
 
-    def __init__(self, in_channels, reduction=4):
-        super(ChannelAttention, self).__init__()
-        # 全局平均池化：把 HxW 的图压缩成一个数，代表这个通道的全局信息
-        self.avg_pool = nn.AdaptiveAvgPool2d(1)
-        # 两个全连接层：学习通道间的权重关系
-        self.fc = nn.Sequential(
-            nn.Linear(in_channels, in_channels // reduction if in_channels // reduction > 0 else 1),
-            nn.ReLU(inplace=True),
-            nn.Linear(in_channels // reduction if in_channels // reduction > 0 else 1, in_channels),
-            nn.Sigmoid()  # 输出 0~1 之间的权重
-        )
+    def __init__(self, in_planes, planes, stride=1):
+        super(BasicBlock, self).__init__()
+        self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=3, stride=stride, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(planes)
+        self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(planes)
 
-    def forward(self, x):
-        b, c, _, _ = x.size()
-        y = self.avg_pool(x).view(b, c)
-        y = self.fc(y).view(b, c, 1, 1)
-        # 原特征图 x 乘以 权重 y
-        return x * y
-
-
-class HorizonDetNet(nn.Module):
-    def __init__(self, in_channels=4, img_h=362, img_w=180):
-        super(HorizonDetNet, self).__init__()
-
-        # 1. 注意力融合层
-        self.attention = ChannelAttention(in_channels)
-
-        # 2. 特征提取主干 (Backbone)
-        # 这是一个类似 VGG 的简单卷积堆叠
-        self.features = nn.Sequential(
-            # Block 1: 提取浅层纹理特征
-            nn.Conv2d(in_channels, 16, kernel_size=3, padding=1),
-            nn.BatchNorm2d(16),
-            nn.ReLU(),
-            nn.MaxPool2d(2),  # 尺寸减半
-
-            # Block 2
-            nn.Conv2d(16, 32, kernel_size=3, padding=1),
-            nn.BatchNorm2d(32),
-            nn.ReLU(),
-            nn.MaxPool2d(2),  # 尺寸再减半
-
-            # Block 3: 提取深层语义特征
-            nn.Conv2d(32, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(),
-            nn.MaxPool2d(2),
-
-            # Block 4
-            nn.Conv2d(64, 128, kernel_size=3, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(),
-            # 这里的池化很关键：无论输入多大，强制将特征图压缩为 4x4 大小
-            # 这样后面的全连接层参数量就固定了，且大大减小了模型体积
-            nn.AdaptiveAvgPool2d((4, 4))
-        )
-
-        # 3. 回归头 (Regression Head)
-        self.regressor = nn.Sequential(
-            nn.Flatten(),  # 展平: 128通道 * 4 * 4 = 2048
-            nn.Linear(128 * 4 * 4, 256),
-            nn.ReLU(),
-            nn.Dropout(0.2),  # 防止过拟合
-            nn.Linear(256, 64),
-            nn.ReLU(),
-            nn.Linear(64, 2)  # 最终输出 2 个数: [rho, theta]
-        )
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_planes != self.expansion * planes:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(in_planes, self.expansion * planes, kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm2d(self.expansion * planes)
+            )
 
     def forward(self, x):
-        # x shape: [Batch, 4, 362, 180]
-
-        # step 1: 融合
-        x = self.attention(x)
-
-        # step 2: 提取特征
-        x = self.features(x)
-
-        # step 3: 回归坐标
-        out = self.regressor(x)
-
+        out = F.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        out += self.shortcut(x)
+        out = F.relu(out)
         return out
+
+
+class CBAM(nn.Module):
+    """ 空间+通道注意力模块，适合显卡资源充足时使用 """
+
+    def __init__(self, in_planes, ratio=16, kernel_size=7):
+        super(CBAM, self).__init__()
+        # Channel Attention
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.max_pool = nn.AdaptiveMaxPool2d(1)
+        self.fc1 = nn.Conv2d(in_planes, in_planes // ratio, 1, bias=False)
+        self.relu1 = nn.ReLU()
+        self.fc2 = nn.Conv2d(in_planes // ratio, in_planes, 1, bias=False)
+        self.sigmoid_channel = nn.Sigmoid()
+
+        # Spatial Attention
+        self.conv_spatial = nn.Conv2d(2, 1, kernel_size, padding=kernel_size // 2, bias=False)
+        self.sigmoid_spatial = nn.Sigmoid()
+
+    def forward(self, x):
+        # Channel attention
+        avg_out = self.fc2(self.relu1(self.fc1(self.avg_pool(x))))
+        max_out = self.fc2(self.relu1(self.fc1(self.max_pool(x))))
+        out = avg_out + max_out
+        x = x * self.sigmoid_channel(out)
+
+        # Spatial attention
+        avg_out = torch.mean(x, dim=1, keepdim=True)
+        max_out, _ = torch.max(x, dim=1, keepdim=True)
+        x_spatial = torch.cat([avg_out, max_out], dim=1)
+        x_spatial = self.conv_spatial(x_spatial)
+        return x * self.sigmoid_spatial(x_spatial)
+
+
+class HorizonResNet(nn.Module):
+    def __init__(self, in_channels=3, block=BasicBlock, num_blocks=[3, 4, 6, 3]):
+        super(HorizonResNet, self).__init__()
+        self.in_planes = 64
+
+        # 初始卷积：大感受野
+        self.conv1 = nn.Conv2d(in_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        self.bn1 = nn.BatchNorm2d(64)
+        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+
+        # ResNet Layers
+        self.layer1 = self._make_layer(block, 64, num_blocks[0], stride=1)
+        self.layer2 = self._make_layer(block, 128, num_blocks[1], stride=2)
+        self.layer3 = self._make_layer(block, 256, num_blocks[2], stride=2)
+        self.layer4 = self._make_layer(block, 512, num_blocks[3], stride=2)
+
+        # 注意力模块
+        self.cbam = CBAM(512)
+
+        # 回归头
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        self.fc = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(512 * block.expansion, 256),
+            nn.Mish(inplace=True),  # Mish 比 ReLU 稍微好一点
+            nn.Dropout(0.3),
+            nn.Linear(256, 2),
+            nn.Sigmoid()  # 强制输出 [0, 1]
+        )
+
+    def _make_layer(self, block, planes, num_blocks, stride):
+        strides = [stride] + [1] * (num_blocks - 1)
+        layers = []
+        for stride in strides:
+            layers.append(block(self.in_planes, planes, stride))
+            self.in_planes = planes * block.expansion
+        return nn.Sequential(*layers)
+
+    def forward(self, x):
+        x = F.relu(self.bn1(self.conv1(x)))
+        x = self.maxpool(x)
+
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
+
+        # 应用注意力
+        x = self.cbam(x)
+
+        x = self.avgpool(x)
+        x = self.fc(x)
+        return x
+
+
+def get_resnet34_model():
+    return HorizonResNet(in_channels=3, num_blocks=[3, 4, 6, 3])
