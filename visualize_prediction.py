@@ -62,6 +62,9 @@ def visualize_results():
     IMG_DIR = r"Hashmani's Dataset/MU-SID"
     MODEL_PATH = "horizon_resnet34_last.pth"
 
+    RESIZE_H = 2240
+    RESIZE_W = 180
+
     device = torch.device("cuda")
 
     # 加载模型
@@ -70,7 +73,12 @@ def visualize_results():
     model.eval()
 
     # 加载数据集 (只用来读图和GT坐标)
-    dataset = HorizonFusionDataset(CSV_PATH, IMG_DIR)
+    dataset = HorizonFusionDataset(
+        CSV_PATH,
+        IMG_DIR,
+        resize_h=RESIZE_H,
+        resize_w=RESIZE_W
+    )
 
     indices = np.random.choice(range(len(dataset)), 6, replace=False)
 

@@ -71,7 +71,7 @@ def train_and_evaluate():
     EPOCHS = 100
 
     # 图像尺寸 (必须与 Dataset 生成时一致)
-    RESIZE_H = 362
+    RESIZE_H = 2240
     RESIZE_W = 180
 
     # 数据集分割点
