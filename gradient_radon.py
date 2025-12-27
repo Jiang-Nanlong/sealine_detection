@@ -355,7 +355,7 @@ class TextureSuppressedMuSCoWERT:
 
 if __name__ == "__main__":
 
-    img_path = r"Hashmani's Dataset/MU-SID/DSC_0120_6.JPG"
+    img_path = r"Hashmani's Dataset/MU-SID/DSC_0622_2.JPG"
     img = cv2.imread(img_path)
     detector = TextureSuppressedMuSCoWERT(scales=[1, 2, 3])
     import time
