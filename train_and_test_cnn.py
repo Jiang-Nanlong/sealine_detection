@@ -11,6 +11,7 @@ from torch.utils.data import DataLoader, Subset
 import numpy as np
 from tqdm import tqdm
 import os
+import random
 import shutil
 
 # === 导入你的模块 ===
@@ -23,41 +24,119 @@ from cnn_model import get_resnet34_model
 # ==========================================
 # 1. 定义周期性损失函数 (解决 0度/180度 跳变问题)
 # ==========================================
+# class HorizonPeriodicLoss(nn.Module):
+#     def __init__(self, theta_weight=2.0):
+#         super(HorizonPeriodicLoss, self).__init__()
+#         self.mse = nn.MSELoss()
+#         self.theta_weight = theta_weight
+#
+#     def forward(self, preds, targets):
+#         """
+#         preds:   [Batch, 2] -> (rho_norm, theta_norm) 范围 0~1
+#         targets: [Batch, 2] -> (rho_norm, theta_norm) 范围 0~1
+#         """
+#         # 1. Rho Loss (距离误差)
+#         # Rho 是线性的，直接用 MSE
+#         loss_rho = self.mse(preds[:, 0], targets[:, 0])
+#
+#         # 2. Theta Loss (角度周期性误差)
+#         # 将归一化 [0, 1] 还原回 弧度 [0, pi]
+#         # dataset中 theta 范围是 0~180度
+#         theta_pred_rad = preds[:, 1] * np.pi
+#         theta_target_rad = targets[:, 1] * np.pi
+#
+#         # 周期性 Loss 公式: L = 1 - cos(2 * diff)
+#         # 解释：直线的周期是 pi (180度)。但 cos 的周期是 2pi。
+#         # 所以我们需要 2 * diff。
+#         # 当 diff = 0 (0度) 或 diff = pi (180度) 时，cos(2*diff) = 1，Loss = 0。
+#         diff = theta_pred_rad - theta_target_rad
+#         loss_theta = torch.mean(1 - torch.cos(2 * diff))
+#
+#         # 总 Loss
+#         return loss_rho + self.theta_weight * loss_theta
+
 class HorizonPeriodicLoss(nn.Module):
-    def __init__(self, theta_weight=2.0):
-        super(HorizonPeriodicLoss, self).__init__()
-        self.mse = nn.MSELoss()
+    def __init__(self, rho_weight=1.0, theta_weight=2.0, rho_beta=0.02, theta_beta=0.02):
+        super().__init__()
+        self.rho_weight = rho_weight
         self.theta_weight = theta_weight
+        self.rho_loss = nn.SmoothL1Loss(beta=rho_beta)
+        self.theta_loss = nn.SmoothL1Loss(beta=theta_beta)
 
     def forward(self, preds, targets):
-        """
-        preds:   [Batch, 2] -> (rho_norm, theta_norm) 范围 0~1
-        targets: [Batch, 2] -> (rho_norm, theta_norm) 范围 0~1
-        """
-        # 1. Rho Loss (距离误差)
-        # Rho 是线性的，直接用 MSE
-        loss_rho = self.mse(preds[:, 0], targets[:, 0])
+        # rho: 0~1 线性
+        loss_rho = self.rho_loss(preds[:, 0], targets[:, 0])
 
-        # 2. Theta Loss (角度周期性误差)
-        # 将归一化 [0, 1] 还原回 弧度 [0, pi]
-        # dataset中 theta 范围是 0~180度
-        theta_pred_rad = preds[:, 1] * np.pi
-        theta_target_rad = targets[:, 1] * np.pi
+        # theta: 0~1 映射到 0~pi
+        theta_p = preds[:, 1] * np.pi
+        theta_t = targets[:, 1] * np.pi
 
-        # 周期性 Loss 公式: L = 1 - cos(2 * diff)
-        # 解释：直线的周期是 pi (180度)。但 cos 的周期是 2pi。
-        # 所以我们需要 2 * diff。
-        # 当 diff = 0 (0度) 或 diff = pi (180度) 时，cos(2*diff) = 1，Loss = 0。
-        diff = theta_pred_rad - theta_target_rad
-        loss_theta = torch.mean(1 - torch.cos(2 * diff))
+        # 用 (cos 2θ, sin 2θ) 表示方向，天然满足 180° 周期
+        vp = torch.stack([torch.cos(2 * theta_p), torch.sin(2 * theta_p)], dim=1)
+        vt = torch.stack([torch.cos(2 * theta_t), torch.sin(2 * theta_t)], dim=1)
 
-        # 总 Loss
-        return loss_rho + self.theta_weight * loss_theta
+        loss_theta = self.theta_loss(vp, vt)
+
+        return self.rho_weight * loss_rho + self.theta_weight * loss_theta
 
 
 # ==========================================
 # 2. 训练与评估主程序
 # ==========================================
+
+def theta_err_deg(pred_theta_norm, gt_theta_norm):
+    # 0~1 对应 0~180°，直线周期也是 180°，所以用环形距离
+    diff = (pred_theta_norm - gt_theta_norm).abs()
+    diff = torch.minimum(diff, 1.0 - diff)
+    return diff * 180.0
+
+def rho_err_bins(pred_rho_norm, gt_rho_norm, H):
+    # H 是 sinogram 高度(例如 2240)，bins 误差≈rho轴像素误差
+    return (pred_rho_norm - gt_rho_norm).abs() * (H - 1)
+
+def augment_sinogram_batch(x, y,
+                           p_shift=0.7,
+                           max_rho_shift=80,
+                           max_theta_shift=8,
+                           p_intensity=0.8,
+                           noise_std=0.01,
+                           gain_low=0.9, gain_high=1.1):
+    """
+    x: [B,C,H,W]  y: [B,2] (rho_norm, theta_norm)
+    只对训练用：不会破坏 rho/theta 对应关系
+    """
+    B, C, H, W = x.shape
+
+    # 强度增强（不改标签）
+    if torch.rand(1, device=x.device).item() < p_intensity:
+        gain = torch.empty((B,1,1,1), device=x.device).uniform_(gain_low, gain_high)
+        x = x * gain
+        x = x + torch.randn_like(x) * noise_std
+
+    # 平移增强（要同步改标签）
+    for i in range(B):
+        if torch.rand(1, device=x.device).item() < p_shift:
+            # rho 轴平移（不循环，卷入部分置0）
+            sr = int(torch.randint(-max_rho_shift, max_rho_shift + 1, (1,), device=x.device).item())
+            if sr != 0:
+                x[i] = torch.roll(x[i], shifts=sr, dims=1)
+                if sr > 0:
+                    x[i, :, :sr, :] = 0
+                else:
+                    x[i, :, sr:, :] = 0
+                y[i, 0] = torch.clamp(y[i, 0] + sr / (H - 1), 0.0, 1.0)
+
+            # theta 轴平移（周期循环）
+            st = int(torch.randint(-max_theta_shift, max_theta_shift + 1, (1,), device=x.device).item())
+            if st != 0:
+                x[i] = torch.roll(x[i], shifts=st, dims=2)
+                theta_idx = y[i, 1] * (W - 1)
+                theta_idx = torch.remainder(theta_idx + st, W)
+                y[i, 1] = theta_idx / (W - 1)
+
+    return x, y
+
+
 def train_and_evaluate():
     # ================= 4090 显卡 激进配置 =================
     # 缓存目录 (请确保这里面是【新代码】生成的 .npy 文件)
@@ -103,9 +182,34 @@ def train_and_evaluate():
     else:
         split_idx = SPLIT_INDEX
 
-    indices = list(range(total_len))
+    # indices = list(range(total_len))
+    # train_indices = indices[:split_idx]
+    # test_indices = indices[split_idx:]
+
+    SEED = 42  # 你可以换成任意整数，保持不变就能复现划分结果
+
+    # 1) 让 numpy / python / torch 都尽量可复现（可选但推荐）
+    random.seed(SEED)
+    np.random.seed(SEED)
+    torch.manual_seed(SEED)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(SEED)
+
+    # 2) 打乱索引后再切分
+    rng = np.random.default_rng(SEED)
+    indices = rng.permutation(total_len).tolist()
+
     train_indices = indices[:split_idx]
     test_indices = indices[split_idx:]
+
+    os.makedirs("splits", exist_ok=True)
+    np.save("splits/train_indices.npy", np.array(train_indices))
+    np.save("splits/test_indices.npy", np.array(test_indices))
+    print("已保存随机划分到 splits/ 目录")
+
+    # 保存 SEED，方便下次直接加载
+    # train_indices = np.load("splits/train_indices.npy").tolist()
+    # test_indices = np.load("splits/test_indices.npy").tolist()
 
     train_dataset = Subset(full_dataset, train_indices)
     test_dataset = Subset(full_dataset, test_indices)
@@ -133,7 +237,8 @@ def train_and_evaluate():
         raise ImportError("无法加载 get_resnet34_model，请确认 cnn_model.py 已更新且包含该函数。")
 
     # --- 3. 优化器与损失 ---
-    criterion = HorizonPeriodicLoss(theta_weight=1.5)  # 权重可调，1.5 表示稍侧重角度
+    # criterion = HorizonPeriodicLoss(theta_weight=1.5)  # 权重可调，1.5 表示稍侧重角度
+    criterion = HorizonPeriodicLoss(rho_weight=1.0, theta_weight=2.0)
 
     # 使用 AdamW (带权重衰减的 Adam，泛化性更好)
     optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
@@ -159,6 +264,8 @@ def train_and_evaluate():
             # 移动数据到 GPU (non_blocking加速)
             inputs = inputs.to(device, non_blocking=True)
             labels = labels.to(device, non_blocking=True).float()
+
+            inputs, labels = augment_sinogram_batch(inputs, labels)
 
             optimizer.zero_grad()
 
@@ -210,53 +317,31 @@ def train_and_evaluate():
     print("\n正在进行最终评估...")
     model.load_state_dict(torch.load("horizon_resnet34_best.pth"))  # 加载最好的那个
     model.eval()
-
-    total_rho_err = 0.0
-    total_theta_err = 0.0
-    count = 0
-
-    # 评估用参数
-    APPROX_DIAG = np.sqrt(1920 ** 2 + 1080 ** 2)  # 假设 1080p，约 2203 像素
+    val_loss = 0.0
+    val_rho_bins = 0.0
+    val_theta_deg = 0.0
+    n_val = 0
 
     with torch.no_grad():
-        for inputs, labels in tqdm(test_loader, desc="Testing"):
-            inputs = inputs.to(device)
-            labels = labels.to(device)
+        for v_in, v_label in test_loader:
+            v_in = v_in.to(device, non_blocking=True)
+            v_label = v_label.to(device, non_blocking=True).float()
 
-            outputs = model(inputs)
+            v_out = model(v_in)
+            loss = criterion(v_out, v_label)
+            val_loss += loss.item()
 
-            # --- 误差计算 ---
-            # 1. Rho 误差 (像素级近似)
-            # labels 是归一化到 [0, 1] 的 rho。
-            # 1.0 代表 rho = Max_Rho, 0.0 代表 rho = 0 (我们假设是这样归一化的)
-            # 实际上 dataset_loader 里的归一化是线性的，所以差值直接乘以对角线长度即可估算像素误差
-            rho_diff = torch.abs(outputs[:, 0] - labels[:, 0])
-            batch_rho_err = torch.sum(rho_diff * APPROX_DIAG)  # 近似还原回像素
+            H = v_in.shape[2]
+            bsz = v_in.size(0)
+            val_rho_bins += rho_err_bins(v_out[:, 0], v_label[:, 0], H).sum().item()
+            val_theta_deg += theta_err_deg(v_out[:, 1], v_label[:, 1]).sum().item()
+            n_val += bsz
 
-            # 2. Theta 误差 (角度)
-            # 考虑周期性: diff = min(|a-b|, 180 - |a-b|)
-            # outputs[:, 1] 是 0~1 对应 0~180度
-            deg_pred = outputs[:, 1] * 180.0
-            deg_gt = labels[:, 1] * 180.0
+    avg_val_loss = val_loss / len(test_loader)
+    avg_rho_bins = val_rho_bins / n_val
+    avg_theta_deg = val_theta_deg / n_val
 
-            diff = torch.abs(deg_pred - deg_gt)
-            # 处理跨越 0/180 度的情况 (例如 1度 和 179度，差值应该是 2度)
-            diff = torch.min(diff, 180.0 - diff)
-
-            batch_theta_err = torch.sum(diff)
-
-            total_rho_err += batch_rho_err.item()
-            total_theta_err += batch_theta_err.item()
-            count += inputs.size(0)
-
-    avg_rho = total_rho_err / count
-    avg_theta = total_theta_err / count
-
-    print("=" * 40)
-    print(f"最终测试集结果 (样本数 {count}):")
-    print(f"平均 Rho 误差: {avg_rho:.2f} 像素 (参考值)")
-    print(f"平均 Theta 误差: {avg_theta:.2f} 度")
-    print("=" * 40)
+    print(f"[VAL] loss={avg_val_loss:.4f} | rho_err≈{avg_rho_bins:.2f} bins | theta_err={avg_theta_deg:.2f}°")
 
     # 绘制 Loss 曲线
     plt.figure(figsize=(10, 5))

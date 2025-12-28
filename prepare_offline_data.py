@@ -12,7 +12,7 @@ def cache_dataset():
     IMG_DIR = r"Hashmani's Dataset/MU-SID"
     SAVE_DIR = r"Hashmani's Dataset/OfflineCache"  # 缓存保存路径
 
-    RESIZE_H = 362
+    RESIZE_H = 2240
     RESIZE_W = 180
     # ===========
 

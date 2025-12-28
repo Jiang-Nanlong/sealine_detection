@@ -6,6 +6,7 @@ import cv2
 import os
 # 导入你的 GPU 加速类
 from gradient_radon import TextureSuppressedMuSCoWERT
+from scipy.ndimage import center_of_mass
 
 
 class HorizonFusionDataset(Dataset):
@@ -125,34 +126,47 @@ class HorizonFusionDataset(Dataset):
         # 这会返回一个高分辨率的 Sinogram
         gt_sinogram = self.detector._radon_gpu(mask, self.theta_scan)
 
-        # D. 寻找最大值 (Ground Truth Location)
+        # --- D. 寻找最大值 (Ground Truth Location) - 升级为亚像素重心法 ---
         if gt_sinogram.max() > 0:
-            # 找到原始 Sinogram 中的坐标
+            # 1. 粗定位：先用 argmax 找到峰值的大致位置
+            # 这样做是为了只在峰值附近计算重心，避免远处噪声干扰
             max_idx = np.unravel_index(np.argmax(gt_sinogram), gt_sinogram.shape)
-            raw_rho_idx, theta_idx = max_idx  # raw_rho_idx 是在非 Padding 图中的位置
+            r_peak, t_peak = max_idx
 
-            # E. 坐标映射 (关键步骤！)
-            # 我们必须把 "原始位置" 映射到 "CNN看到的Padding后的容器位置"
-            h_curr = gt_sinogram.shape[0]
-            pad_top = (self.resize_h - h_curr) // 2
+            # 2. 定义局部窗口 (比如 11x11 或 15x15)
+            # 窗口不需要太大，涵盖住主峰即可
+            window_size = 10
+            r_start = max(0, r_peak - window_size)
+            r_end = min(gt_sinogram.shape[0], r_peak + window_size + 1)
+            t_start = max(0, t_peak - window_size)
+            t_end = min(gt_sinogram.shape[1], t_peak + window_size + 1)
 
-            # 如果发生了裁剪(Overflow)，逻辑需要反过来
-            if h_curr > self.resize_h:
-                crop_start = (h_curr - self.resize_h) // 2
-                final_rho_idx = raw_rho_idx - crop_start
+            # 3. 截取局部区域
+            local_patch = gt_sinogram[r_start:r_end, t_start:t_end]
+
+            # 4. 计算局部重心 (返回的是相对 patch 的坐标)
+            # center_of_mass 会返回 (float_r, float_t)
+            sub_r, sub_t = center_of_mass(local_patch)
+
+            # 5. 还原回全局坐标
+            # 如果 local_patch 全是0 (极少见)，center_of_mass 可能返回 nan
+            if np.isnan(sub_r) or np.isnan(sub_t):
+                raw_rho_idx, theta_idx = float(r_peak), float(t_peak)
             else:
-                final_rho_idx = raw_rho_idx + pad_top
+                raw_rho_idx = r_start + sub_r
+                theta_idx = t_start + sub_t
 
-            # 归一化到 [0, 1]
-            # 注意分母是容器的高度 self.resize_h
+            # E. 坐标映射 (保持之前的 Padding 逻辑)
+            h_curr = gt_sinogram.shape[0]
+            pad_top = (self.resize_h - h_curr) / 2.0  # 注意这里变成浮点除法
+
+            final_rho_idx = raw_rho_idx + pad_top
+
+            # 归一化
             label_rho = final_rho_idx / (self.resize_h - 1)
             label_theta = theta_idx / (self.resize_w - 1)
 
-            # 边界截断防止计算误差溢出
-            label_rho = np.clip(label_rho, 0.0, 1.0)
-            label_theta = np.clip(label_theta, 0.0, 1.0)
         else:
-            # 异常兜底
             label_rho, label_theta = 0.5, 0.5
 
         target = torch.tensor([label_rho, label_theta]).float()
