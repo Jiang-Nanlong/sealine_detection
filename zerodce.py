@@ -1,53 +1,70 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import math
 
-# 官方代码
 
-class C_DCE_Net(nn.Module):
-    def __init__(self, number_f=32):
-        super(C_DCE_Net, self).__init__()
-
-        self.relu = nn.ReLU(inplace=True)
-
-        self.e_conv1 = nn.Conv2d(3, number_f, 3, 1, 1, bias=True)
-        self.e_conv2 = nn.Conv2d(number_f, number_f, 3, 1, 1, bias=True)
-        self.e_conv3 = nn.Conv2d(number_f, number_f, 3, 1, 1, bias=True)
-        self.e_conv4 = nn.Conv2d(number_f, number_f, 3, 1, 1, bias=True)
-        self.e_conv5 = nn.Conv2d(number_f * 2, number_f, 3, 1, 1, bias=True)
-        self.e_conv6 = nn.Conv2d(number_f * 2, number_f, 3, 1, 1, bias=True)
-        self.e_conv7 = nn.Conv2d(number_f * 2, 3, 3, 1, 1, bias=True)
-
-    def enhance(self, x, x_r):
-        x = x + x_r * (torch.pow(x, 2) - x)
-        x = x + x_r * (torch.pow(x, 2) - x)
-        x = x + x_r * (torch.pow(x, 2) - x)
-        enhance_image_1 = x + x_r * (torch.pow(x, 2) - x)
-        x = enhance_image_1 + x_r * (torch.pow(enhance_image_1, 2) - enhance_image_1)
-        x = x + x_r * (torch.pow(x, 2) - x)
-        x = x + x_r * (torch.pow(x, 2) - x)
-        enhance_image = x + x_r * (torch.pow(x, 2) - x)
-        return enhance_image
+class DSConv(nn.Module):
+    """Depthwise separable conv with exact submodule names:
+    depth_conv + point_conv  (to match checkpoint keys)
+    """
+    def __init__(self, in_ch, out_ch, k=3, s=1, p=1):
+        super().__init__()
+        self.depth_conv = nn.Conv2d(
+            in_ch, in_ch, kernel_size=k, stride=s, padding=p, groups=in_ch, bias=True
+        )
+        self.point_conv = nn.Conv2d(
+            in_ch, out_ch, kernel_size=1, stride=1, padding=0, bias=True
+        )
 
     def forward(self, x):
-        # Zero-DCE++ work on downsampled image to estimate curves (faster)
-        # Assuming input is high-res, we downsample for estimation
-        x_down = F.interpolate(x, scale_factor=0.5, mode='bilinear', align_corners=True)  # Optional speedup
+        x = self.depth_conv(x)
+        x = self.point_conv(x)
+        return x
 
-        x1 = self.relu(self.e_conv1(x_down))
+
+class C_DCE_Net(nn.Module):
+    """
+    Depthwise-separable Zero-DCE++ style network.
+    Output is typically 24 channels (8 curves * 3 RGB).
+    This forward applies the curve enhancement internally and returns enhanced RGB image.
+    """
+    def __init__(self, base_ch=32, out_ch=24):
+        super().__init__()
+        self.e_conv1 = DSConv(3, base_ch)
+        self.e_conv2 = DSConv(base_ch, base_ch)
+        self.e_conv3 = DSConv(base_ch, base_ch)
+        self.e_conv4 = DSConv(base_ch, base_ch)
+        self.e_conv5 = DSConv(base_ch * 2, base_ch)
+        self.e_conv6 = DSConv(base_ch * 2, base_ch)
+        self.e_conv7 = DSConv(base_ch * 2, out_ch)
+
+        self.relu = nn.ReLU(inplace=True)
+        self.tanh = nn.Tanh()
+
+    @staticmethod
+    def enhance(img, r):
+        # img: [B,3,H,W] in [0,1], r: [B,3,H,W]
+        return img + r * (img * img - img)
+
+    def forward(self, x):
+        x1 = self.relu(self.e_conv1(x))
         x2 = self.relu(self.e_conv2(x1))
         x3 = self.relu(self.e_conv3(x2))
         x4 = self.relu(self.e_conv4(x3))
+        x5 = self.relu(self.e_conv5(torch.cat([x3, x4], dim=1)))
+        x6 = self.relu(self.e_conv6(torch.cat([x2, x5], dim=1)))
+        x7 = self.tanh(self.e_conv7(torch.cat([x1, x6], dim=1)))
 
-        x5 = self.relu(self.e_conv5(torch.cat([x3, x4], 1)))
-        x6 = self.relu(self.e_conv6(torch.cat([x2, x5], 1)))
+        # typical: 24 channels -> 8 curves
+        if x7.shape[1] == 24:
+            rs = torch.split(x7, 3, dim=1)
+            out = x
+            for r in rs:
+                out = self.enhance(out, r)
+            return torch.clamp(out, 0.0, 1.0)
 
-        x_r = F.tanh(self.e_conv7(torch.cat([x1, x6], 1)))
+        # fallback: if some weight outputs 3 directly
+        if x7.shape[1] == 3:
+            return torch.clamp(x + x7, 0.0, 1.0)
 
-        # Upsample the curve parameter map to original size
-        x_r = F.interpolate(x_r, size=x.shape[2:], mode='bilinear', align_corners=True)
-
-        # Iterative enhancement
-        enhanced_image = self.enhance(x, x_r)
-        return enhanced_image
+        raise RuntimeError(f"Unexpected DCE output channels: {x7.shape[1]}")
