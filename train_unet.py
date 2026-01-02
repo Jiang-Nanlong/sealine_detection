@@ -1,43 +1,70 @@
 import os
+import sys
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-import torch.nn.functional as F
-import platform  # 用于检测操作系统
 
-# NOTE: 统一使用 unet_model.py 里的实现
+# AMP (new API, no FutureWarning)
+import torch.amp as amp
+
 from unet_model import RestorationGuidedHorizonNet
 from dataset_loader import SimpleFolderDataset, HorizonImageDataset
 
-# ================= 配置区域 =================
+
+# =========================
+# Config
+# =========================
 CSV_PATH = r"Hashmani's Dataset/GroundTruth.csv"
 IMG_DIR = r"Hashmani's Dataset/MU-SID"
-DCE_WEIGHTS = "Epoch99.pth"  # 确保文件存在
 IMG_CLEAR_DIR = r"Hashmani's Dataset/clear"
+DCE_WEIGHTS = "Epoch99.pth"
 
-# 训练阶段选择: 'A', 'B', 'C'
-STAGE = 'B'
+# 'A' / 'B' / 'C'
+STAGE = "B"
 
 BATCH_SIZE = 16
 IMG_SIZE = 384
 
-# 设备配置
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 DEVICE_TYPE = "cuda" if torch.cuda.is_available() else "cpu"
 
-# ================= 工具函数 =================
 
-def safe_load(path, map_location):
-    """兼容不同 PyTorch 版本的安全加载"""
+# =========================
+# Utils
+# =========================
+def safe_load(path: str, map_location: str):
+    """torch.load without FutureWarning (weights_only=True), with backward-compat fallback."""
     try:
         return torch.load(path, map_location=map_location, weights_only=True)
     except TypeError:
-        # 旧版本 PyTorch 不支持 weights_only 参数
+        # older torch
         return torch.load(path, map_location=map_location)
 
-# ================= Loss Functions =================
+
+def set_requires_grad(module, flag: bool):
+    if module is None:
+        return
+    for p in module.parameters():
+        p.requires_grad = flag
+
+
+def set_eval(module):
+    if module is None:
+        return
+    module.eval()
+
+
+def get_modules(model, names):
+    """Return list of modules (None if not exist) using getattr."""
+    return [getattr(model, n, None) for n in names]
+
+
+# =========================
+# Losses
+# =========================
 class CharbonnierLoss(nn.Module):
     def __init__(self, eps=1e-3):
         super().__init__()
@@ -52,14 +79,14 @@ class EdgeLoss(nn.Module):
     def __init__(self):
         super().__init__()
         k = torch.tensor([[0.05, 0.25, 0.4, 0.25, 0.05]], dtype=torch.float32)
-        kernel = torch.matmul(k.t(), k).unsqueeze(0).repeat(3, 1, 1, 1)
+        kernel = torch.matmul(k.t(), k).unsqueeze(0).repeat(3, 1, 1, 1)  # [3,1,5,5]
         self.register_buffer("kernel", kernel)
         self.loss = CharbonnierLoss()
 
     def conv_gauss(self, img: torch.Tensor) -> torch.Tensor:
         kernel = self.kernel.to(device=img.device, dtype=img.dtype)
         n_channels, _, kw, kh = kernel.shape
-        img = F.pad(img, (kw // 2, kw // 2, kh // 2, kh // 2), mode='replicate')
+        img = F.pad(img, (kw // 2, kw // 2, kh // 2, kh // 2), mode="replicate")
         return F.conv2d(img, kernel, groups=n_channels)
 
     def laplacian_kernel(self, current: torch.Tensor) -> torch.Tensor:
@@ -77,210 +104,244 @@ class EdgeLoss(nn.Module):
 class HybridRestorationLoss(nn.Module):
     def __init__(self):
         super().__init__()
-        self.l1 = CharbonnierLoss()
+        self.charb = CharbonnierLoss()
         self.edge = EdgeLoss()
 
     def forward(self, pred, target):
-        return self.l1(pred, target) + 0.1 * self.edge(pred, target)
+        return self.charb(pred, target) + 0.1 * self.edge(pred, target)
 
 
-# ================= 优化器构建 =================
+# =========================
+# Optimizer builder
+# =========================
 def build_optimizer(model, stage: str, lr: float):
-    def set_requires_grad(module, flag: bool):
-        if module is None: return
-        for p in module.parameters():
-            p.requires_grad = flag
-
-    # 模块分组
-    restoration_modules = [
-        getattr(model, "rest_lat2", None), getattr(model, "rest_lat3", None),
-        getattr(model, "rest_lat4", None), getattr(model, "rest_lat5", None),
-        getattr(model, "rest_fuse", None), getattr(model, "rest_strip", None),
-        getattr(model, "rest_out", None), getattr(model, "rest_up1", None),
-        getattr(model, "rest_conv1", None), getattr(model, "rest_up2", None),
-        getattr(model, "rest_conv2", None), getattr(model, "rest_up3", None),
-        getattr(model, "rest_conv3", None), getattr(model, "rest_up4", None)
+    # Restoration modules (FPN-style + legacy UNet-style, both supported via getattr)
+    restoration_names = [
+        # FPN style
+        "rest_lat2", "rest_lat3", "rest_lat4", "rest_lat5",
+        "rest_fuse", "rest_strip", "rest_out",
+        # legacy UNet style (if exists)
+        "rest_up1", "rest_conv1", "rest_up2", "rest_conv2",
+        "rest_up3", "rest_conv3", "rest_up4",
     ]
-    segmentation_modules = [
-        getattr(model, "seg_lat3", None), getattr(model, "seg_lat4", None),
-        getattr(model, "seg_lat5", None), getattr(model, "seg_fuse", None),
-        getattr(model, "seg_strip", None), getattr(model, "seg_final", None),
-        getattr(model, "seg_head", None), getattr(model, "inject", None),
+    segmentation_names = [
+        "seg_lat3", "seg_lat4", "seg_lat5",
+        "seg_fuse", "seg_strip", "seg_head", "seg_final",
+        "inject",
     ]
 
-    # 1. 先全冻结
+    restoration_modules = get_modules(model, restoration_names)
+    segmentation_modules = get_modules(model, segmentation_names)
+
+    # 1) Freeze all first
     set_requires_grad(model.encoder, False)
-    for m in restoration_modules: set_requires_grad(m, False)
-    for m in segmentation_modules: set_requires_grad(m, False)
-    if hasattr(model, "dce_net") and model.dce_net is not None:
-        set_requires_grad(model.dce_net, False) # DCE 永远冻结
+    for m in restoration_modules:
+        set_requires_grad(m, False)
+    for m in segmentation_modules:
+        set_requires_grad(m, False)
 
-    # 2. 按 Stage 解冻
+    # DCE always frozen
+    if hasattr(model, "dce_net"):
+        set_requires_grad(getattr(model, "dce_net", None), False)
+
+    # 2) Unfreeze per stage
     if stage == "A":
+        # train encoder + restoration
         set_requires_grad(model.encoder, True)
-        for m in restoration_modules: set_requires_grad(m, True)
-        
+        for m in restoration_modules:
+            set_requires_grad(m, True)
+
         encoder_params = list(model.encoder.parameters())
         rest_params = []
         for m in restoration_modules:
-            if m is not None: rest_params += list(m.parameters())
+            if m is not None:
+                rest_params += list(m.parameters())
 
-        params = [
-            {"params": encoder_params, "lr": lr * 0.1},
-            {"params": rest_params, "lr": lr},
-        ]
+        return optim.AdamW(
+            [
+                {"params": encoder_params, "lr": lr * 0.1},
+                {"params": rest_params, "lr": lr},
+            ],
+            weight_decay=1e-4,
+        )
 
-    elif stage == "B":
-        # 此时只解冻 segmentation
+    if stage == "B":
+        # only train segmentation (encoder/restoration frozen)
         seg_params = []
         for m in segmentation_modules:
             if m is not None:
                 set_requires_grad(m, True)
                 seg_params += list(m.parameters())
-        params = [{"params": seg_params, "lr": lr}]
 
-    elif stage == "C":
+        if len(seg_params) == 0:
+            raise RuntimeError(
+                "[build_optimizer] Stage B: no segmentation parameters found. "
+                "Check your unet_model.py module names."
+            )
+
+        return optim.AdamW([{"params": seg_params, "lr": lr}], weight_decay=1e-4)
+
+    if stage == "C":
+        # train encoder + restoration + segmentation
         set_requires_grad(model.encoder, True)
-        for m in restoration_modules: set_requires_grad(m, True)
-        for m in segmentation_modules: set_requires_grad(m, True)
+        for m in restoration_modules:
+            set_requires_grad(m, True)
+        for m in segmentation_modules:
+            set_requires_grad(m, True)
 
         encoder_params = list(model.encoder.parameters())
         rest_params, seg_params = [], []
         for m in restoration_modules:
-            if m is not None: rest_params += list(m.parameters())
+            if m is not None:
+                rest_params += list(m.parameters())
         for m in segmentation_modules:
-            if m is not None: seg_params += list(m.parameters())
+            if m is not None:
+                seg_params += list(m.parameters())
 
-        params = [
-            {"params": encoder_params, "lr": lr * 0.1},
-            {"params": rest_params, "lr": lr},
-            {"params": seg_params, "lr": lr},
-        ]
-    else:
-        raise ValueError(f"Unknown stage: {stage}")
+        return optim.AdamW(
+            [
+                {"params": encoder_params, "lr": lr * 0.1},
+                {"params": rest_params, "lr": lr},
+                {"params": seg_params, "lr": lr},
+            ],
+            weight_decay=1e-4,
+        )
 
-    return optim.AdamW(params, weight_decay=1e-4)
+    raise ValueError(f"Unknown stage: {stage}")
 
 
-# ================= 主函数 =================
+# =========================
+# Main
+# =========================
 def main():
-    print(f"=== 正在启动训练: Stage {STAGE} ===")
-    
-    # 1. 数据集准备
-    if STAGE == 'A':
+    print(f"=== Start Training: Stage {STAGE} ===")
+    print(f"DEVICE={DEVICE}, DEVICE_TYPE={DEVICE_TYPE}")
+
+    # 1) Dataset
+    if STAGE == "A":
         LR, EPOCHS = 2e-4, 50
         print(f"Dataset: SimpleFolderDataset (Stage A) from {IMG_CLEAR_DIR}")
         ds = SimpleFolderDataset(IMG_CLEAR_DIR, img_size=IMG_SIZE)
-    elif STAGE == 'B':
+    elif STAGE == "B":
         LR, EPOCHS = 1e-4, 20
         print("Dataset: HorizonImageDataset segmentation (Stage B)")
-        ds = HorizonImageDataset(CSV_PATH, IMG_DIR, img_size=IMG_SIZE, mode='segmentation')
-    else:
+        ds = HorizonImageDataset(CSV_PATH, IMG_DIR, img_size=IMG_SIZE, mode="segmentation")
+    else:  # "C"
         LR, EPOCHS = 5e-5, 50
         print("Dataset: HorizonImageDataset joint (Stage C)")
-        ds = HorizonImageDataset(CSV_PATH, IMG_DIR, img_size=IMG_SIZE, mode='joint')
+        ds = HorizonImageDataset(CSV_PATH, IMG_DIR, img_size=IMG_SIZE, mode="joint")
 
-    # 2. DataLoader (针对 Windows 优化 num_workers)
-    # Windows 下多进程容易卡死，建议设为 0；Linux 可以设为 4 或 8
-    num_workers = 0 if platform.system() == 'Windows' else 8
-    print(f"Using num_workers: {num_workers}")
-    
+    # 2) DataLoader
+    # Windows: num_workers=0 is safest (avoid random hanging)
+    num_workers = 0 if os.name == "nt" else 4
+    print(f"Using num_workers={num_workers}")
+
     loader = DataLoader(
         ds,
         batch_size=BATCH_SIZE,
         shuffle=True,
         num_workers=num_workers,
         pin_memory=(DEVICE == "cuda"),
-        drop_last=True
+        drop_last=True,
     )
 
-    # 3. 模型初始化
+    # 3) Model
     model = RestorationGuidedHorizonNet(num_classes=2, dce_weights_path=DCE_WEIGHTS).to(DEVICE)
 
-    # 4. 权重加载 (接力逻辑)
-    if STAGE == 'B':
+    # 4) Checkpoint relay
+    if STAGE == "B":
         ckpt_a = "rghnet_stage_a.pth"
-        if os.path.exists(ckpt_a):
-            print(f"--> [Stage B] Loading Stage A weights from {ckpt_a}...")
-            model.load_state_dict(safe_load(ckpt_a, DEVICE), strict=False)
-        else:
-            raise FileNotFoundError(f"错误：Stage B 需要加载 {ckpt_a}，但文件不存在！请先跑 Stage A。")
-    
-    elif STAGE == 'C':
+        if not os.path.exists(ckpt_a):
+            raise FileNotFoundError(f"Stage B requires {ckpt_a}, but it does not exist. Run Stage A first.")
+        print(f"[Init] Loading Stage A weights: {ckpt_a}")
+        model.load_state_dict(safe_load(ckpt_a, DEVICE), strict=False)
+
+    if STAGE == "C":
         ckpt_b = "rghnet_stage_b.pth"
         ckpt_a = "rghnet_stage_a.pth"
         if os.path.exists(ckpt_b):
-            print(f"--> [Stage C] Loading Stage B weights from {ckpt_b}...")
+            print(f"[Init] Loading Stage B weights: {ckpt_b}")
             model.load_state_dict(safe_load(ckpt_b, DEVICE), strict=False)
         elif os.path.exists(ckpt_a):
-            print(f"--> [Stage C] Warning: Stage B not found, loading Stage A from {ckpt_a}...")
+            print(f"[Init] Stage B not found, loading Stage A weights: {ckpt_a}")
             model.load_state_dict(safe_load(ckpt_a, DEVICE), strict=False)
         else:
-            print("--> [Stage C] Warning: No checkpoint found! Training from scratch (Not recommended).")
+            print("[Init] WARNING: no checkpoint found. Training from scratch.")
 
-    # 5. 优化器与 Scaler
+    # 5) Optimizer / Loss / AMP scaler
     optimizer = build_optimizer(model, STAGE, LR)
-    # 修复：新版 torch.amp 接口
-    scaler = torch.amp.GradScaler(DEVICE_TYPE, enabled=(DEVICE_TYPE == "cuda"))
 
-    # 6. Loss
-    crit_rest = HybridRestorationLoss()
+    crit_rest = HybridRestorationLoss().to(DEVICE)
     crit_seg = nn.CrossEntropyLoss(ignore_index=255)
 
-    # 7. 训练循环
+    scaler = amp.GradScaler(DEVICE_TYPE, enabled=(DEVICE_TYPE == "cuda"))
+
+    # Modules list for Stage B BN-freeze (robust)
+    restoration_names = [
+        "rest_lat2", "rest_lat3", "rest_lat4", "rest_lat5",
+        "rest_fuse", "rest_strip", "rest_out",
+        "rest_up1", "rest_conv1", "rest_up2", "rest_conv2",
+        "rest_up3", "rest_conv3", "rest_up4",
+    ]
+    restoration_modules = get_modules(model, restoration_names)
+
+    # 6) Train
     for epoch in range(EPOCHS):
         model.train()
-        
-        # === [核心修复] Stage B 必须强制冻结 BN 统计量 ===
-        if STAGE == 'B':
-            # 将 Encoder 和 Restoration 分支设为 eval 模式
-            # 这样 BN 就会使用 Stage A 学到的 global mean/var，而不是当前 Batch 的
-            model.encoder.eval()
-            
-            # 遍历 restoration 相关模块设为 eval
-            # 注意：这里要确保覆盖所有 restoration 层
-            modules_to_freeze = [
-                model.rest_up1, model.rest_conv1, model.rest_up2, model.rest_conv2,
-                model.rest_up3, model.rest_conv3, model.rest_up4, model.rest_out,
-                # 以及其他的 latent convs
-                model.rest_lat2, model.rest_lat3, model.rest_lat4, model.rest_lat5,
-                model.rest_fuse, model.rest_strip
-            ]
-            for m in modules_to_freeze:
-                if m is not None: m.eval()
-        # ==================================================
 
-        loop = tqdm(loader, desc=f"Ep {epoch + 1}/{EPOCHS}")
+        # --- Critical: Stage B freezes encoder/restoration -> also freeze BN running stats ---
+        if STAGE == "B":
+            set_eval(model.encoder)
+            for m in restoration_modules:
+                set_eval(m)
+            # DCE is already frozen, but keep it eval explicitly
+            set_eval(getattr(model, "dce_net", None))
+
+        loop = tqdm(loader, desc=f"Ep {epoch+1}/{EPOCHS}")
         epoch_loss = 0.0
 
         for batch in loop:
             optimizer.zero_grad(set_to_none=True)
 
-            if STAGE == 'A':
+            if STAGE == "A":
                 img, target = batch
-                img, target = img.to(DEVICE, non_blocking=True), target.to(DEVICE, non_blocking=True)
-                
-                with torch.amp.autocast(device_type=DEVICE_TYPE, enabled=(DEVICE_TYPE == "cuda")):
-                    restored, _, target_dce = model(img, target, enable_restoration=True, enable_segmentation=False)
+                img = img.to(DEVICE, non_blocking=True)
+                target = target.to(DEVICE, non_blocking=True)
+
+                with amp.autocast(device_type=DEVICE_TYPE, enabled=(DEVICE_TYPE == "cuda")):
+                    restored, _, target_dce = model(
+                        img, target,
+                        enable_restoration=True,
+                        enable_segmentation=False
+                    )
                     loss = crit_rest(restored, target_dce)
 
-            elif STAGE == 'B':
+            elif STAGE == "B":
                 img, mask = batch
-                img, mask = img.to(DEVICE, non_blocking=True), mask.to(DEVICE, non_blocking=True)
-                
-                with torch.amp.autocast(device_type=DEVICE_TYPE, enabled=(DEVICE_TYPE == "cuda")):
-                    # Stage B: 开启复原分支计算(用于特征注入)，但不算 Loss
-                    _, seg, _ = model(img, None, enable_restoration=True, enable_segmentation=True)
+                img = img.to(DEVICE, non_blocking=True)
+                mask = mask.to(DEVICE, non_blocking=True)
+
+                with amp.autocast(device_type=DEVICE_TYPE, enabled=(DEVICE_TYPE == "cuda")):
+                    # keep enable_restoration=True if your seg branch uses injection
+                    _, seg, _ = model(
+                        img, None,
+                        enable_restoration=True,
+                        enable_segmentation=True
+                    )
                     loss = crit_seg(seg, mask)
 
-            else:  # STAGE == 'C'
+            else:  # STAGE == "C"
                 img, target, mask = batch
                 img = img.to(DEVICE, non_blocking=True)
                 target = target.to(DEVICE, non_blocking=True)
                 mask = mask.to(DEVICE, non_blocking=True)
-                
-                with torch.amp.autocast(device_type=DEVICE_TYPE, enabled=(DEVICE_TYPE == "cuda")):
-                    restored, seg, target_dce = model(img, target, enable_restoration=True, enable_segmentation=True)
+
+                with amp.autocast(device_type=DEVICE_TYPE, enabled=(DEVICE_TYPE == "cuda")):
+                    restored, seg, target_dce = model(
+                        img, target,
+                        enable_restoration=True,
+                        enable_segmentation=True
+                    )
                     loss_r = crit_rest(restored, target_dce)
                     loss_s = crit_seg(seg, mask)
                     loss = loss_r + 0.5 * loss_s
@@ -292,8 +353,14 @@ def main():
             epoch_loss += float(loss.item())
             loop.set_postfix(loss=float(loss.item()))
 
-        print(f"Epoch {epoch + 1} Avg Loss: {epoch_loss / max(1, len(loader)):.5f}")
-        torch.save(model.state_dict(), f"rghnet_stage_{STAGE.lower()}.pth")
+        avg_loss = epoch_loss / max(1, len(loader))
+        print(f"Epoch {epoch+1} Avg Loss: {avg_loss:.5f}")
+
+        save_name = f"rghnet_stage_{STAGE.lower()}.pth"
+        torch.save(model.state_dict(), save_name)
+
+    print(f"Stage {STAGE} done. Model saved to {save_name}")
+
 
 if __name__ == "__main__":
     main()
