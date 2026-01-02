@@ -174,8 +174,7 @@ def main():
 
     optimizer = build_optimizer(model, STAGE, LR)
     
-    # 修复 Scaler：明确使用 cuda amp scaler
-    scaler = torch.cuda.amp.GradScaler(enabled=(DEVICE == "cuda"))
+    scaler = torch.amp.GradScaler('cuda', enabled=(DEVICE == "cuda"))
 
     crit_rest = HybridRestorationLoss()
     crit_seg = nn.CrossEntropyLoss(ignore_index=255)
