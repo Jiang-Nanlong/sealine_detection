@@ -4,10 +4,9 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-import torch.cuda.amp as amp
 import torch.nn.functional as F
 
-# NOTE: 统一使用 unet_model.py 里的实现，避免导入到旧文件
+# NOTE: 统一使用 unet_model.py 里的实现
 from unet_model import RestorationGuidedHorizonNet
 from dataset_loader import SimpleFolderDataset, HorizonImageDataset
 
@@ -15,7 +14,7 @@ from dataset_loader import SimpleFolderDataset, HorizonImageDataset
 CSV_PATH = r"Hashmani's Dataset/GroundTruth.csv"
 IMG_DIR = r"Hashmani's Dataset/MU-SID"
 DCE_WEIGHTS = "Epoch99.pth"  # 确保文件存在
-IMG_CLEAR_DIR = r"Hashmani's Dataset/clear"
+IMG_CLEAR_DIR = r"Hashmani's Dataset/clear" # Stage A 用的清晰图文件夹
 
 # 'A', 'B', 'C'
 STAGE = 'A'
@@ -36,13 +35,6 @@ class CharbonnierLoss(nn.Module):
 
 
 class EdgeLoss(nn.Module):
-    """Laplacian pyramid edge loss (Charbonnier on Laplacian).
-
-    关键修复：
-    - kernel 用 register_buffer 挂到 module，避免多卡/CPU/AMP 下 device/dtype 不一致
-    - conv 时动态对齐到 img 的 device/dtype
-    """
-
     def __init__(self):
         super().__init__()
         k = torch.tensor([[0.05, 0.25, 0.4, 0.25, 0.05]], dtype=torch.float32)
@@ -79,97 +71,69 @@ class HybridRestorationLoss(nn.Module):
 
 
 # ================= 优化器构建 =================
-import torch.optim as optim
-
 def build_optimizer(model, stage: str, lr: float):
-    """
-    适配新版 RestorationGuidedHorizonNet（rest_lat*, rest_fuse, rest_strip, rest_out...）
-    Stage:
-      A: 训练 encoder + restoration，冻结 segmentation
-      B: 冻结 encoder + restoration，只训练 segmentation
-      C: encoder + restoration + segmentation 一起训练
-    """
     def set_requires_grad(module, flag: bool):
-        if module is None:
-            return
+        if module is None: return
         for p in module.parameters():
             p.requires_grad = flag
 
-    # --- 模块列表（按你新版 unet_model.py 的命名）---
+    # --- 模块列表 ---
     restoration_modules = [
-        getattr(model, "rest_lat2", None),
-        getattr(model, "rest_lat3", None),
-        getattr(model, "rest_lat4", None),
-        getattr(model, "rest_lat5", None),
-        getattr(model, "rest_fuse", None),
-        getattr(model, "rest_strip", None),
+        getattr(model, "rest_lat2", None), getattr(model, "rest_lat3", None),
+        getattr(model, "rest_lat4", None), getattr(model, "rest_lat5", None),
+        getattr(model, "rest_fuse", None), getattr(model, "rest_strip", None),
         getattr(model, "rest_out", None),
     ]
     segmentation_modules = [
-        getattr(model, "seg_lat3", None),
-        getattr(model, "seg_lat4", None),
-        getattr(model, "seg_lat5", None),
-        getattr(model, "seg_fuse", None),
-        getattr(model, "seg_strip", None),
-        getattr(model, "seg_final", None),
+        getattr(model, "seg_lat3", None), getattr(model, "seg_lat4", None),
+        getattr(model, "seg_lat5", None), getattr(model, "seg_fuse", None),
+        getattr(model, "seg_strip", None), getattr(model, "seg_final", None),
         getattr(model, "inject", None),
     ]
 
-    # 先全关，再按 stage 打开（更不容易漏）
+    # 先全关
     set_requires_grad(model.encoder, False)
-    for m in restoration_modules:
-        set_requires_grad(m, False)
-    for m in segmentation_modules:
-        set_requires_grad(m, False)
+    for m in restoration_modules: set_requires_grad(m, False)
+    for m in segmentation_modules: set_requires_grad(m, False)
 
-    # DCE 永远冻结（你的 Stage A 只用它做亮度增强）
+    # DCE 永远冻结
     if hasattr(model, "dce_net") and model.dce_net is not None:
         set_requires_grad(model.dce_net, False)
 
     # --- 按 stage 解冻 ---
     if stage == "A":
         set_requires_grad(model.encoder, True)
-        for m in restoration_modules:
-            set_requires_grad(m, True)
-
+        for m in restoration_modules: set_requires_grad(m, True)
+        
         encoder_params = list(model.encoder.parameters())
         rest_params = []
         for m in restoration_modules:
-            if m is not None:
-                rest_params += list(m.parameters())
+            if m is not None: rest_params += list(m.parameters())
 
-        # encoder 小 lr，restoration 大 lr
         params = [
             {"params": encoder_params, "lr": lr * 0.1},
             {"params": rest_params, "lr": lr},
         ]
 
     elif stage == "B":
-        # 只训 segmentation 头（encoder 冻结）
         seg_params = []
         for m in segmentation_modules:
             if m is not None:
                 set_requires_grad(m, True)
                 seg_params += list(m.parameters())
-
         params = [{"params": seg_params, "lr": lr}]
 
     elif stage == "C":
         set_requires_grad(model.encoder, True)
-        for m in restoration_modules:
-            set_requires_grad(m, True)
-        for m in segmentation_modules:
-            set_requires_grad(m, True)
+        for m in restoration_modules: set_requires_grad(m, True)
+        for m in segmentation_modules: set_requires_grad(m, True)
 
         encoder_params = list(model.encoder.parameters())
-        rest_params = []
-        seg_params = []
+        rest_params, seg_params = [], []
         for m in restoration_modules:
-            if m is not None:
-                rest_params += list(m.parameters())
+            if m is not None: rest_params += list(m.parameters())
         for m in segmentation_modules:
-            if m is not None:
-                seg_params += list(m.parameters())
+            if m is not None: seg_params += list(m.parameters())
 
         params = [
             {"params": encoder_params, "lr": lr * 0.1},
@@ -186,7 +150,7 @@ def build_optimizer(model, stage: str, lr: float):
 def main():
     if STAGE == 'A':
         LR, EPOCHS = 2e-4, 50
-        print("Dataset: SimpleFolderDataset (Stage A)")
+        print(f"Dataset: SimpleFolderDataset (Stage A) from {IMG_CLEAR_DIR}")
         ds = SimpleFolderDataset(IMG_CLEAR_DIR, img_size=IMG_SIZE)
     elif STAGE == 'B':
         LR, EPOCHS = 1e-4, 20
@@ -209,7 +173,9 @@ def main():
     model = RestorationGuidedHorizonNet(num_classes=2, dce_weights_path=DCE_WEIGHTS).to(DEVICE)
 
     optimizer = build_optimizer(model, STAGE, LR)
-    scaler = amp.GradScaler(enabled=(DEVICE == "cuda"))
+    
+    # 修复 Scaler：明确使用 cuda amp scaler
+    scaler = torch.cuda.amp.GradScaler(enabled=(DEVICE == "cuda"))
 
     crit_rest = HybridRestorationLoss()
     crit_seg = nn.CrossEntropyLoss(ignore_index=255)
@@ -225,16 +191,19 @@ def main():
             if STAGE == 'A':
                 img, target = batch
                 img, target = img.to(DEVICE, non_blocking=True), target.to(DEVICE, non_blocking=True)
-                with amp.autocast(enabled=(DEVICE == "cuda")):
-                    # Stage A: 只训练复原，seg 分支直接跳过以节省算力
+                
+                # 修复 Autocast：显式指定 device_type="cuda"
+                with torch.amp.autocast(device_type="cuda", enabled=(DEVICE == "cuda")):
+                    # Stage A: 只训练复原
                     restored, _, target_dce = model(img, target, enable_restoration=True, enable_segmentation=False)
                     loss = crit_rest(restored, target_dce)
 
             elif STAGE == 'B':
                 img, mask = batch
                 img, mask = img.to(DEVICE, non_blocking=True), mask.to(DEVICE, non_blocking=True)
-                with amp.autocast(enabled=(DEVICE == "cuda")):
-                    # Stage B: 只训练分割，复原分支直接跳过（加速）
+                
+                with torch.amp.autocast(device_type="cuda", enabled=(DEVICE == "cuda")):
+                    # Stage B: 只训练分割
                     _, seg, _ = model(img, None, enable_restoration=True, enable_segmentation=True)
                     loss = crit_seg(seg, mask)
 
@@ -243,7 +212,8 @@ def main():
                 img = img.to(DEVICE, non_blocking=True)
                 target = target.to(DEVICE, non_blocking=True)
                 mask = mask.to(DEVICE, non_blocking=True)
-                with amp.autocast(enabled=(DEVICE == "cuda")):
+                
+                with torch.amp.autocast(device_type="cuda", enabled=(DEVICE == "cuda")):
                     restored, seg, target_dce = model(img, target, enable_restoration=True, enable_segmentation=True)
                     loss_r = crit_rest(restored, target_dce)
                     loss_s = crit_seg(seg, mask)
