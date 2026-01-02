@@ -79,63 +79,105 @@ class HybridRestorationLoss(nn.Module):
 
 
 # ================= 优化器构建 =================
-def build_optimizer(model: nn.Module, stage: str, lr: float):
-    def set_grad(modules, val: bool):
-        for m in modules:
-            for p in m.parameters():
-                p.requires_grad = val
+import torch.optim as optim
 
-    # --- 参数分组 ---
-    encoder_params = list(model.encoder.parameters())
-    rest_params = (
-        list(model.rest_up1.parameters()) + list(model.rest_conv1.parameters()) +
-        list(model.rest_up2.parameters()) + list(model.rest_conv2.parameters()) +
-        list(model.rest_up3.parameters()) + list(model.rest_conv3.parameters()) +
-        list(model.rest_up4.parameters()) + list(model.rest_out.parameters())
-    )
-    seg_params = (
-        list(model.strip_pool.parameters()) + list(model.seg_lat5.parameters()) +
-        list(model.seg_lat4.parameters()) + list(model.seg_lat3.parameters()) +
-        list(model.seg_conv_fuse.parameters()) + list(model.injection_conv.parameters()) +
-        list(model.seg_head.parameters()) + list(model.seg_final.parameters())
-    )
+def build_optimizer(model, stage: str, lr: float):
+    """
+    适配新版 RestorationGuidedHorizonNet（rest_lat*, rest_fuse, rest_strip, rest_out...）
+    Stage:
+      A: 训练 encoder + restoration，冻结 segmentation
+      B: 冻结 encoder + restoration，只训练 segmentation
+      C: encoder + restoration + segmentation 一起训练
+    """
+    def set_requires_grad(module, flag: bool):
+        if module is None:
+            return
+        for p in module.parameters():
+            p.requires_grad = flag
 
-    # --- 默认先按 stage 冻结/解冻 ---
-    if stage == 'A':
-        set_grad([model], True)
-        set_grad(
-            [model.strip_pool, model.seg_lat5, model.seg_lat4, model.seg_lat3,
-             model.seg_conv_fuse, model.injection_conv, model.seg_head, model.seg_final],
-            False
-        )
+    # --- 模块列表（按你新版 unet_model.py 的命名）---
+    restoration_modules = [
+        getattr(model, "rest_lat2", None),
+        getattr(model, "rest_lat3", None),
+        getattr(model, "rest_lat4", None),
+        getattr(model, "rest_lat5", None),
+        getattr(model, "rest_fuse", None),
+        getattr(model, "rest_strip", None),
+        getattr(model, "rest_out", None),
+    ]
+    segmentation_modules = [
+        getattr(model, "seg_lat3", None),
+        getattr(model, "seg_lat4", None),
+        getattr(model, "seg_lat5", None),
+        getattr(model, "seg_fuse", None),
+        getattr(model, "seg_strip", None),
+        getattr(model, "seg_final", None),
+        getattr(model, "inject", None),
+    ]
+
+    # 先全关，再按 stage 打开（更不容易漏）
+    set_requires_grad(model.encoder, False)
+    for m in restoration_modules:
+        set_requires_grad(m, False)
+    for m in segmentation_modules:
+        set_requires_grad(m, False)
+
+    # DCE 永远冻结（你的 Stage A 只用它做亮度增强）
+    if hasattr(model, "dce_net") and model.dce_net is not None:
+        set_requires_grad(model.dce_net, False)
+
+    # --- 按 stage 解冻 ---
+    if stage == "A":
+        set_requires_grad(model.encoder, True)
+        for m in restoration_modules:
+            set_requires_grad(m, True)
+
+        encoder_params = list(model.encoder.parameters())
+        rest_params = []
+        for m in restoration_modules:
+            if m is not None:
+                rest_params += list(m.parameters())
+
+        # encoder 小 lr，restoration 大 lr
         params = [
-            {'params': encoder_params, 'lr': lr * 0.1},
-            {'params': rest_params, 'lr': lr},
+            {"params": encoder_params, "lr": lr * 0.1},
+            {"params": rest_params, "lr": lr},
         ]
 
-    elif stage == 'B':
-        set_grad([model], False)
-        set_grad(
-            [model.strip_pool, model.seg_lat5, model.seg_lat4, model.seg_lat3,
-             model.seg_conv_fuse, model.injection_conv, model.seg_head, model.seg_final],
-            True
-        )
-        params = [{'params': seg_params, 'lr': lr}]
+    elif stage == "B":
+        # 只训 segmentation 头（encoder 冻结）
+        seg_params = []
+        for m in segmentation_modules:
+            if m is not None:
+                set_requires_grad(m, True)
+                seg_params += list(m.parameters())
 
-    elif stage == 'C':
-        set_grad([model], True)
+        params = [{"params": seg_params, "lr": lr}]
+
+    elif stage == "C":
+        set_requires_grad(model.encoder, True)
+        for m in restoration_modules:
+            set_requires_grad(m, True)
+        for m in segmentation_modules:
+            set_requires_grad(m, True)
+
+        encoder_params = list(model.encoder.parameters())
+        rest_params = []
+        seg_params = []
+        for m in restoration_modules:
+            if m is not None:
+                rest_params += list(m.parameters())
+        for m in segmentation_modules:
+            if m is not None:
+                seg_params += list(m.parameters())
+
         params = [
-            {'params': encoder_params, 'lr': lr * 0.1},
-            {'params': rest_params, 'lr': lr},
-            {'params': seg_params, 'lr': lr},
+            {"params": encoder_params, "lr": lr * 0.1},
+            {"params": rest_params, "lr": lr},
+            {"params": seg_params, "lr": lr},
         ]
     else:
         raise ValueError(f"Unknown stage: {stage}")
-
-    # --- 硬核修复：无论哪个 stage，都强制冻结 Zero-DCE++（防止 build_optimizer 把它打开） ---
-    if hasattr(model, "dce_net"):
-        for p in model.dce_net.parameters():
-            p.requires_grad = False
 
     return optim.AdamW(params, weight_decay=1e-4)
 
