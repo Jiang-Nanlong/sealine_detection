@@ -297,7 +297,7 @@ def main():
             mosaic = make_mosaic(rgb, gt_vis, overlay, pred_vis)
             put_label(mosaic, "RGB", 10, 25)
             put_label(mosaic, "GT Mask", rgb.shape[1] + 10, 25)
-            put_label(mosaic, "Overlay (GT=Green, Pred=Blue)", 10, rgb.shape[0] + 25)
+            put_label(mosaic, "Overlay (GT=Green, Pred=Red)", 10, rgb.shape[0] + 25)
             put_label(mosaic, "Pred Mask (Post)", rgb.shape[1] + 10, rgb.shape[0] + 25)
 
             out_path = os.path.join(OUT_DIR, f"{i:03d}.png")

@@ -6,8 +6,13 @@ import torch
 from torch.utils.data import Dataset
 import random
 import glob
+from PIL import Image
+from torchvision import transforms
+from torchvision.transforms import functional as TF
 
-
+# ==========================================
+# 1. 物理感知的合成退化函数
+# ==========================================
 def synthesize_rain_fog(image_rgb_u8):
     """
     更真实的物理感知退化函数
@@ -74,12 +79,10 @@ def synthesize_rain_fog(image_rgb_u8):
     return img.astype(np.float32)
 
 
-# ... (SimpleFolderDataset 和 HorizonImageDataset 的类定义与之前相同，直接复制即可) ...
-# 注意：务必确保 getitem 返回的是 input_tensor 和 target_clean (0-1 Float)
-# 这里为了节省篇幅，假设你已经保留了上一次我给你的 Dataset 类结构，
-# 只需要替换上面的 synthesize_rain_fog 函数即可。
-# 下面我还是完整给出 HorizonImageDataset 以防万一
-
+# ===========================================
+# 2. Stage B/C 专用: 带 CSV 标签加载器
+#    (含大角度旋转增强)
+# ===========================================
 class HorizonImageDataset(Dataset):
     def __init__(self, csv_file, img_dir, img_size=384, mode='joint', ignore_band=10):
         self.data = pd.read_csv(csv_file, header=None)
@@ -115,28 +118,61 @@ class HorizonImageDataset(Dataset):
         orig_h, orig_w = image.shape[:2]
         image_resized = cv2.resize(image, (self.img_size, self.img_size))
 
+        # 生成基础 Mask
         mask = np.zeros((self.img_size, self.img_size), dtype=np.uint8)
         sx, sy = self.img_size / orig_w, self.img_size / orig_h
         p1 = (int(x1 * sx), int(y1 * sy))
         p2 = (int(x2 * sx), int(y2 * sy))
+        
+        # 填充天空 (1)
         pts = np.array([[0, 0], [self.img_size, 0], [self.img_size, p2[1]], [0, p1[1]]], np.int32)
         cv2.fillPoly(mask, [pts], 1)
+        
+        # 绘制忽略带 (255)
         if self.ignore_band > 0:
             cv2.line(mask, p1, p2, 255, self.ignore_band)
 
+        # ==========================================
+        # ✅ 新增：随机旋转增强 (Solution 1)
+        # ==========================================
+        # 50% 概率触发，旋转角度 -45 到 45 度
+        if random.random() > 0.5:
+            angle = random.uniform(-45, 45)
+            
+            # 转为 PIL 以便使用 torchvision 的旋转
+            img_pil = Image.fromarray(image_resized)
+            mask_pil = Image.fromarray(mask)
+            
+            # 旋转图片 (双线性插值，保证画质)
+            img_pil = TF.rotate(img_pil, angle, interpolation=transforms.InterpolationMode.BILINEAR)
+            # 旋转 Mask (最近邻插值，保证类别 ID 不变，只有 0, 1, 255)
+            mask_pil = TF.rotate(mask_pil, angle, interpolation=transforms.InterpolationMode.NEAREST)
+            
+            # 转回 Numpy
+            image_resized = np.array(img_pil)
+            mask = np.array(mask_pil)
+        # ==========================================
+
         mask_tensor = torch.from_numpy(mask).long()
         clean_np = image_resized.copy()
+        
+        # Target Clean (Float 0-1)
         target_clean = torch.from_numpy(clean_np.astype(np.float32) / 255.0).permute(2, 0, 1)
 
         if self.mode == 'segmentation':
             return target_clean, mask_tensor
 
+        # 对已经旋转过的图添加雨雾
         degraded_np = synthesize_rain_fog(clean_np)
         input_tensor = torch.from_numpy(degraded_np).permute(2, 0, 1)
 
         return input_tensor, target_clean, mask_tensor
 
 
+# ===========================================
+# 3. Stage A 专用: 文件夹直接加载器
+#    (也加入旋转增强，让复原头适应倾斜场景)
+# ===========================================
 class SimpleFolderDataset(Dataset):
     def __init__(self, img_dir, img_size=384):
         self.img_dir = img_dir
@@ -154,8 +190,18 @@ class SimpleFolderDataset(Dataset):
             image = np.zeros((self.img_size, self.img_size, 3), dtype=np.uint8)
         else:
             image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            
         image_resized = cv2.resize(image, (self.img_size, self.img_size))
+        
+        # ✅ 新增：Stage A 也加入旋转，增强泛化能力
+        if random.random() > 0.5:
+            angle = random.uniform(-45, 45)
+            img_pil = Image.fromarray(image_resized)
+            img_pil = TF.rotate(img_pil, angle, interpolation=transforms.InterpolationMode.BILINEAR)
+            image_resized = np.array(img_pil)
+
         target_clean = torch.from_numpy(image_resized.astype(np.float32) / 255.0).permute(2, 0, 1)
         degraded_np = synthesize_rain_fog(image_resized)
         input_tensor = torch.from_numpy(degraded_np).permute(2, 0, 1)
+        
         return input_tensor, target_clean
