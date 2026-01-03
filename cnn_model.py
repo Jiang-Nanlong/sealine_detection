@@ -60,7 +60,8 @@ class CBAM(nn.Module):
 
 
 class HorizonResNet(nn.Module):
-    def __init__(self, in_channels=3, block=BasicBlock, num_blocks=[3, 4, 6, 3], img_h=2240, img_w=180):
+    # 3传统特征+1语义分割特征
+    def __init__(self, in_channels=4, block=BasicBlock, num_blocks=[3, 4, 6, 3], img_h=2240, img_w=180):
         super(HorizonResNet, self).__init__()
         self.in_planes = 64
         self.img_h = img_h
@@ -158,4 +159,4 @@ class HorizonResNet(nn.Module):
 
 def get_resnet34_model():
     # 注意：这里我们不再需要全连接层，输入尺寸对结构有影响但 Soft-Argmax 自动适应
-    return HorizonResNet(in_channels=3, num_blocks=[3, 4, 6, 3])
+    return HorizonResNet(in_channels=4, num_blocks=[3, 4, 6, 3])
