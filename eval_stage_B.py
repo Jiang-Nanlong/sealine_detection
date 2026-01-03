@@ -1,288 +1,54 @@
-# eval_stage_B.py (upgraded)
-# - Adds horizon MAE that matches your new visualization logic:
-#   * (optional) small morphological opening
-#   * keep ONLY sky components connected to the top border
-#   * then extract horizon per-column
-# - Reports BOTH:
-#   * Horizon MAE (raw)  : from raw argmax mask
-#   * Horizon MAE (post) : after post-processing (recommended for system-level evaluation)
-
+# vis_stage_B.py  (robust horizon visualization)
 import os
-import glob
-from typing import Optional, List
-
+import random
 import numpy as np
-import torch
-from torch.utils.data import DataLoader, random_split
 import cv2
-from tqdm import tqdm
+import torch
+import torch.amp as amp
+from torch.utils.data import random_split
 
 from unet_model import RestorationGuidedHorizonNet
 from dataset_loader import HorizonImageDataset
 
-
-# ====== 你按自己工程改这里 ======
+# ===== 你按自己路径改这里 =====
 CSV_PATH = r"Hashmani's Dataset/GroundTruth.csv"
-IMG_DIR = r"Hashmani's Dataset/MU-SID"
-CKPT = "rghnet_stage_b.pth"          # e.g. rghnet_best_seg.pth / rghnet_best_joint.pth / rghnet_stage_c2.pth
-DCE_WEIGHTS = "Epoch99.pth"
-IMG_SIZE = 384
+IMG_DIR  = r"Hashmani's Dataset/MU-SID"
 
-BATCH_SIZE = 8
+# 你想看哪个阶段的分割效果就换哪个权重
+CKPT = "rghnet_stage_b.pth"          # 或 rghnet_best_seg.pth / rghnet_stage_c2.pth 等
+DCE_WEIGHTS = "Epoch99.pth"
+
+IMG_SIZE = 384
+OUT_DIR  = "seg_vis_robust"
+NUM_SAMPLES = 30
 VAL_RATIO = 0.2
 SEED = 123
+# ============================
 
-# --- Horizon post-process params (推荐默认) ---
-POST_OPEN_KSIZE = 3      # 0=关闭；3/5 适合去掉细条噪声
-POST_CLOSE_KSIZE = 0     # 默认关闭；天空被严重切碎才考虑 3
-POST_TOP_MARGIN = 2      # 允许连到顶边的容差（像素）
-POST_MIN_AREA = 50       # 小于该面积的天空连通域直接丢弃
+SKY_ID = 1
+IGNORE_ID = 255
 
-# --- Horizon smoothing params (只影响“线”，不改变mask) ---
-SMOOTH_MEDIAN_K = 21     # 1=关闭；建议 11~31
-SMOOTH_MAX_JUMP = 20     # 单列最大允许跳变（像素）
-# ==============================
+# --- 后处理参数（只作用于 Pred mask） ---
+# 建议先把 MORPH_CLOSE 设为 0 或 3，避免“闭运算把假阳性连大”
+MORPH_CLOSE = 3         # 0=不做闭运算；3/5=温和；7=可能把假阳性连大
+TOP_TOUCH_TOL = 2       # 连通域必须接触顶边的容差像素
+
+# --- RANSAC 参数（决定红线稳不稳） ---
+RANSAC_ITERS = 300
+RANSAC_THRESH = 3       # inlier 判定阈值（像素）
+PREFILTER_PCTL = 85     # 预过滤：只保留 y <= pctl 的点（把掉海里的大 y 先剔除）
+MIN_POINTS = 80         # 点太少就别拟合（直接退化成原始线）
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 DEVICE_TYPE = "cuda" if torch.cuda.is_available() else "cpu"
 
 
 def safe_load(path: str, map_location: str):
-    """torch.load without the weights_only warning (with backward-compat)."""
+    """torch.load without FutureWarning (weights_only=True) when supported."""
     try:
         return torch.load(path, map_location=map_location, weights_only=True)
     except TypeError:
         return torch.load(path, map_location=map_location)
-
-
-def count_coverage(csv_path, img_dir):
-    import pandas as pd
-    df = pd.read_csv(csv_path, header=None)
-    names = df.iloc[:, 0].astype(str).tolist()
-
-    exts = ["", ".JPG", ".jpg", ".png", ".jpeg"]
-    hit = 0
-    miss = []
-    for n in names:
-        base = os.path.join(img_dir, n)
-        ok = any(os.path.exists(base + e) for e in exts)
-        if ok:
-            hit += 1
-        else:
-            miss.append(n)
-
-    all_imgs = []
-    for p in ["*.jpg", "*.JPG", "*.jpeg", "*.png"]:
-        all_imgs += glob.glob(os.path.join(img_dir, p))
-
-    return len(names), hit, len(miss), len(all_imgs), miss[:10]
-
-
-def compute_metrics(seg_logits, mask, ignore_index=255):
-    """
-    seg_logits: [B,2,H,W]
-    mask: [B,H,W] long, {0,1,255}
-    """
-    pred = seg_logits.argmax(dim=1)  # [B,H,W]
-    valid = (mask != ignore_index)
-
-    tp = ((pred == 1) & (mask == 1) & valid).sum().item()
-    fp = ((pred == 1) & (mask == 0) & valid).sum().item()
-    fn = ((pred == 0) & (mask == 1) & valid).sum().item()
-    tn = ((pred == 0) & (mask == 0) & valid).sum().item()
-
-    iou = tp / (tp + fp + fn) if (tp + fp + fn) > 0 else 0.0
-    dice = (2 * tp) / (2 * tp + fp + fn) if (2 * tp + fp + fn) > 0 else 0.0
-    acc = (tp + tn) / max(tp + tn + fp + fn, 1)
-    prec = tp / max(tp + fp, 1)
-    rec = tp / max(tp + fn, 1)
-
-    return {
-        "tp": tp, "fp": fp, "fn": fn, "tn": tn,
-        "iou": iou, "dice": dice, "acc": acc, "prec": prec, "rec": rec
-    }, pred
-
-
-def post_process_pred_mask(
-    pred_np: np.ndarray,
-    valid_np: np.ndarray,
-    sky_id: int = 1,
-    open_ksize: int = POST_OPEN_KSIZE,
-    close_ksize: int = POST_CLOSE_KSIZE,
-    top_margin: int = POST_TOP_MARGIN,
-    min_area: int = POST_MIN_AREA,
-) -> np.ndarray:
-    """
-    Keep ONLY sky components that are connected to the image top border.
-
-    pred_np: [H,W] {0,1}
-    valid_np: [H,W] bool (gt != ignore_index)
-    """
-    H, W = pred_np.shape
-
-    sky = ((pred_np == sky_id) & valid_np).astype(np.uint8)
-
-    # A) opening: remove thin noise (optional)
-    if open_ksize and open_ksize > 0:
-        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (open_ksize, open_ksize))
-        sky = cv2.morphologyEx(sky, cv2.MORPH_OPEN, k)
-
-    # B) connected components: keep those touching top
-    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(sky, connectivity=8)
-    keep = np.zeros_like(sky)
-
-    for i in range(1, num_labels):
-        area = stats[i, cv2.CC_STAT_AREA]
-        y_top = stats[i, cv2.CC_STAT_TOP]
-        if area < min_area:
-            continue
-        if y_top <= top_margin:
-            keep[labels == i] = 1
-
-    # C) small closing for holes (optional)
-    if close_ksize and close_ksize > 0:
-        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (close_ksize, close_ksize))
-        keep = cv2.morphologyEx(keep, cv2.MORPH_CLOSE, k)
-
-    out = pred_np.copy()
-    out[(pred_np == sky_id) & (keep == 0)] = 0
-    return out
-
-
-def _fill_nan_nearest(y: np.ndarray) -> np.ndarray:
-    """Fill NaNs by nearest valid value (for smoothing only)."""
-    y2 = y.copy()
-    n = len(y2)
-    if np.all(np.isnan(y2)):
-        return y2
-
-    # forward fill
-    last = np.nan
-    for i in range(n):
-        if np.isnan(y2[i]):
-            y2[i] = last
-        else:
-            last = y2[i]
-
-    # backward fill
-    last = np.nan
-    for i in range(n - 1, -1, -1):
-        if np.isnan(y2[i]):
-            y2[i] = last
-        else:
-            last = y2[i]
-
-    return y2
-
-
-def _median_filter_1d(y: np.ndarray, k: int) -> np.ndarray:
-    if k <= 1:
-        return y
-    if k % 2 == 0:
-        k += 1
-    pad = k // 2
-    ypad = np.pad(y, (pad, pad), mode="edge")
-    out = np.empty_like(y)
-    for i in range(len(y)):
-        out[i] = np.median(ypad[i:i + k])
-    return out
-
-
-def horizon_y_curve(mask_hw: np.ndarray, valid_hw: np.ndarray, sky_id: int = 1) -> Optional[np.ndarray]:
-    """Return per-column horizon y (float array with NaNs for invalid columns)."""
-    H, W = mask_hw.shape
-    col_valid = valid_hw.any(axis=0)
-
-    y = np.full((W,), np.nan, dtype=np.float32)
-
-    for x in range(W):
-        if not col_valid[x]:
-            continue
-        col = mask_hw[:, x]
-        vcol = valid_hw[:, x]
-        sky = (col == sky_id) & vcol
-        if sky.any():
-            y[x] = float(np.where(sky)[0].max())
-
-    good = np.where(~np.isnan(y))[0]
-    if good.size < 2:
-        return None
-
-    # interpolate missing columns
-    x_all = np.arange(W)
-    y_interp = np.interp(x_all, good, y[good]).astype(np.float32)
-    y_interp[~col_valid] = np.nan
-
-    return y_interp
-
-
-def smooth_horizon_y(y: np.ndarray, median_k: int = SMOOTH_MEDIAN_K, max_jump: int = SMOOTH_MAX_JUMP) -> np.ndarray:
-    """Median smoothing + max jump clamp. y can contain NaNs."""
-    if median_k <= 1 and (max_jump is None or max_jump <= 0):
-        return y
-
-    ok = ~np.isnan(y)
-    if ok.sum() < 2:
-        return y
-
-    y_work = _fill_nan_nearest(y)
-
-    if median_k and median_k > 1:
-        y_work = _median_filter_1d(y_work, median_k)
-
-    if max_jump and max_jump > 0:
-        for i in range(1, len(y_work)):
-            if np.isnan(y_work[i]) or np.isnan(y_work[i - 1]):
-                continue
-            if abs(float(y_work[i]) - float(y_work[i - 1])) > max_jump:
-                y_work[i] = y_work[i - 1]
-
-    # restore NaNs in invalid columns
-    y_work[~ok] = np.nan
-    return y_work
-
-
-def horizon_mae_from_masks(
-    pred_hw: np.ndarray,
-    gt_hw: np.ndarray,
-    ignore_index: int = 255,
-    postprocess: bool = False,
-    smooth: bool = False,
-) -> Optional[float]:
-    """Compute MAE between horizon curves derived from pred/gt masks."""
-    valid_hw = (gt_hw != ignore_index)
-
-    pred_use = pred_hw
-    if postprocess:
-        pred_use = post_process_pred_mask(pred_hw, valid_hw)
-
-    y_gt = horizon_y_curve(gt_hw, valid_hw, sky_id=1)
-    y_pd = horizon_y_curve(pred_use, valid_hw, sky_id=1)
-    if y_gt is None or y_pd is None:
-        return None
-
-    if smooth:
-        y_gt = smooth_horizon_y(y_gt)
-        y_pd = smooth_horizon_y(y_pd)
-
-    ok = ~np.isnan(y_gt) & ~np.isnan(y_pd)
-    if ok.sum() == 0:
-        return None
-
-    return float(np.mean(np.abs(y_pd[ok] - y_gt[ok])))
-
-
-def overlay_mask(rgb: np.ndarray, pred: np.ndarray, gt: np.ndarray) -> np.ndarray:
-    out = rgb.copy()
-    gt_sky = (gt == 1)
-    pd_sky = (pred == 1)
-    ign = (gt == 255)
-
-    out[gt_sky] = (out[gt_sky] * 0.5 + np.array([0, 255, 0]) * 0.5).astype(np.uint8)
-    out[pd_sky] = (out[pd_sky] * 0.5 + np.array([255, 0, 0]) * 0.5).astype(np.uint8)
-    out[gt_sky & pd_sky] = (out[gt_sky & pd_sky] * 0.5 + np.array([255, 255, 0]) * 0.5).astype(np.uint8)
-    out[ign] = (out[ign] * 0.5 + np.array([255, 255, 255]) * 0.5).astype(np.uint8)
-    return out
 
 
 def tensor_to_uint8_rgb(img_chw: torch.Tensor) -> np.ndarray:
@@ -291,8 +57,55 @@ def tensor_to_uint8_rgb(img_chw: torch.Tensor) -> np.ndarray:
     return img
 
 
-def draw_polyline(rgb: np.ndarray, pts, color_rgb, thickness=2):
-    if len(pts) < 2:
+def post_process_mask_top_connected(mask_np: np.ndarray,
+                                    sky_id=SKY_ID,
+                                    ignore_id=IGNORE_ID,
+                                    morph_close=MORPH_CLOSE,
+                                    top_touch_tol=TOP_TOUCH_TOL) -> np.ndarray:
+    """
+    只保留“接触图像顶边”的天空连通域，去掉海面上的 sky 假阳性岛。
+    注意：morph_close 过大可能把假阳性连上天空导致保留，建议 0/3/5。
+    """
+    H, W = mask_np.shape
+
+    # 只对有效区域做处理：ignore 保持 ignore
+    valid = (mask_np != ignore_id)
+    sky = ((mask_np == sky_id) & valid).astype(np.uint8)
+
+    if morph_close and morph_close > 0:
+        k = cv2.getStructuringElement(cv2.MORPH_RECT, (morph_close, morph_close))
+        sky = cv2.morphologyEx(sky, cv2.MORPH_CLOSE, k)
+
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(sky, connectivity=8)
+
+    keep = np.zeros_like(sky, dtype=np.uint8)
+    for i in range(1, num_labels):
+        y_top = stats[i, cv2.CC_STAT_TOP]
+        if y_top <= top_touch_tol:
+            keep[labels == i] = 1
+
+    out = mask_np.copy()
+    # 原来被预测成 sky，但不在“顶边连通天空”里的，一律改成 sea(0)
+    out[(mask_np == sky_id) & (keep == 0)] = 0
+    return out
+
+
+def overlay_mask(rgb: np.ndarray, pred: np.ndarray, gt: np.ndarray) -> np.ndarray:
+    """GT=绿, Pred=红, overlap=黄, ignore=白"""
+    out = rgb.copy()
+    gt_sky = (gt == SKY_ID)
+    pd_sky = (pred == SKY_ID)
+    ign = (gt == IGNORE_ID)
+
+    out[gt_sky] = (out[gt_sky] * 0.5 + np.array([0, 255, 0]) * 0.5).astype(np.uint8)
+    out[pd_sky] = (out[pd_sky] * 0.5 + np.array([255, 0, 0]) * 0.5).astype(np.uint8)
+    out[gt_sky & pd_sky] = (out[gt_sky & pd_sky] * 0.5 + np.array([255, 255, 0]) * 0.5).astype(np.uint8)
+    out[ign] = (out[ign] * 0.5 + np.array([255, 255, 255]) * 0.5).astype(np.uint8)
+    return out
+
+
+def draw_polyline(rgb: np.ndarray, pts, color_rgb, thickness=2) -> np.ndarray:
+    if pts is None or len(pts) < 2:
         return rgb
     img = rgb.copy()
     color_bgr = (int(color_rgb[2]), int(color_rgb[1]), int(color_rgb[0]))
@@ -301,161 +114,207 @@ def draw_polyline(rgb: np.ndarray, pts, color_rgb, thickness=2):
     return img
 
 
-def horizon_polyline_from_curve(y: np.ndarray):
-    if y is None:
-        return []
-    W = len(y)
+def horizon_points_from_mask(mask: np.ndarray, sky_id=SKY_ID, ignore_id=IGNORE_ID):
+    """
+    每列提取一个候选点：该列 sky 的最大 y（最靠下的 sky 像素）
+    """
+    H, W = mask.shape
     pts = []
     for x in range(W):
-        if np.isnan(y[x]):
+        col = mask[:, x]
+        valid = (col != ignore_id)
+        if valid.sum() == 0:
             continue
-        pts.append((int(x), int(y[x])))
+        sky = (col == sky_id) & valid
+        if sky.sum() == 0:
+            continue
+        y = int(np.where(sky)[0].max())
+        pts.append((x, y))
     return pts
 
 
+def ransac_fit_line(points, iters=RANSAC_ITERS, thresh=RANSAC_THRESH):
+    """
+    RANSAC 拟合 y = a*x + b
+    points: list[(x,y)]
+    return: (a,b,inlier_mask)
+    """
+    if points is None or len(points) < 2:
+        return None, None, None
+
+    pts = np.array(points, dtype=np.float32)
+    xs = pts[:, 0]
+    ys = pts[:, 1]
+
+    n = len(points)
+    best_inliers = None
+    best_cnt = 0
+    best_a, best_b = None, None
+
+    # 随机采样两点定义直线
+    for _ in range(iters):
+        i1, i2 = np.random.choice(n, 2, replace=False)
+        x1, y1 = xs[i1], ys[i1]
+        x2, y2 = xs[i2], ys[i2]
+        if abs(x2 - x1) < 1e-6:
+            continue
+        a = (y2 - y1) / (x2 - x1)
+        b = y1 - a * x1
+
+        y_pred = a * xs + b
+        err = np.abs(ys - y_pred)
+        inliers = err <= thresh
+        cnt = int(inliers.sum())
+        if cnt > best_cnt:
+            best_cnt = cnt
+            best_inliers = inliers
+            best_a, best_b = float(a), float(b)
+
+    if best_inliers is None or best_cnt < 2:
+        return None, None, None
+
+    # 用 inliers 做一次最小二乘再拟合（更稳）
+    xs_in = xs[best_inliers]
+    ys_in = ys[best_inliers]
+    A = np.vstack([xs_in, np.ones_like(xs_in)]).T
+    a_ls, b_ls = np.linalg.lstsq(A, ys_in, rcond=None)[0]
+    return float(a_ls), float(b_ls), best_inliers
+
+
+def robust_horizon_polyline(mask: np.ndarray,
+                            sky_id=SKY_ID,
+                            ignore_id=IGNORE_ID,
+                            prefilter_pctl=PREFILTER_PCTL,
+                            min_points=MIN_POINTS):
+    """
+    输出稳定的地平线 polyline（用于 Pred）
+    1) 提点
+    2) 预过滤（剔除 y 很大的离群列，通常是海面 sky leak）
+    3) RANSAC 拟合直线 -> 生成整宽度 polyline
+    """
+    H, W = mask.shape
+    pts = horizon_points_from_mask(mask, sky_id=sky_id, ignore_id=ignore_id)
+    if len(pts) < min_points:
+        # 点太少：退化成原始连线（至少还能画出来）
+        return pts, {"mode": "raw", "n": len(pts)}
+
+    pts_np = np.array(pts, dtype=np.int32)
+    ys = pts_np[:, 1].astype(np.float32)
+
+    # 预过滤：只保留 y <= percentile 的点（大 y 通常是海面假阳性拖下去）
+    cut = np.percentile(ys, prefilter_pctl)
+    keep_mask = (ys <= cut)
+    pts_f = pts_np[keep_mask]
+    if len(pts_f) < min_points // 2:
+        pts_f = pts_np  # 过滤太狠就不滤
+
+    pts_f_list = [(int(x), int(y)) for x, y in pts_f.tolist()]
+
+    a, b, inliers = ransac_fit_line(pts_f_list)
+    if a is None:
+        return pts, {"mode": "raw_fallback", "n": len(pts)}
+
+    # 用拟合线生成整幅宽度的点
+    line_pts = []
+    for x in range(W):
+        y = int(round(a * x + b))
+        y = max(0, min(H - 1, y))
+        line_pts.append((x, y))
+
+    info = {
+        "mode": "ransac",
+        "n_raw": len(pts),
+        "n_fit": len(pts_f_list),
+        "a": a,
+        "b": b,
+    }
+    return line_pts, info
+
+
 def run_model_get_seg_logits(model, img_bchw):
-    """Compatible with both old/new forward signatures."""
+    # 兼容你 unet_model 里两种 forward 签名
     try:
         out = model(img_bchw, None, enable_restoration=True, enable_segmentation=True)
     except TypeError:
         out = model(img_bchw, None)
 
     if isinstance(out, (list, tuple)):
-        return out[1]
+        return out[1]  # seg_logits
     raise RuntimeError("Model output unexpected.")
 
 
 def main():
-    # 1) 覆盖率检查
-    n_csv, hit, miss_n, n_dir, miss_example = count_coverage(CSV_PATH, IMG_DIR)
-    print(f"[Coverage] CSV rows={n_csv}, matched images={hit}, missing={miss_n}, files_in_dir={n_dir}")
-    if miss_n > 0:
-        print(f"[Coverage] first missing names: {miss_example}")
+    os.makedirs(OUT_DIR, exist_ok=True)
+    np.random.seed(SEED)
+    random.seed(SEED)
+    torch.manual_seed(SEED)
 
-    # 2) 划分 val
-    ds = HorizonImageDataset(CSV_PATH, IMG_DIR, img_size=IMG_SIZE, mode='segmentation')
+    ds = HorizonImageDataset(CSV_PATH, IMG_DIR, img_size=IMG_SIZE, mode="segmentation")
     n_val = int(len(ds) * VAL_RATIO)
     n_train = len(ds) - n_val
     g = torch.Generator().manual_seed(SEED)
     _, val_ds = random_split(ds, [n_train, n_val], generator=g)
-    print(f"[Split] val={len(val_ds)}")
 
-    val_loader = DataLoader(
-        val_ds,
-        batch_size=BATCH_SIZE,
-        shuffle=False,
-        num_workers=0,
-        pin_memory=(DEVICE == "cuda")
-    )
+    picks = random.sample(range(len(val_ds)), k=min(NUM_SAMPLES, len(val_ds)))
 
-    # 3) 模型加载
     model = RestorationGuidedHorizonNet(num_classes=2, dce_weights_path=DCE_WEIGHTS).to(DEVICE)
-    if not os.path.exists(CKPT):
-        raise FileNotFoundError(f"Checkpoint not found: {CKPT}")
-    state = safe_load(CKPT, DEVICE)
-    model.load_state_dict(state, strict=False)
+    if os.path.exists(CKPT):
+        sd = safe_load(CKPT, DEVICE)
+        model.load_state_dict(sd, strict=False)
+        print(f"[OK] Loaded weights from {CKPT}")
+    else:
+        print(f"[Error] Checkpoint not found: {CKPT}")
+        return
+
     model.eval()
-
-    os.makedirs("eval_vis", exist_ok=True)
-
-    # 4) Eval
-    totals = {"tp": 0, "fp": 0, "fn": 0, "tn": 0}
-    horizon_raw_list: List[float] = []
-    horizon_post_list: List[float] = []
+    print(f"[Running] Saving results to: {os.path.abspath(OUT_DIR)}")
 
     with torch.no_grad():
-        for i, (img, mask) in enumerate(tqdm(val_loader, desc="Eval Stage B")):
-            img = img.to(DEVICE, non_blocking=True)
-            mask = mask.to(DEVICE, non_blocking=True)
+        for i, idx in enumerate(picks):
+            img_chw, gt_hw = val_ds[idx]
+            img_bchw = img_chw.unsqueeze(0).to(DEVICE)
+            gt_np = gt_hw.numpy().astype(np.int32)
 
-            with torch.amp.autocast(device_type=DEVICE_TYPE, enabled=(DEVICE_TYPE == "cuda")):
-                seg_logits = run_model_get_seg_logits(model, img)
+            with amp.autocast(device_type=DEVICE_TYPE, enabled=(DEVICE_TYPE == "cuda")):
+                seg_logits = run_model_get_seg_logits(model, img_bchw)
+                pred_raw = seg_logits.argmax(dim=1)[0].detach().cpu().numpy().astype(np.uint8)
 
-            m, pred = compute_metrics(seg_logits, mask)
-            for k in totals:
-                totals[k] += m[k]
+            # Pred 后处理（去海面孤岛 + 可选温和闭运算）
+            pred_pp = post_process_mask_top_connected(
+                pred_raw,
+                sky_id=SKY_ID,
+                ignore_id=IGNORE_ID,
+                morph_close=MORPH_CLOSE,
+                top_touch_tol=TOP_TOUCH_TOL,
+            )
 
-            pred_np = pred.detach().cpu().numpy().astype(np.uint8)
-            mask_np = mask.detach().cpu().numpy().astype(np.int32)
+            rgb = tensor_to_uint8_rgb(img_chw)
 
-            # Horizon MAE (raw/post)
-            for b in range(pred_np.shape[0]):
-                mae_raw = horizon_mae_from_masks(
-                    pred_np[b], mask_np[b],
-                    postprocess=False,
-                    smooth=False,
-                )
-                if mae_raw is not None:
-                    horizon_raw_list.append(mae_raw)
+            # 覆盖图（Pred 用后处理后的 mask）
+            over = overlay_mask(rgb, pred_pp, gt_np)
 
-                mae_post = horizon_mae_from_masks(
-                    pred_np[b], mask_np[b],
-                    postprocess=True,
-                    smooth=True,
-                )
-                if mae_post is not None:
-                    horizon_post_list.append(mae_post)
+            # GT 线（原始列扫描，保留标注形状）
+            pts_gt = horizon_points_from_mask(gt_np, sky_id=SKY_ID, ignore_id=IGNORE_ID)
 
-            # 保存少量可视化（raw vs post）
-            if i < 10:
-                for b in range(min(pred_np.shape[0], 4)):
-                    rgb = tensor_to_uint8_rgb(img[b])
-                    gt_hw = mask_np[b]
-                    raw_hw = pred_np[b]
-                    valid_hw = (gt_hw != 255)
-                    post_hw = post_process_pred_mask(raw_hw, valid_hw)
+            # Pred 线（RANSAC 稳定版）
+            pts_pd, info = robust_horizon_polyline(pred_pp)
 
-                    # build horizon curves for drawing (match MAE post)
-                    y_gt = horizon_y_curve(gt_hw, valid_hw)
-                    y_pd_raw = horizon_y_curve(raw_hw, valid_hw)
-                    y_pd_post = horizon_y_curve(post_hw, valid_hw)
+            # 画线：GT=绿，Pred=红
+            over2 = draw_polyline(over, pts_gt, color_rgb=(0, 255, 0), thickness=2)
+            over2 = draw_polyline(over2, pts_pd, color_rgb=(255, 0, 0), thickness=2)
 
-                    y_gt_s = smooth_horizon_y(y_gt) if y_gt is not None else None
-                    y_pd_post_s = smooth_horizon_y(y_pd_post) if y_pd_post is not None else None
+            # 保存
+            cv2.imwrite(os.path.join(OUT_DIR, f"{i:03d}_overlay.png"),
+                        cv2.cvtColor(over2, cv2.COLOR_RGB2BGR))
+            cv2.imwrite(os.path.join(OUT_DIR, f"{i:03d}_pred_raw.png"),
+                        (pred_raw * 255).astype(np.uint8))
+            cv2.imwrite(os.path.join(OUT_DIR, f"{i:03d}_pred_pp.png"),
+                        (pred_pp * 255).astype(np.uint8))
 
-                    over_raw = overlay_mask(rgb, raw_hw, gt_hw)
-                    over_post = overlay_mask(rgb, post_hw, gt_hw)
+            if i < 5:
+                print(f"[{i:03d}] pred_line={info.get('mode')}  n_raw={info.get('n_raw', info.get('n', -1))}")
 
-                    # draw GT + Pred(post) on post overlay
-                    if y_gt_s is not None:
-                        over_post = draw_polyline(over_post, horizon_polyline_from_curve(y_gt_s), (0, 255, 0), 2)
-                    if y_pd_post_s is not None:
-                        over_post = draw_polyline(over_post, horizon_polyline_from_curve(y_pd_post_s), (255, 0, 0), 2)
-
-                    cv2.imwrite(
-                        os.path.join("eval_vis", f"batch{i}_idx{b}_raw.png"),
-                        cv2.cvtColor(over_raw, cv2.COLOR_RGB2BGR)
-                    )
-                    cv2.imwrite(
-                        os.path.join("eval_vis", f"batch{i}_idx{b}_post.png"),
-                        cv2.cvtColor(over_post, cv2.COLOR_RGB2BGR)
-                    )
-
-    # 5) 汇总
-    tp, fp, fn, tn = totals["tp"], totals["fp"], totals["fn"], totals["tn"]
-    iou = tp / (tp + fp + fn) if (tp + fp + fn) > 0 else 0.0
-    dice = (2 * tp) / (2 * tp + fp + fn) if (2 * tp + fp + fn) > 0 else 0.0
-    acc = (tp + tn) / max(tp + tn + fp + fn, 1)
-    prec = tp / max(tp + fp, 1)
-    rec = tp / max(tp + fn, 1)
-
-    h_raw = float(np.mean(horizon_raw_list)) if horizon_raw_list else None
-    h_post = float(np.mean(horizon_post_list)) if horizon_post_list else None
-
-    print("\n===== Stage B Validation =====")
-    print(f"PixelAcc={acc:.4f}  IoU(sky=1)={iou:.4f}  Dice={dice:.4f}  Precision={prec:.4f}  Recall={rec:.4f}")
-
-    if h_raw is not None:
-        print(f"Horizon MAE raw  (pixels) = {h_raw:.2f}  (no post-process)")
-    else:
-        print("Horizon MAE raw  (pixels) = N/A")
-
-    if h_post is not None:
-        print(f"Horizon MAE post (pixels) = {h_post:.2f}  (top-connected sky + smoothed)")
-    else:
-        print("Horizon MAE post (pixels) = N/A")
-
-    print("Saved visualization to ./eval_vis (raw/post overlays)")
+    print("[DONE] Finished.")
 
 
 if __name__ == "__main__":
