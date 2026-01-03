@@ -1,21 +1,29 @@
 # -*- coding: utf-8 -*-
 """
-train_unet.py (Hardcore)
-- 支持 Stage: A / B / C1 / C2
-- 训练集/验证集固定划分（可复现）
-- 每个 epoch 末自动跑验证并打印指标
+train_unet.py (Hardcore + B2)
+- 支持 Stage: A / B / B2 / C1 / C2
+- 固定 train/val 划分（可复现）
+- 每个 epoch 末自动验证并打印指标
 - 自动保存：
     1) last: rghnet_stage_{stage}.pth
-    2) best_seg: rghnet_best_seg.pth  (按 IoU 优先，其次 Horizon MAE)
+    2) best_seg: rghnet_best_seg.pth   (按 IoU 优先，其次 Horizon MAE)
     3) best_joint: rghnet_best_joint.pth (按验证 joint_loss 最小)
-- 可选保存可视化到 ./val_vis
+
+Stage 语义：
+- A : 只训 Restoration（encoder+rest），用 clear 图
+- B : 只训 Seg（分割头），从 stage_a 初始化
+- C1: 联合数据 joint，但只训 Restoration（encoder+rest），分割头冻结（用于让复原适应脏图）
+- B2: “Seg Repair”——只训 Seg（分割头），从 C1（或 best_seg）初始化，让分割重新对齐 encoder 特征
+- C2: 全量联合微调（encoder+rest+seg）
+
+可选保存可视化到 ./val_vis（只在 best_seg 刷新时输出少量样本）
 """
 import os
 import csv
 import math
 import platform
 from dataclasses import dataclass
-from typing import Dict, Optional, Tuple
+from typing import Dict
 
 import numpy as np
 import torch
@@ -25,7 +33,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
 
-# AMP (new API, no FutureWarning)
+# AMP (new API)
 import torch.amp as amp
 
 from unet_model import RestorationGuidedHorizonNet
@@ -40,8 +48,8 @@ IMG_DIR = r"Hashmani's Dataset/MU-SID"
 IMG_CLEAR_DIR = r"Hashmani's Dataset/clear"
 DCE_WEIGHTS = "Epoch99.pth"
 
-# 'A' / 'B' / 'C1' / 'C2'
-STAGE = "C1"
+# 'A' / 'B' / 'C1' / 'B2' / 'C2'
+STAGE = "B2"
 
 IMG_SIZE = 384
 BATCH_SIZE = 16
@@ -51,6 +59,7 @@ SEED = 42
 VAL_RATIO = 0.2
 PRINT_EVERY = 1
 EVAL_EVERY = 1
+
 SAVE_VIS = True
 VIS_MAX = 8  # 每次最多保存多少张可视化（只在 best_seg 刷新时保存）
 
@@ -59,10 +68,11 @@ STAGE_CFG = {
     "A":  dict(lr=2e-4, epochs=50),
     "B":  dict(lr=1e-4, epochs=20),
     "C1": dict(lr=5e-5, epochs=10),
+    "B2": dict(lr=5e-5, epochs=5),   # ✅ Seg Repair：一般 3~5 epoch 就够
     "C2": dict(lr=2e-5, epochs=40),
 }
 
-# joint loss 里 segmentation 的权重（只影响“best_joint”与打印，不影响你的实际训练 loss，训练 loss 见下面）
+# joint loss 里 segmentation 的权重
 JOINT_SEG_W = 0.5
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -84,7 +94,6 @@ def safe_load(path: str, map_location: str):
     try:
         return torch.load(path, map_location=map_location, weights_only=True)
     except TypeError:
-        # older torch
         return torch.load(path, map_location=map_location)
 
 
@@ -163,7 +172,7 @@ class HybridRestorationLoss(nn.Module):
 
 
 # =========================
-# Optimizer builder (硬核：模块名双兼容)
+# Optimizer builder (模块名双兼容)
 # =========================
 def build_optimizer(model, stage: str, lr: float):
     restoration_names = [
@@ -218,13 +227,13 @@ def build_optimizer(model, stage: str, lr: float):
             weight_decay=1e-4
         )
 
-    if stage == "B":
+    if stage in ("B", "B2"):
         # only seg
         for m in segmentation_modules:
             set_requires_grad(m, True)
         seg_params = collect_params(segmentation_modules)
         if len(seg_params) == 0:
-            raise RuntimeError("[build_optimizer] Stage B: no segmentation params found. Check module names.")
+            raise RuntimeError(f"[build_optimizer] Stage {stage}: no segmentation params found. Check module names.")
         return optim.AdamW([{"params": seg_params, "lr": lr}], weight_decay=1e-4)
 
     if stage == "C1":
@@ -265,9 +274,6 @@ def _safe_div(a: float, b: float) -> float:
 
 
 def seg_metrics_from_masks(pred: torch.Tensor, gt: torch.Tensor, ignore_index: int = 255) -> Dict[str, float]:
-    """
-    pred/gt: [H,W] long on CPU or GPU
-    """
     pred = pred.view(-1)
     gt = gt.view(-1)
     valid = gt != ignore_index
@@ -293,10 +299,6 @@ def seg_metrics_from_masks(pred: torch.Tensor, gt: torch.Tensor, ignore_index: i
 
 
 def horizon_mae_np(pred_mask: np.ndarray, gt_mask: np.ndarray, ignore: int = 255) -> float:
-    """
-    pred_mask/gt_mask: [H,W] int (0/1, gt may contain 255)
-    return: MAE in pixels
-    """
     H, W = gt_mask.shape
     abs_err = []
     ys = np.arange(H)
@@ -351,26 +353,15 @@ def psnr_from_mse(mse: torch.Tensor, max_val: float = 1.0) -> float:
 
 
 # =========================
-# Visualization
+# Visualization (optional)
 # =========================
-def save_vis(
-    out_dir: str,
-    prefix: str,
-    img_tensor: torch.Tensor,       # [3,H,W], 0-1
-    gt_mask: torch.Tensor,          # [H,W], 0/1/255
-    pred_mask: torch.Tensor,        # [H,W], 0/1
-):
-    """
-    保存 4 合 1 可视化：Input / GT mask / Pred mask / Overlay(蓝=Pred, 绿=GT)
-    """
+def save_vis(out_dir: str, prefix: str, img_tensor: torch.Tensor, gt_mask: torch.Tensor, pred_mask: torch.Tensor):
     ensure_dir(out_dir)
     img = (img_tensor.detach().cpu().clamp(0, 1).permute(1, 2, 0).numpy() * 255.0).astype(np.uint8)
     gt = gt_mask.detach().cpu().numpy().astype(np.uint8)
     pr = pred_mask.detach().cpu().numpy().astype(np.uint8)
-
     H, W, _ = img.shape
 
-    # masks for view
     gt_vis = np.zeros((H, W, 3), dtype=np.uint8)
     gt_vis[gt == 1] = (255, 255, 255)
     gt_vis[gt == 0] = (0, 0, 0)
@@ -379,14 +370,10 @@ def save_vis(
     pr_vis = np.zeros((H, W, 3), dtype=np.uint8)
     pr_vis[pr == 1] = (255, 255, 255)
 
-    # overlay lines
     overlay = img.copy()
 
-    # draw horizon as points -> polyline
-    gt_points = []
-    pr_points = []
+    gt_points, pr_points = [], []
     for x in range(W):
-        # gt y
         gt_col = gt[:, x]
         valid = gt_col != 255
         if np.any(valid):
@@ -406,7 +393,6 @@ def save_vis(
             if y is not None:
                 gt_points.append((x, y))
 
-        # pred y
         pr_col = pr[:, x]
         sky_p = np.where(pr_col == 1)[0]
         sea_p = np.where(pr_col == 0)[0]
@@ -422,28 +408,24 @@ def save_vis(
         if y is not None:
             pr_points.append((x, y))
 
-    # OpenCV is BGR; we keep RGB but colors are relative; not critical for debug
     try:
         import cv2
+        # ✅ 绿：GT，蓝：Pred（OpenCV 默认 BGR）
         if len(gt_points) > 1:
-            cv2.polylines(overlay, [np.array(gt_points, dtype=np.int32)], False, (0, 255, 0), 2)   # 绿：GT
+            cv2.polylines(overlay, [np.array(gt_points, dtype=np.int32)], False, (0, 255, 0), 2)
         if len(pr_points) > 1:
-            cv2.polylines(overlay, [np.array(pr_points, dtype=np.int32)], False, (0, 0, 255), 2)   # 蓝：Pred (RGB里看成红，BGR里是蓝)
+            cv2.polylines(overlay, [np.array(pr_points, dtype=np.int32)], False, (255, 0, 0), 2)
     except Exception:
-        # 没装 cv2 就跳过画线
         pass
 
-    # concat
     top = np.concatenate([img, gt_vis], axis=1)
     bot = np.concatenate([overlay, pr_vis], axis=1)
     grid = np.concatenate([top, bot], axis=0)
 
     try:
         import cv2
-        # 写文件用 BGR
         cv2.imwrite(os.path.join(out_dir, f"{prefix}.png"), cv2.cvtColor(grid, cv2.COLOR_RGB2BGR))
     except Exception:
-        # fallback: PIL
         from PIL import Image
         Image.fromarray(grid).save(os.path.join(out_dir, f"{prefix}.png"))
 
@@ -453,13 +435,10 @@ def save_vis(
 # =========================
 @dataclass
 class EvalResult:
-    # losses
     rest_loss: float = 0.0
     seg_loss: float = 0.0
     joint_loss: float = 0.0
-    # restoration metric
     psnr: float = 0.0
-    # segmentation metrics
     pixel_acc: float = 0.0
     iou_sky: float = 0.0
     dice: float = 0.0
@@ -470,12 +449,6 @@ class EvalResult:
 
 @torch.no_grad()
 def evaluate(model, loader, mode: str, crit_rest, crit_seg) -> EvalResult:
-    """
-    mode:
-      - 'seg'  : batch=(img, mask)
-      - 'joint': batch=(img_degraded, target_clean, mask)
-      - 'rest' : batch=(img_degraded, target_clean)
-    """
     model.eval()
     n = 0
     rest_loss_sum = 0.0
@@ -483,7 +456,6 @@ def evaluate(model, loader, mode: str, crit_rest, crit_seg) -> EvalResult:
     joint_loss_sum = 0.0
     psnr_sum = 0.0
 
-    # seg metrics accum
     pixel_acc_sum = 0.0
     iou_sum = 0.0
     dice_sum = 0.0
@@ -509,7 +481,6 @@ def evaluate(model, loader, mode: str, crit_rest, crit_seg) -> EvalResult:
             prec_sum += m["precision"]
             rec_sum += m["recall"]
 
-            # horizon mae
             pred_np = pred.detach().cpu().numpy()
             gt_np = mask.detach().cpu().numpy()
             bsz = pred_np.shape[0]
@@ -534,10 +505,7 @@ def evaluate(model, loader, mode: str, crit_rest, crit_seg) -> EvalResult:
                 loss_s = crit_seg(seg, mask)
                 loss_joint = loss_r + JOINT_SEG_W * loss_s
 
-            # restoration psnr (to clean target)
-            restored_f = restored.detach().float()
-            target_f = target.detach().float()
-            mse = F.mse_loss(restored_f, target_f)
+            mse = F.mse_loss(restored.detach().float(), target.detach().float())
             psnr_sum += psnr_from_mse(mse)
 
             pred = seg.argmax(1)
@@ -570,9 +538,7 @@ def evaluate(model, loader, mode: str, crit_rest, crit_seg) -> EvalResult:
                 restored, _, target_dce = model(img, target, enable_restoration=True, enable_segmentation=False)
                 loss_r = crit_rest(restored, target_dce)
 
-            restored_f = restored.detach().float()
-            target_f = target.detach().float()
-            mse = F.mse_loss(restored_f, target_f)
+            mse = F.mse_loss(restored.detach().float(), target.detach().float())
             psnr_sum += psnr_from_mse(mse)
 
             rest_loss_sum += float(loss_r.item())
@@ -584,7 +550,6 @@ def evaluate(model, loader, mode: str, crit_rest, crit_seg) -> EvalResult:
     if n == 0:
         return EvalResult()
 
-    # mean
     res = EvalResult()
     res.rest_loss = rest_loss_sum / n
     res.seg_loss = seg_loss_sum / n
@@ -633,7 +598,7 @@ def main():
     if STAGE == "A":
         ds = SimpleFolderDataset(IMG_CLEAR_DIR, img_size=IMG_SIZE)
         eval_mode = "rest"
-    elif STAGE == "B":
+    elif STAGE in ("B", "B2"):
         ds = HorizonImageDataset(CSV_PATH, IMG_DIR, img_size=IMG_SIZE, mode="segmentation")
         eval_mode = "seg"
     else:
@@ -669,6 +634,8 @@ def main():
     ckpt_a = "rghnet_stage_a.pth"
     ckpt_b = "rghnet_stage_b.pth"
     ckpt_c1 = "rghnet_stage_c1.pth"
+    ckpt_b2 = "rghnet_stage_b2.pth"
+    ckpt_best_seg = "rghnet_best_seg.pth"
 
     if STAGE == "B":
         if not os.path.exists(ckpt_a):
@@ -686,8 +653,26 @@ def main():
         else:
             raise FileNotFoundError(f"Stage C1 requires {ckpt_b} (preferred) or {ckpt_a}.")
 
+    if STAGE == "B2":
+        # ✅ Seg Repair：优先从 best_seg 或 stage_c1 启动
+        if os.path.exists(ckpt_best_seg):
+            print(f"[Init] Loading best_seg weights: {ckpt_best_seg}")
+            model.load_state_dict(safe_load(ckpt_best_seg, DEVICE), strict=False)
+        elif os.path.exists(ckpt_c1):
+            print(f"[Init] Loading Stage C1 weights: {ckpt_c1}")
+            model.load_state_dict(safe_load(ckpt_c1, DEVICE), strict=False)
+        elif os.path.exists(ckpt_b):
+            print(f"[Init] Stage C1 not found, loading Stage B weights: {ckpt_b}")
+            model.load_state_dict(safe_load(ckpt_b, DEVICE), strict=False)
+        else:
+            raise FileNotFoundError(f"Stage B2 requires {ckpt_best_seg}/{ckpt_c1}/{ckpt_b} (any).")
+
     if STAGE == "C2":
-        if os.path.exists(ckpt_c1):
+        # ✅ C2：如果做过 B2，就优先从 stage_b2 启动
+        if os.path.exists(ckpt_b2):
+            print(f"[Init] Loading Stage B2 weights: {ckpt_b2}")
+            model.load_state_dict(safe_load(ckpt_b2, DEVICE), strict=False)
+        elif os.path.exists(ckpt_c1):
             print(f"[Init] Loading Stage C1 weights: {ckpt_c1}")
             model.load_state_dict(safe_load(ckpt_c1, DEVICE), strict=False)
         elif os.path.exists(ckpt_b):
@@ -697,7 +682,7 @@ def main():
             print(f"[Init] Stage C1/B not found, loading Stage A weights: {ckpt_a}")
             model.load_state_dict(safe_load(ckpt_a, DEVICE), strict=False)
         else:
-            raise FileNotFoundError(f"Stage C2 requires {ckpt_c1}/{ckpt_b}/{ckpt_a} (any).")
+            raise FileNotFoundError(f"Stage C2 requires {ckpt_b2}/{ckpt_c1}/{ckpt_b}/{ckpt_a} (any).")
 
     # 5) Loss / Optimizer / AMP
     crit_rest = HybridRestorationLoss().to(DEVICE)
@@ -707,7 +692,6 @@ def main():
     try:
         scaler = amp.GradScaler(device=DEVICE_TYPE, enabled=(DEVICE_TYPE == "cuda"))
     except TypeError:
-        # 少数版本 API 不带 device 参数
         scaler = amp.GradScaler(enabled=(DEVICE_TYPE == "cuda"))
 
     # 6) best trackers
@@ -722,11 +706,10 @@ def main():
     for epoch in range(1, epochs + 1):
         model.train()
 
-        # Stage B: encoder/restoration 是 frozen，但 forward 会跑它们；为了不“偷跑 BN 统计”，把 frozen 部分切到 eval
-        if STAGE == "B":
+        # ✅ Stage B / B2：encoder/restoration frozen 但 forward 会跑 -> 冻结 BN 统计
+        if STAGE in ("B", "B2"):
             if hasattr(model, "encoder"):
                 model.encoder.eval()
-            # restoration 模块也尽量 eval（容错）
             for n in ["rest_lat2","rest_lat3","rest_lat4","rest_lat5","rest_fuse","rest_strip","rest_out",
                       "rest_up1","rest_conv1","rest_up2","rest_conv2","rest_up3","rest_conv3","rest_up4"]:
                 m = getattr(model, n, None)
@@ -747,20 +730,18 @@ def main():
                     restored, _, target_dce = model(img, target, enable_restoration=True, enable_segmentation=False)
                     loss = crit_rest(restored, target_dce)
 
-            elif STAGE == "B":
+            elif STAGE in ("B", "B2"):
                 img, mask = batch
                 img = img.to(DEVICE, non_blocking=True)
                 mask = mask.to(DEVICE, non_blocking=True)
                 with amp.autocast(device_type=DEVICE_TYPE, enabled=(DEVICE_TYPE == "cuda")):
-                    # 注意：Stage B 也开 restoration forward（用于注入），但不算 restoration loss
                     _, seg, _ = model(img, None, enable_restoration=True, enable_segmentation=True)
                     loss = crit_seg(seg, mask)
 
             elif STAGE == "C1":
-                img, target, mask = batch
+                img, target, _mask = batch
                 img = img.to(DEVICE, non_blocking=True)
                 target = target.to(DEVICE, non_blocking=True)
-                # mask 不参与 loss（但可用于 eval 监控）
                 with amp.autocast(device_type=DEVICE_TYPE, enabled=(DEVICE_TYPE == "cuda")):
                     restored, _, target_dce = model(img, target, enable_restoration=True, enable_segmentation=False)
                     loss = crit_rest(restored, target_dce)
@@ -800,13 +781,13 @@ def main():
                 f"IoU={val_res.iou_sky:.4f}  MAE={val_res.horizon_mae:.2f}  Acc={val_res.pixel_acc:.4f}"
             )
 
-            # best_joint (越小越好)
+            # best_joint
             if val_res.joint_loss < best_joint:
                 best_joint = val_res.joint_loss
                 torch.save(model.state_dict(), "rghnet_best_joint.pth")
                 print(f"[Save] best_joint updated: {best_joint:.6f} -> rghnet_best_joint.pth")
 
-            # best_seg（只要能算 seg 就会更新：Stage B / C1 / C2）
+            # best_seg（B/B2/joint 都能算）
             has_seg = (eval_mode in ["seg", "joint"])
             if has_seg:
                 improve = (val_res.iou_sky > best_iou + 1e-6) or (
@@ -818,7 +799,6 @@ def main():
                     torch.save(model.state_dict(), "rghnet_best_seg.pth")
                     print(f"[Save] best_seg updated: IoU={best_iou:.4f}, MAE={best_mae:.2f} -> rghnet_best_seg.pth")
 
-                    # 保存少量可视化（只在 best_seg 刷新时）
                     if SAVE_VIS:
                         saved = 0
                         for vb in val_loader:
@@ -841,7 +821,6 @@ def main():
                                 v_target = v_target.to(DEVICE)
                                 v_mask = v_mask.to(DEVICE)
                                 with amp.autocast(device_type=DEVICE_TYPE, enabled=(DEVICE_TYPE == "cuda")):
-                                    # 用 degraded input 跑，符合 Stage C 的真实推理场景
                                     _, v_seg, _ = model(v_img, v_target, enable_restoration=True, enable_segmentation=True)
                                 v_pred = v_seg.argmax(1)
                                 for i in range(v_img.shape[0]):
@@ -854,7 +833,6 @@ def main():
                                 break
                         print(f"[Vis] saved {saved} images to ./val_vis")
 
-            # log csv
             append_log(
                 log_path,
                 dict(
