@@ -49,7 +49,7 @@ IMG_CLEAR_DIR = r"Hashmani's Dataset/clear"
 DCE_WEIGHTS = "Epoch99.pth"
 
 # 'A' / 'B' / 'C1' / 'B2' / 'C2'
-STAGE = "B2"
+STAGE = "C2"
 
 IMG_SIZE = 384
 BATCH_SIZE = 16
@@ -74,6 +74,8 @@ STAGE_CFG = {
 
 # joint loss 里 segmentation 的权重
 JOINT_SEG_W = 0.5
+C2_SEG_W_WARMUP = 1.0
+C2_WARMUP_EPOCHS = 5
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 DEVICE_TYPE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -448,7 +450,7 @@ class EvalResult:
 
 
 @torch.no_grad()
-def evaluate(model, loader, mode: str, crit_rest, crit_seg) -> EvalResult:
+def evaluate(model, loader, mode: str, crit_rest, crit_seg, seg_w: float = 0.5) -> EvalResult:
     model.eval()
     n = 0
     rest_loss_sum = 0.0
@@ -503,7 +505,9 @@ def evaluate(model, loader, mode: str, crit_rest, crit_seg) -> EvalResult:
                 restored, seg, target_dce = model(img, target, enable_restoration=True, enable_segmentation=True)
                 loss_r = crit_rest(restored, target_dce)
                 loss_s = crit_seg(seg, mask)
-                loss_joint = loss_r + JOINT_SEG_W * loss_s
+                # loss_joint = loss_r + JOINT_SEG_W * loss_s
+                loss_joint = loss_r + seg_w * loss_s
+
 
             mse = F.mse_loss(restored.detach().float(), target.detach().float())
             psnr_sum += psnr_from_mse(mse)
@@ -755,7 +759,15 @@ def main():
                     restored, seg, target_dce = model(img, target, enable_restoration=True, enable_segmentation=True)
                     loss_r = crit_rest(restored, target_dce)
                     loss_s = crit_seg(seg, mask)
-                    loss = loss_r + JOINT_SEG_W * loss_s
+                    # loss = loss_r + JOINT_SEG_W * loss_s
+                    seg_w = C2_SEG_W_WARMUP if epoch <= C2_WARMUP_EPOCHS else JOINT_SEG_W
+                    loss = loss_r + seg_w * loss_s
+
+                    if STAGE == "C2":
+                        loop.set_postfix(loss=float(loss.item()), seg_w=seg_w)
+                    else:
+                        loop.set_postfix(loss=float(loss.item()))
+
 
             scaler.scale(loss).backward()
             scaler.step(optimizer)
@@ -774,7 +786,7 @@ def main():
 
         # eval
         if (epoch % EVAL_EVERY) == 0:
-            val_res = evaluate(model, val_loader, eval_mode, crit_rest, crit_seg)
+            val_res = evaluate(model, val_loader, eval_mode, crit_rest, crit_seg, seg_w=seg_w)
             print(
                 f"[Val] epoch={epoch}  joint={val_res.joint_loss:.6f}  rest={val_res.rest_loss:.6f}  "
                 f"seg={val_res.seg_loss:.6f}  psnr={val_res.psnr:.2f}  "
