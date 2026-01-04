@@ -89,6 +89,7 @@ class HorizonResNet(nn.Module):
         # 注意：因为经过了 ResNet，特征图尺寸缩小了 32 倍
         # 输入 2240 -> 特征图高 70
         # 输入 180  -> 特征图宽 6 (180/32 = 5.625，ResNet最后几层可能padding处理不一样，我们动态计算)
+        self.temperature = nn.Parameter(torch.ones(1) * 1.0)
 
     def _make_layer(self, block, planes, num_blocks, stride):
         # ... (保持不变) ...
@@ -136,7 +137,7 @@ class HorizonResNet(nn.Module):
         x_flat = x.view(batch_size, -1)
 
         # Softmax 归一化为概率 (Temperature 可以控制峰的尖锐程度)
-        prob = F.softmax(x_flat, dim=1)  # [B, H*W]
+        prob = F.softmax(x_flat / torch.clamp(self.temperature, min=1e-3), dim=1)
         prob = prob.view(batch_size, feat_h, feat_w)  # [B, H, W]
 
         # 计算期望 (Expectation)
