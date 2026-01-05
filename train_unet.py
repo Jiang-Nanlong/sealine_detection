@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-train_unet.py (Hardcore + B2)
+train_unet.py (Fixed Split Version)
 - 支持 Stage: A / B / B2 / C1 / C2
-- 固定 train/val 划分（可复现）
+- ✅ MU-SID 使用固定 train/val/test 划分（从 splits_musid 读 indices）
+- ✅ UNet 训练/选 best 全程不使用 test（避免后续 CNN 端到端泄漏）
 - 每个 epoch 末自动验证并打印指标
 - 自动保存：
     1) last: rghnet_stage_{stage}.pth
@@ -10,20 +11,18 @@ train_unet.py (Hardcore + B2)
     3) best_joint: rghnet_best_joint.pth (按验证 joint_loss 最小)
 
 Stage 语义：
-- A : 只训 Restoration（encoder+rest），用 clear 图
-- B : 只训 Seg（分割头），从 stage_a 初始化
-- C1: 联合数据 joint，但只训 Restoration（encoder+rest），分割头冻结（用于让复原适应脏图）
-- B2: “Seg Repair”——只训 Seg（分割头），从 C1（或 best_seg）初始化，让分割重新对齐 encoder 特征
-- C2: 全量联合微调（encoder+rest+seg）
-
-可选保存可视化到 ./val_vis（只在 best_seg 刷新时输出少量样本）
+- A : 只训 Restoration（encoder+rest），用 clear 图（与 MU-SID 无关，仍可随机切）
+- B : 只训 Seg（分割头），从 stage_a 初始化（MU-SID 固定切分）
+- C1: 联合数据 joint，但只训 Restoration（encoder+rest），分割头冻结（MU-SID 固定切分）
+- B2: “Seg Repair”——只训 Seg（分割头），从 C1（或 best_seg）初始化（MU-SID 固定切分）
+- C2: 全量联合微调（encoder+rest+seg）（MU-SID 固定切分）
 """
 import os
 import csv
 import math
 import platform
 from dataclasses import dataclass
-from typing import Dict
+from typing import Dict, Tuple, Optional
 
 import numpy as np
 import torch
@@ -39,7 +38,6 @@ import torch.amp as amp
 from unet_model import RestorationGuidedHorizonNet
 from dataset_loader import SimpleFolderDataset, HorizonImageDataset
 
-
 # =========================
 # Config
 # =========================
@@ -48,27 +46,32 @@ IMG_DIR = r"Hashmani's Dataset/MU-SID"
 IMG_CLEAR_DIR = r"Hashmani's Dataset/clear"
 DCE_WEIGHTS = "Epoch99.pth"
 
+# ✅ 固定划分目录（你用 make_musid_splits.py 生成的）
+SPLIT_DIR = r"splits_musid"
+TRAIN_IDX_PATH = os.path.join(SPLIT_DIR, "train_indices.npy")
+VAL_IDX_PATH   = os.path.join(SPLIT_DIR, "val_indices.npy")
+TEST_IDX_PATH  = os.path.join(SPLIT_DIR, "test_indices.npy")  # 仅打印数量，不参与训练/选 best
+
 # 'A' / 'B' / 'C1' / 'B2' / 'C2'
 STAGE = "C2"
 
 IMG_SIZE = 384
 BATCH_SIZE = 16
 
-# 固定划分 & 训练超参
+# 训练超参
 SEED = 42
-VAL_RATIO = 0.2
 PRINT_EVERY = 1
 EVAL_EVERY = 1
 
 SAVE_VIS = True
 VIS_MAX = 8  # 每次最多保存多少张可视化（只在 best_seg 刷新时保存）
 
-# Stage 超参（你也可以直接改这里）
+# Stage 超参
 STAGE_CFG = {
     "A":  dict(lr=2e-4, epochs=50),
     "B":  dict(lr=1e-4, epochs=20),
     "C1": dict(lr=5e-5, epochs=10),
-    "B2": dict(lr=5e-5, epochs=5),   # ✅ Seg Repair：一般 3~5 epoch 就够
+    "B2": dict(lr=5e-5, epochs=5),
     "C2": dict(lr=2e-5, epochs=40),
 }
 
@@ -110,18 +113,49 @@ def get_modules(model, names):
     return [getattr(model, n, None) for n in names]
 
 
-def split_dataset(ds, val_ratio: float, seed: int):
-    n = len(ds)
-    g = torch.Generator().manual_seed(seed)
-    perm = torch.randperm(n, generator=g).tolist()
-    n_val = max(1, int(n * val_ratio))
-    val_idx = perm[:n_val]
-    train_idx = perm[n_val:]
-    return Subset(ds, train_idx), Subset(ds, val_idx)
-
-
 def ensure_dir(p: str):
     os.makedirs(p, exist_ok=True)
+
+
+def load_fixed_split_indices() -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    读取 splits_musid 下的 train/val/test indices（这些 indices 是原始 GroundTruth.csv 的行号）
+    """
+    if not (os.path.exists(TRAIN_IDX_PATH) and os.path.exists(VAL_IDX_PATH) and os.path.exists(TEST_IDX_PATH)):
+        raise FileNotFoundError(
+            "未找到固定划分文件：\n"
+            f"  {TRAIN_IDX_PATH}\n  {VAL_IDX_PATH}\n  {TEST_IDX_PATH}\n"
+            "请先运行 make_musid_splits.py 生成 splits_musid/ 下的 indices。"
+        )
+    tr = np.load(TRAIN_IDX_PATH)
+    va = np.load(VAL_IDX_PATH)
+    te = np.load(TEST_IDX_PATH)
+    return tr.astype(np.int64), va.astype(np.int64), te.astype(np.int64)
+
+
+def build_musid_datasets(stage: str):
+    """
+    对 MU-SID 阶段(B/B2/C1/C2)使用固定划分：
+      train_ds = Subset(full_ds, train_indices)
+      val_ds   = Subset(full_ds, val_indices)
+    test_indices 只打印数量，不参与训练/选 best（避免泄漏）
+    """
+    train_idx, val_idx, test_idx = load_fixed_split_indices()
+
+    if stage in ("B", "B2"):
+        full_ds = HorizonImageDataset(CSV_PATH, IMG_DIR, img_size=IMG_SIZE, mode="segmentation")
+        eval_mode = "seg"
+    else:
+        full_ds = HorizonImageDataset(CSV_PATH, IMG_DIR, img_size=IMG_SIZE, mode="joint")
+        eval_mode = "joint"
+
+    train_ds = Subset(full_ds, train_idx.tolist())
+    val_ds = Subset(full_ds, val_idx.tolist())
+
+    print(f"[Fixed Split] full={len(full_ds)} | train={len(train_ds)} val={len(val_ds)} test={len(test_idx)}")
+    print("  (test split 不参与 UNet 训练/选 best，仅用于最终端到端一次性评估时再用)")
+
+    return train_ds, val_ds, eval_mode
 
 
 # =========================
@@ -230,7 +264,6 @@ def build_optimizer(model, stage: str, lr: float):
         )
 
     if stage in ("B", "B2"):
-        # only seg
         for m in segmentation_modules:
             set_requires_grad(m, True)
         seg_params = collect_params(segmentation_modules)
@@ -239,7 +272,6 @@ def build_optimizer(model, stage: str, lr: float):
         return optim.AdamW([{"params": seg_params, "lr": lr}], weight_decay=1e-4)
 
     if stage == "C1":
-        # encoder + rest, seg frozen
         set_requires_grad(model.encoder, True)
         for m in restoration_modules:
             set_requires_grad(m, True)
@@ -412,7 +444,7 @@ def save_vis(out_dir: str, prefix: str, img_tensor: torch.Tensor, gt_mask: torch
 
     try:
         import cv2
-        # ✅ 绿：GT，蓝：Pred（OpenCV 默认 BGR）
+        # 绿：GT，蓝：Pred（OpenCV 默认 BGR）
         if len(gt_points) > 1:
             cv2.polylines(overlay, [np.array(gt_points, dtype=np.int32)], False, (0, 255, 0), 2)
         if len(pr_points) > 1:
@@ -505,9 +537,7 @@ def evaluate(model, loader, mode: str, crit_rest, crit_seg, seg_w: float = 0.5) 
                 restored, seg, target_dce = model(img, target, enable_restoration=True, enable_segmentation=True)
                 loss_r = crit_rest(restored, target_dce)
                 loss_s = crit_seg(seg, mask)
-                # loss_joint = loss_r + JOINT_SEG_W * loss_s
                 loss_joint = loss_r + seg_w * loss_s
-
 
             mse = F.mse_loss(restored.detach().float(), target.detach().float())
             psnr_sum += psnr_from_mse(mse)
@@ -596,21 +626,25 @@ def main():
     print(f"=== Start Training: Stage {STAGE} ===")
     print(f"DEVICE={DEVICE}, DEVICE_TYPE={DEVICE_TYPE}")
     print(f"LR={lr}, EPOCHS={epochs}, IMG_SIZE={IMG_SIZE}, BS={BATCH_SIZE}")
-    print(f"VAL_RATIO={VAL_RATIO}, SEED={SEED}")
 
     # 1) Dataset
     if STAGE == "A":
+        # Stage A 与 MU-SID 划分无关（用 clear 文件夹）
         ds = SimpleFolderDataset(IMG_CLEAR_DIR, img_size=IMG_SIZE)
+        # 仍用固定 SEED 做可复现的随机切分
+        n = len(ds)
+        g = torch.Generator().manual_seed(SEED)
+        perm = torch.randperm(n, generator=g).tolist()
+        n_val = max(1, int(n * 0.2))
+        val_idx = perm[:n_val]
+        train_idx = perm[n_val:]
+        train_ds = Subset(ds, train_idx)
+        val_ds = Subset(ds, val_idx)
         eval_mode = "rest"
-    elif STAGE in ("B", "B2"):
-        ds = HorizonImageDataset(CSV_PATH, IMG_DIR, img_size=IMG_SIZE, mode="segmentation")
-        eval_mode = "seg"
+        print(f"[Stage A Split] train={len(train_ds)} val={len(val_ds)} total={len(ds)}")
     else:
-        ds = HorizonImageDataset(CSV_PATH, IMG_DIR, img_size=IMG_SIZE, mode="joint")
-        eval_mode = "joint"
-
-    train_ds, val_ds = split_dataset(ds, VAL_RATIO, SEED)
-    print(f"[Split] train={len(train_ds)}, val={len(val_ds)}, total={len(ds)}")
+        # ✅ MU-SID 阶段使用固定 train/val/test 划分
+        train_ds, val_ds, eval_mode = build_musid_datasets(STAGE)
 
     # 2) DataLoader
     num_workers = 0 if platform.system() == "Windows" else 4
@@ -658,7 +692,6 @@ def main():
             raise FileNotFoundError(f"Stage C1 requires {ckpt_b} (preferred) or {ckpt_a}.")
 
     if STAGE == "B2":
-        # ✅ Seg Repair：优先从 best_seg 或 stage_c1 启动
         if os.path.exists(ckpt_best_seg):
             print(f"[Init] Loading best_seg weights: {ckpt_best_seg}")
             model.load_state_dict(safe_load(ckpt_best_seg, DEVICE), strict=False)
@@ -672,7 +705,6 @@ def main():
             raise FileNotFoundError(f"Stage B2 requires {ckpt_best_seg}/{ckpt_c1}/{ckpt_b} (any).")
 
     if STAGE == "C2":
-        # ✅ C2：如果做过 B2，就优先从 stage_b2 启动
         if os.path.exists(ckpt_b2):
             print(f"[Init] Loading Stage B2 weights: {ckpt_b2}")
             model.load_state_dict(safe_load(ckpt_b2, DEVICE), strict=False)
@@ -710,12 +742,17 @@ def main():
     for epoch in range(1, epochs + 1):
         model.train()
 
+        # ✅ 当前 epoch 的 seg 权重（修复非C2阶段 seg_w 未定义问题）
+        curr_seg_w = JOINT_SEG_W
+        if STAGE == "C2":
+            curr_seg_w = C2_SEG_W_WARMUP if epoch <= C2_WARMUP_EPOCHS else JOINT_SEG_W
+
         # ✅ Stage B / B2：encoder/restoration frozen 但 forward 会跑 -> 冻结 BN 统计
         if STAGE in ("B", "B2"):
             if hasattr(model, "encoder"):
                 model.encoder.eval()
-            for n in ["rest_lat2","rest_lat3","rest_lat4","rest_lat5","rest_fuse","rest_strip","rest_out",
-                      "rest_up1","rest_conv1","rest_up2","rest_conv2","rest_up3","rest_conv3","rest_up4"]:
+            for n in ["rest_lat2", "rest_lat3", "rest_lat4", "rest_lat5", "rest_fuse", "rest_strip", "rest_out",
+                      "rest_up1", "rest_conv1", "rest_up2", "rest_conv2", "rest_up3", "rest_conv3", "rest_up4"]:
                 m = getattr(model, n, None)
                 if m is not None:
                     m.eval()
@@ -759,22 +796,16 @@ def main():
                     restored, seg, target_dce = model(img, target, enable_restoration=True, enable_segmentation=True)
                     loss_r = crit_rest(restored, target_dce)
                     loss_s = crit_seg(seg, mask)
-                    # loss = loss_r + JOINT_SEG_W * loss_s
-                    seg_w = C2_SEG_W_WARMUP if epoch <= C2_WARMUP_EPOCHS else JOINT_SEG_W
-                    loss = loss_r + seg_w * loss_s
-
-                    if STAGE == "C2":
-                        loop.set_postfix(loss=float(loss.item()), seg_w=seg_w)
-                    else:
-                        loop.set_postfix(loss=float(loss.item()))
-
+                    loss = loss_r + curr_seg_w * loss_s
+                loop.set_postfix(loss=float(loss.item()), seg_w=curr_seg_w)
 
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
 
             loss_sum += float(loss.item())
-            loop.set_postfix(loss=float(loss.item()))
+            if STAGE != "C2":
+                loop.set_postfix(loss=float(loss.item()))
 
         train_loss = loss_sum / max(1, len(train_loader))
         if epoch % PRINT_EVERY == 0:
@@ -786,7 +817,7 @@ def main():
 
         # eval
         if (epoch % EVAL_EVERY) == 0:
-            val_res = evaluate(model, val_loader, eval_mode, crit_rest, crit_seg, seg_w=seg_w)
+            val_res = evaluate(model, val_loader, eval_mode, crit_rest, crit_seg, seg_w=curr_seg_w)
             print(
                 f"[Val] epoch={epoch}  joint={val_res.joint_loss:.6f}  rest={val_res.rest_loss:.6f}  "
                 f"seg={val_res.seg_loss:.6f}  psnr={val_res.psnr:.2f}  "
@@ -869,6 +900,7 @@ def main():
     print(f"  last      : {last_name}")
     print(f"  best_seg  : rghnet_best_seg.pth")
     print(f"  best_joint: rghnet_best_joint.pth")
+    print("NOTE: test split 未参与 UNet 训练/选 best，后续 CNN 端到端评估更干净。")
 
 
 if __name__ == "__main__":
