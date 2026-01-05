@@ -1,33 +1,31 @@
+# train_fusion_cnn.py
 import os
 import random
+import json
 import numpy as np
 from tqdm import tqdm
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader, Subset
+from torch.utils.data import Dataset, DataLoader
 
-# 你项目里的模型（我这里用 HorizonResNet 以支持“自动匹配通道数”）
 from cnn_model import HorizonResNet
 
 
 # =========================
 # 全局可调参数（PyCharm 里改这里最方便）
 # =========================
-CSV_PATH = r"Hashmani's Dataset/GroundTruth.csv"
+# 三个 split 的 cache 目录（make_fusion_cache.py 生成的 SAVE_ROOT 下的子目录）
+TRAIN_CACHE_DIR = r"Hashmani's Dataset/FusionCache_split/train"
+VAL_CACHE_DIR   = r"Hashmani's Dataset/FusionCache_split/val"
+TEST_CACHE_DIR  = r"Hashmani's Dataset/FusionCache_split/test"
 
-# 四通道融合缓存（你 make_fusion_cache.py 生成的目录）
-CACHE_DIR = r"Hashmani's Dataset/FusionCache_v2"
-
-# split 保存目录：UNet / cache / CNN 都建议统一用它
+# split 索引目录（优先读取 *_indices.npy）
 SPLIT_DIR = r"splits_musid"
 
-# 与 train_unet.py 对齐
-SEED = 42
-TEST_RATIO = 0.2   # 等价于 UNet 的 val_ratio；这里 CNN 用 test 表示“留出集”
-
 # 训练参数
+SEED = 42
 BATCH_SIZE = 6
 NUM_EPOCHS = 30
 LR = 2e-4
@@ -36,6 +34,7 @@ NUM_WORKERS = 2
 
 USE_AMP = True
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+# =========================
 
 
 # =========================
@@ -53,83 +52,84 @@ def ensure_dir(p: str):
     os.makedirs(p, exist_ok=True)
 
 
-def count_csv_rows(csv_path: str) -> int:
+def load_split_indices(split_dir: str):
     """
-    GroundTruth.csv 你的 loader 是 header=None，因此这里直接按“行数=样本数”计数。
+    优先读取：
+      train_indices.npy / val_indices.npy / test_indices.npy
+    兼容读取：
+      train_idx.npy / test_idx.npy（如果你只保存了两份）
     """
-    if not os.path.exists(csv_path):
-        return -1
-    n = 0
-    with open(csv_path, "r", encoding="utf-8", errors="ignore") as f:
-        for _ in f:
-            n += 1
-    return n
+    primary = {
+        "train": os.path.join(split_dir, "train_indices.npy"),
+        "val":   os.path.join(split_dir, "val_indices.npy"),
+        "test":  os.path.join(split_dir, "test_indices.npy"),
+    }
+    alt = {
+        "train": os.path.join(split_dir, "train_idx.npy"),
+        "test":  os.path.join(split_dir, "test_idx.npy"),
+    }
+
+    if all(os.path.exists(p) for p in primary.values()):
+        return {
+            "train": np.load(primary["train"]).astype(np.int64).tolist(),
+            "val":   np.load(primary["val"]).astype(np.int64).tolist(),
+            "test":  np.load(primary["test"]).astype(np.int64).tolist(),
+        }
+
+    if os.path.exists(alt["train"]) and os.path.exists(alt["test"]):
+        return {
+            "train": np.load(alt["train"]).astype(np.int64).tolist(),
+            "val":   [],  # 没有 val 就留空
+            "test":  np.load(alt["test"]).astype(np.int64).tolist(),
+        }
+
+    raise FileNotFoundError(
+        "找不到 split 索引文件。请确认 SPLIT_DIR 下存在：\n"
+        f"  {primary['train']}\n  {primary['val']}\n  {primary['test']}\n"
+        "或至少存在：\n"
+        f"  {alt['train']}\n  {alt['test']}\n"
+    )
 
 
-def infer_total_len(cache_dir: str, csv_path: str = None) -> int:
+def infer_fallback_shape(cache_dir: str, indices: list, default_shape=(4, 2240, 180), scan_limit=500):
     """
-    优先用 CSV 行数确保索引对齐（0..N-1），其次用 cache 文件名最大值推断。
+    优先从该 split 的真实样本推断 input shape；否则回退到 default_shape。
     """
-    n_csv = count_csv_rows(csv_path) if csv_path else -1
-    if n_csv and n_csv > 0:
-        return n_csv
+    if not os.path.isdir(cache_dir):
+        return default_shape
 
-    # fallback：从 cache 文件名推断 max_id + 1
-    max_id = -1
-    for fn in os.listdir(cache_dir):
-        if not fn.endswith(".npy"):
-            continue
-        stem = os.path.splitext(fn)[0]
-        if stem.isdigit():
-            max_id = max(max_id, int(stem))
-    if max_id >= 0:
-        return max_id + 1
-
-    # 再 fallback：文件数（不推荐，但总比报错强）
-    return len([f for f in os.listdir(cache_dir) if f.endswith(".npy")])
-
-
-def load_or_make_split(total_len: int, test_ratio: float, seed: int, split_dir: str):
-    """
-    使用 torch.randperm + 固定 seed（和 train_unet.py 同源），并落盘复用。
-    """
-    ensure_dir(split_dir)
-    train_p = os.path.join(split_dir, "train_idx.npy")
-    test_p = os.path.join(split_dir, "test_idx.npy")
-
-    if os.path.exists(train_p) and os.path.exists(test_p):
-        train_idx = np.load(train_p).tolist()
-        test_idx = np.load(test_p).tolist()
-        # 简单校验
-        if len(train_idx) + len(test_idx) == total_len:
-            return train_idx, test_idx
-
-    g = torch.Generator().manual_seed(seed)
-    perm = torch.randperm(total_len, generator=g).tolist()
-    n_test = max(1, int(total_len * test_ratio))
-    test_idx = perm[:n_test]
-    train_idx = perm[n_test:]
-
-    np.save(train_p, np.array(train_idx, dtype=np.int64))
-    np.save(test_p, np.array(test_idx, dtype=np.int64))
-    return train_idx, test_idx
+    cnt = 0
+    for idx in indices:
+        p = os.path.join(cache_dir, f"{idx}.npy")
+        if os.path.exists(p):
+            d = np.load(p, allow_pickle=True).item()
+            if "input" in d:
+                return tuple(d["input"].shape)
+        cnt += 1
+        if cnt >= scan_limit:
+            break
+    return default_shape
 
 
 # =========================
-# Dataset：按 idx 读取 {idx}.npy（缺失则返回全 0）
+# Dataset：按 split 的 indices 读取 {idx}.npy
 # =========================
-class NpyCacheDataset(Dataset):
-    def __init__(self, cache_dir: str, total_len: int, fallback_shape=(4, 2240, 180)):
+class SplitCacheDataset(Dataset):
+    def __init__(self, cache_dir: str, indices: list, fallback_shape=(4, 2240, 180), strict_missing: bool = False):
         self.cache_dir = cache_dir
-        self.total_len = int(total_len)
+        self.indices = list(indices)
         self.fallback_shape = tuple(fallback_shape)
+        self.strict_missing = strict_missing
 
     def __len__(self):
-        return self.total_len
+        return len(self.indices)
 
-    def __getitem__(self, idx: int):
+    def __getitem__(self, i: int):
+        idx = int(self.indices[i])
         path = os.path.join(self.cache_dir, f"{idx}.npy")
         if not os.path.exists(path):
+            if self.strict_missing:
+                raise FileNotFoundError(f"Missing cache file: {path}")
             x = torch.zeros(self.fallback_shape, dtype=torch.float32)
             y = torch.zeros(2, dtype=torch.float32)
             return x, y
@@ -141,7 +141,7 @@ class NpyCacheDataset(Dataset):
 
 
 # =========================
-# Loss（保留你原本的 periodic 思路：theta 用 sin/cos 方式做环形距离）
+# Loss（theta 用 sin/cos 做周期距离）
 # =========================
 class HorizonPeriodicLoss(nn.Module):
     def __init__(self, rho_weight=1.0, theta_weight=2.0, rho_beta=0.02, theta_beta=0.02):
@@ -155,14 +155,13 @@ class HorizonPeriodicLoss(nn.Module):
         # rho: 线性 0~1
         loss_rho = self.rho_loss(preds[:, 0], targets[:, 0])
 
-        # theta: 0~1 映射到角度环（0~pi），用 sin/cos 做周期距离
+        # theta: 0~1 -> 0~pi（半周期），用 sin/cos 表示环形距离
         theta_p = preds[:, 1] * np.pi
         theta_t = targets[:, 1] * np.pi
-
         sin_p, cos_p = torch.sin(theta_p), torch.cos(theta_p)
         sin_t, cos_t = torch.sin(theta_t), torch.cos(theta_t)
-        loss_theta = self.theta_loss(sin_p, sin_t) + self.theta_loss(cos_p, cos_t)
 
+        loss_theta = self.theta_loss(sin_p, sin_t) + self.theta_loss(cos_p, cos_t)
         return self.rho_weight * loss_rho + self.theta_weight * loss_theta
 
 
@@ -220,51 +219,58 @@ def main():
     seed_everything(SEED)
     ensure_dir(SPLIT_DIR)
 
-    if not os.path.exists(CACHE_DIR):
-        raise FileNotFoundError(f"找不到 CACHE_DIR: {CACHE_DIR}")
+    # 1) 读 split indices
+    splits = load_split_indices(SPLIT_DIR)
+    train_indices = splits["train"]
+    val_indices = splits.get("val", [])
+    test_indices = splits["test"]
 
-    total_len = infer_total_len(CACHE_DIR, CSV_PATH)
-    if total_len <= 0:
-        raise RuntimeError("无法推断数据集长度：请检查 CSV_PATH 或 CACHE_DIR。")
+    if not os.path.isdir(TRAIN_CACHE_DIR):
+        raise FileNotFoundError(f"找不到 TRAIN_CACHE_DIR: {TRAIN_CACHE_DIR}")
+    if not os.path.isdir(VAL_CACHE_DIR):
+        raise FileNotFoundError(f"找不到 VAL_CACHE_DIR: {VAL_CACHE_DIR}")
+    if not os.path.isdir(TEST_CACHE_DIR):
+        print(f"[WARN] 找不到 TEST_CACHE_DIR: {TEST_CACHE_DIR}（将跳过最终 test 评估）")
 
-    train_idx, test_idx = load_or_make_split(
-        total_len=total_len,
-        test_ratio=TEST_RATIO,
-        seed=SEED,
-        split_dir=SPLIT_DIR
-    )
+    if len(train_indices) == 0:
+        raise RuntimeError("train_indices 为空，请检查 SPLIT_DIR 下的索引文件。")
+    if len(val_indices) == 0:
+        print("[WARN] val_indices 为空：将用 test 当作 val（不推荐，最好生成 val_indices.npy）")
+        val_indices = list(test_indices)
 
-    # 为了让 fallback_shape 更准确：优先从一个真实样本推断
-    # 找一个存在的 npy
-    fallback_shape = (4, 2240, 180)
-    for i in range(min(total_len, 500)):
-        p = os.path.join(CACHE_DIR, f"{i}.npy")
-        if os.path.exists(p):
-            d = np.load(p, allow_pickle=True).item()
-            fallback_shape = tuple(d["input"].shape)
-            break
+    # 2) 推断各 split 的 input shape（避免缺失样本返回全 0 时通道数不对）
+    train_shape = infer_fallback_shape(TRAIN_CACHE_DIR, train_indices, default_shape=(4, 2240, 180))
+    val_shape   = infer_fallback_shape(VAL_CACHE_DIR,   val_indices,   default_shape=train_shape)
+    test_shape  = infer_fallback_shape(TEST_CACHE_DIR,  test_indices,  default_shape=train_shape)
 
-    dataset = NpyCacheDataset(CACHE_DIR, total_len=total_len, fallback_shape=fallback_shape)
-    train_set = Subset(dataset, train_idx)
-    test_set = Subset(dataset, test_idx)
+    # 3) 构建数据集/加载器
+    train_ds = SplitCacheDataset(TRAIN_CACHE_DIR, train_indices, fallback_shape=train_shape, strict_missing=False)
+    val_ds   = SplitCacheDataset(VAL_CACHE_DIR,   val_indices,   fallback_shape=val_shape,   strict_missing=False)
+    test_ds  = SplitCacheDataset(TEST_CACHE_DIR,  test_indices,  fallback_shape=test_shape,  strict_missing=False) \
+              if os.path.isdir(TEST_CACHE_DIR) else None
 
     def worker_init_fn(worker_id):
-        # 保证 dataloader worker 也可复现
         seed = SEED + worker_id
         np.random.seed(seed)
         random.seed(seed)
 
+    pin = DEVICE.startswith("cuda")
+
     train_loader = DataLoader(
-        train_set, batch_size=BATCH_SIZE, shuffle=True,
-        num_workers=NUM_WORKERS, pin_memory=True, worker_init_fn=worker_init_fn
+        train_ds, batch_size=BATCH_SIZE, shuffle=True,
+        num_workers=NUM_WORKERS, pin_memory=pin, worker_init_fn=worker_init_fn
+    )
+    val_loader = DataLoader(
+        val_ds, batch_size=BATCH_SIZE, shuffle=False,
+        num_workers=NUM_WORKERS, pin_memory=pin
     )
     test_loader = DataLoader(
-        test_set, batch_size=BATCH_SIZE, shuffle=False,
-        num_workers=NUM_WORKERS, pin_memory=True
-    )
+        test_ds, batch_size=BATCH_SIZE, shuffle=False,
+        num_workers=NUM_WORKERS, pin_memory=pin
+    ) if test_ds is not None else None
 
-    # 自动匹配通道数
-    x0, _ = dataset[train_idx[0]]
+    # 4) 建模：自动匹配通道数
+    x0, _ = train_ds[0]
     in_ch = int(x0.shape[0])
     model = HorizonResNet(in_channels=in_ch).to(DEVICE)
 
@@ -272,26 +278,59 @@ def main():
     optimizer = optim.AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
     scaler = torch.cuda.amp.GradScaler(enabled=(USE_AMP and DEVICE.startswith("cuda")))
 
-    best = float("inf")
+    # 5) 保存路径：best 依据 val
+    best_val = float("inf")
     best_path = os.path.join(SPLIT_DIR, "best_fusion_cnn.pth")
 
-    print(f"[INFO] total_len={total_len} | train={len(train_set)} test={len(test_set)} | in_ch={in_ch}")
-    print(f"[INFO] split saved at: {os.path.join(SPLIT_DIR, 'train_idx.npy')} / test_idx.npy")
-    print(f"[INFO] model save path: {best_path}")
+    print(f"[INFO] in_ch={in_ch}, device={DEVICE}, amp={USE_AMP}")
+    print(f"[INFO] train={len(train_ds)}  val={len(val_ds)}  test={len(test_ds) if test_ds else 0}")
+    print(f"[INFO] cache_dirs:\n  train={TRAIN_CACHE_DIR}\n  val  ={VAL_CACHE_DIR}\n  test ={TEST_CACHE_DIR}")
+    print(f"[INFO] best model will be saved to: {best_path}")
 
+    # 6) 训练：每 epoch 评估 val，并按 val 保存 best
+    history = []
     for epoch in range(1, NUM_EPOCHS + 1):
         tr_loss = train_one_epoch(model, train_loader, optimizer, scaler, criterion)
-        te_loss = evaluate(model, test_loader, criterion)
+        va_loss = evaluate(model, val_loader, criterion)
 
-        print(f"Epoch [{epoch:03d}/{NUM_EPOCHS}]  train_loss={tr_loss:.6f}  test_loss={te_loss:.6f}")
+        print(f"Epoch [{epoch:03d}/{NUM_EPOCHS}]  train_loss={tr_loss:.6f}  val_loss={va_loss:.6f}")
 
-        if te_loss < best:
-            best = te_loss
+        history.append({"epoch": epoch, "train_loss": tr_loss, "val_loss": va_loss})
+
+        if va_loss < best_val:
+            best_val = va_loss
             torch.save(model.state_dict(), best_path)
-            print(f"  -> best updated: {best:.6f}")
+            print(f"  -> best updated (val): {best_val:.6f}")
 
-    print(f"Done. Best test_loss={best:.6f}")
-    print(f"Best model saved to: {best_path}")
+    # 7) 最终：加载 best，在 test 上评估一次
+    final_test = None
+    if test_loader is not None and os.path.exists(best_path):
+        model.load_state_dict(torch.load(best_path, map_location=DEVICE))
+        final_test = evaluate(model, test_loader, criterion)
+        print(f"[FINAL] best_val={best_val:.6f}  test_loss={final_test:.6f}")
+    else:
+        print(f"[FINAL] best_val={best_val:.6f}  (test skipped)")
+
+    # 8) 写一个结果文件，方便你实验对比（特别是不同 MORPH_CLOSE）
+    out_json = os.path.join(SPLIT_DIR, "fusion_cnn_result.json")
+    payload = {
+        "train_cache_dir": TRAIN_CACHE_DIR,
+        "val_cache_dir": VAL_CACHE_DIR,
+        "test_cache_dir": TEST_CACHE_DIR,
+        "seed": SEED,
+        "batch_size": BATCH_SIZE,
+        "epochs": NUM_EPOCHS,
+        "lr": LR,
+        "weight_decay": WEIGHT_DECAY,
+        "in_channels": in_ch,
+        "best_val_loss": best_val,
+        "test_loss": final_test,
+        "best_model_path": best_path,
+        "history": history,
+    }
+    with open(out_json, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    print(f"[SAVE] {out_json}")
 
 
 if __name__ == "__main__":
