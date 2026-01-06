@@ -1,120 +1,119 @@
-# make_fusion_cache.py
+# -*- coding: utf-8 -*-
+"""
+make_fusion_cache.py (Letterbox + 1024)
+
+生成 4 通道融合缓存：
+  - 通道1-3：传统梯度 + Radon（在 UNet 复原图上做）
+  - 通道4 ：语义分割(天空/海面)的“边界线” -> Radon
+
+关键改动：
+  1) UNet 输入使用 letterbox（等比缩放 + padding），IMG_SIZE_UNET=1024
+  2) UNet 输出 restored/mask 先 unletterbox 回原图尺寸，再做传统特征与边界 Radon
+  3) 分割 mask 做 robust 后处理：仅保留“触顶”的天空连通域（移植自 eval_stage_B）
+  4) 输出目录自带 train/val/test 三个子目录（按 split_indices/*.npy）
+
+注意：
+  - 一旦改了 letterbox/分辨率，你必须重训 UNet、重做 cache、再重训 CNN。
+"""
+
 import os
 import cv2
-import json
+import torch
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
-import torch
 import torch.amp as amp
 
 from unet_model import RestorationGuidedHorizonNet
 from gradient_radon import TextureSuppressedMuSCoWERT
 
-# =========================
-# 全局配置（PyCharm 直接改这里）
-# =========================
+
+# ============================
+# 配置（按你工程路径改）
+# ============================
 CSV_PATH = r"Hashmani's Dataset/GroundTruth.csv"
-IMG_DIR  = r"Hashmani's Dataset/MU-SID"
+IMG_DIR = r"Hashmani's Dataset/MU-SID"
 
-# UNet 权重
-RGHNET_CKPT = "rghnet_best_joint.pth"   # 你最终用于生成复原+分割的权重
-DCE_WEIGHTS = "Epoch99.pth"
+SPLIT_DIR = r"Hashmani's Dataset/split_indices"  # train_indices.npy / val_indices.npy / test_indices.npy
+SAVE_ROOT = r"Hashmani's Dataset/FusionCache_letterbox1024"  # 会自动生成 train/val/test
 
-# 输出 cache 根目录（会自动创建 train/val/test 子目录）
-SAVE_ROOT = r"Hashmani's Dataset/FusionCache_split"
+# 权重路径
+RGHNET_CKPT = r"rghnet_best_joint.pth"
+DCE_WEIGHTS = r"Epoch99.pth"
 
-# 固定划分目录
-SPLIT_DIR = r"splits_musid"
+# UNet 输入尺寸（square letterbox）
+IMG_SIZE_UNET = 1024
 
-# 生成哪些 split 的 cache（建议：先 train+val；最终一次性再生成 test）
-SPLITS_TO_BUILD = ["train", "val", "test"]   # 你也可以改成 ["train", "test"]
-
-# 输入输出尺寸
-IMG_SIZE_UNET = 384
+# sinogram 统一尺寸
 RESIZE_H = 2240
 RESIZE_W = 180
 
-# ===== 语义mask鲁棒后处理 & 边缘参数（你主要调这里做对比实验）=====
-MORPH_CLOSE = 3         # 0 禁用；常用 0/3/5（太大可能把错误粘连）
-TOP_TOUCH_TOL = 2       # “接触顶边”容忍像素
-SKY_ID = 1              # sky=1, sea=0
+# -------- robust 后处理参数（全局变量，方便你在 PyCharm 里直接改） --------
+MORPH_CLOSE = 3      # 0/3/5 常用；过大可能把海面假阳性连上天空
+TOP_TOUCH_TOL = 0    # 天空连通域触顶容忍（0 表示必须接触最顶行）
 
+# 边界提取参数
 CANNY_LOW = 50
 CANNY_HIGH = 150
-EDGE_DILATE_ITERS = 1   # 0 不膨胀；1~2 通常够用
-# ================================================================
+EDGE_DILATE = 1      # 0 不膨胀；1/2 轻微加粗边界，Radon 更稳
 
-# 性能/稳定性
-USE_AMP = True
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 DEVICE_TYPE = "cuda" if torch.cuda.is_available() else "cpu"
-
-# 若输出已存在是否跳过
-SKIP_IF_EXISTS = True
-# =========================
 
 
 def ensure_dir(p: str):
     os.makedirs(p, exist_ok=True)
 
 
-def resolve_image_path(img_dir: str, name_in_csv: str):
-    """兼容 CSV 中带/不带后缀的情况"""
-    base = os.path.join(img_dir, str(name_in_csv))
-    candidates = [
-        base,
-        base + ".JPG",
-        base + ".jpg",
-        base + ".png",
-        base + ".jpeg",
-        base + ".JPEG",
-    ]
-    for p in candidates:
-        if os.path.exists(p):
-            return p
-    return None
+def letterbox_rgb_u8(image_rgb_u8: np.ndarray, dst_size: int, pad_value: int = 0):
+    """Keep aspect ratio resize to fit in dst_size x dst_size and pad."""
+    h, w = image_rgb_u8.shape[:2]
+    if h <= 0 or w <= 0:
+        canvas = np.zeros((dst_size, dst_size, 3), dtype=np.uint8)
+        meta = dict(scale=1.0, pad_left=0, pad_top=0, new_w=dst_size, new_h=dst_size, orig_w=w, orig_h=h)
+        return canvas, meta
+
+    scale = min(dst_size / float(w), dst_size / float(h))
+    new_w = int(round(w * scale))
+    new_h = int(round(h * scale))
+    new_w = max(1, min(dst_size, new_w))
+    new_h = max(1, min(dst_size, new_h))
+
+    interp = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR
+    resized = cv2.resize(image_rgb_u8, (new_w, new_h), interpolation=interp)
+
+    canvas = np.full((dst_size, dst_size, 3), pad_value, dtype=np.uint8)
+    pad_left = (dst_size - new_w) // 2
+    pad_top = (dst_size - new_h) // 2
+    canvas[pad_top:pad_top + new_h, pad_left:pad_left + new_w] = resized
+
+    meta = dict(scale=scale, pad_left=pad_left, pad_top=pad_top, new_w=new_w, new_h=new_h, orig_w=w, orig_h=h)
+    return canvas, meta
 
 
-def safe_load(path: str, map_location: str):
-    try:
-        return torch.load(path, map_location=map_location, weights_only=True)
-    except TypeError:
-        return torch.load(path, map_location=map_location)
+def unletterbox_rgb_u8(img_sq_rgb_u8: np.ndarray, meta: dict, out_w: int, out_h: int):
+    """Crop padding area then resize back to (out_w,out_h)."""
+    pl, pt = int(meta["pad_left"]), int(meta["pad_top"])
+    nw, nh = int(meta["new_w"]), int(meta["new_h"])
+    crop = img_sq_rgb_u8[pt:pt + nh, pl:pl + nw]
+    if crop.size == 0:
+        return np.zeros((out_h, out_w, 3), dtype=np.uint8)
+    return cv2.resize(crop, (out_w, out_h), interpolation=cv2.INTER_LINEAR)
 
 
-def calculate_radon_label(x1, y1, x2, y2, img_w, img_h, resize_h, resize_w):
-    """计算归一化 rho/theta 标签 (0~1)，与 padding 逻辑对齐"""
-    cx, cy = img_w / 2.0, img_h / 2.0
-    dx, dy = x2 - x1, y2 - y1
-    line_angle = np.arctan2(dy, dx)
-
-    theta_rad = line_angle - np.pi / 2
-    while theta_rad < 0:
-        theta_rad += np.pi
-    while theta_rad >= np.pi:
-        theta_rad -= np.pi
-
-    mx = (x1 + x2) / 2.0 - cx
-    my = (y1 + y2) / 2.0 - cy
-    rho = mx * np.cos(theta_rad) + my * np.sin(theta_rad)
-
-    label_theta = np.degrees(theta_rad) / 180.0
-
-    original_diag = np.sqrt(img_w**2 + img_h**2)
-    rho_pixel_pos = rho + original_diag / 2.0
-
-    pad_top = (resize_h - original_diag) / 2.0
-    final_rho_idx = rho_pixel_pos + pad_top
-    label_rho = final_rho_idx / (resize_h - 1)
-
-    return float(np.clip(label_rho, 0, 1)), float(np.clip(label_theta, 0, 1))
+def unletterbox_mask_u8(mask_sq_u8: np.ndarray, meta: dict, out_w: int, out_h: int):
+    pl, pt = int(meta["pad_left"]), int(meta["pad_top"])
+    nw, nh = int(meta["new_w"]), int(meta["new_h"])
+    crop = mask_sq_u8[pt:pt + nh, pl:pl + nw]
+    if crop.size == 0:
+        return np.zeros((out_h, out_w), dtype=np.uint8)
+    return cv2.resize(crop, (out_w, out_h), interpolation=cv2.INTER_NEAREST)
 
 
-def process_sinogram(sino, target_h, target_w):
-    """归一化并 padding/crop 到统一尺寸"""
-    mi, ma = sino.min(), sino.max()
+def process_sinogram(sino: np.ndarray, target_h: int, target_w: int) -> np.ndarray:
+    """归一化并 padding/crop 到统一尺寸 (H,W)."""
+    mi, ma = float(sino.min()), float(sino.max())
     if ma - mi > 1e-6:
         sino_norm = (sino - mi) / (ma - mi)
     else:
@@ -129,236 +128,182 @@ def process_sinogram(sino, target_h, target_w):
     else:
         crop_start = (h_curr - target_h) // 2
         container[:, :] = sino_norm[crop_start:crop_start + target_h, :]
+    return container
 
-    return container.astype(np.float32)
+
+def calculate_radon_label(x1, y1, x2, y2, img_w, img_h, resize_h, resize_w):
+    """计算归一化的 rho, theta 标签 (0~1)，逻辑需与你 CNN loader 一致。"""
+    cx, cy = img_w / 2.0, img_h / 2.0
+    dx, dy = x2 - x1, y2 - y1
+    line_angle = np.arctan2(dy, dx)
+    theta_rad = line_angle - np.pi / 2
+    while theta_rad < 0:
+        theta_rad += np.pi
+    while theta_rad >= np.pi:
+        theta_rad -= np.pi
+
+    mx = (x1 + x2) / 2.0 - cx
+    my = (y1 + y2) / 2.0 - cy
+    rho = mx * np.cos(theta_rad) + my * np.sin(theta_rad)
+
+    label_theta = np.degrees(theta_rad) / 180.0
+
+    original_diag = np.sqrt(img_w ** 2 + img_h ** 2)
+    rho_pixel_pos = rho + original_diag / 2.0
+    pad_top = (resize_h - original_diag) / 2.0
+    final_rho_idx = rho_pixel_pos + pad_top
+    label_rho = final_rho_idx / (resize_h - 1)
+
+    return float(np.clip(label_rho, 0, 1)), float(np.clip(label_theta, 0, 1))
 
 
-def post_process_mask_top_connected_simple(mask_np: np.ndarray,
-                                           sky_id: int = 1,
-                                           morph_close: int = 3,
-                                           top_touch_tol: int = 2) -> np.ndarray:
-    """
-    鲁棒 mask 清理（移植 eval/vis_stage_B 思路）：
-      1) 只保留“接触顶边”的 sky 连通域（去掉海面 sky 假阳性岛）
-      2) 可选：对保留天空做轻量 close（弥合裂缝）
-    """
-    if mask_np.ndim != 2:
-        raise ValueError("mask_np must be HxW")
+def post_process_mask_top_connected(mask_np: np.ndarray,
+                                    sky_id: int = 1,
+                                    ignore_id: int = 255,
+                                    morph_close: int = MORPH_CLOSE,
+                                    top_touch_tol: int = TOP_TOUCH_TOL) -> np.ndarray:
+    """只保留“接触图像顶边”的天空连通域，去掉海面上的 sky 假阳性岛。"""
+    valid = (mask_np != ignore_id)
+    sky = ((mask_np == sky_id) & valid).astype(np.uint8)
 
-    sky = (mask_np == sky_id).astype(np.uint8)
+    if morph_close and morph_close > 0:
+        k = cv2.getStructuringElement(cv2.MORPH_RECT, (morph_close, morph_close))
+        sky = cv2.morphologyEx(sky, cv2.MORPH_CLOSE, k)
 
     num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(sky, connectivity=8)
+
     keep = np.zeros_like(sky, dtype=np.uint8)
     for i in range(1, num_labels):
         y_top = stats[i, cv2.CC_STAT_TOP]
         if y_top <= top_touch_tol:
             keep[labels == i] = 1
 
-    if morph_close and morph_close > 0:
-        k = int(morph_close)
-        if k % 2 == 0:
-            k += 1
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (k, k))
-        keep = cv2.morphologyEx(keep, cv2.MORPH_CLOSE, kernel)
-
-    out = np.zeros_like(mask_np, dtype=np.uint8)
-    out[keep == 1] = sky_id
+    out = mask_np.copy()
+    out[(mask_np == sky_id) & (keep == 0)] = 0
     return out
 
 
-def load_split_indices(split_dir: str):
-    """
-    优先读取 train_indices/val_indices/test_indices.npy（你全局划分脚本生成的）
-    兼容读取 train_idx/test_idx.npy（你改 CNN 脚本保存的）
-    """
-    paths_primary = {
-        "train": os.path.join(split_dir, "train_indices.npy"),
-        "val":   os.path.join(split_dir, "val_indices.npy"),
-        "test":  os.path.join(split_dir, "test_indices.npy"),
+def _load_split_indices(split_dir: str):
+    def _load(name):
+        p = os.path.join(split_dir, name)
+        if not os.path.exists(p):
+            raise FileNotFoundError(f"Split index file not found: {p}")
+        arr = np.load(p)
+        return [int(x) for x in arr.tolist()]
+
+    return {
+        "train": _load("train_indices.npy"),
+        "val": _load("val_indices.npy"),
+        "test": _load("test_indices.npy"),
     }
-    paths_alt = {
-        "train": os.path.join(split_dir, "train_idx.npy"),
-        "test":  os.path.join(split_dir, "test_idx.npy"),
-    }
 
-    out = {}
-    # primary
-    if all(os.path.exists(p) for p in paths_primary.values()):
-        out["train"] = np.load(paths_primary["train"]).astype(np.int64).tolist()
-        out["val"]   = np.load(paths_primary["val"]).astype(np.int64).tolist()
-        out["test"]  = np.load(paths_primary["test"]).astype(np.int64).tolist()
-        return out
 
-    # alt
-    if os.path.exists(paths_alt["train"]) and os.path.exists(paths_alt["test"]):
-        out["train"] = np.load(paths_alt["train"]).astype(np.int64).tolist()
-        out["test"]  = np.load(paths_alt["test"]).astype(np.int64).tolist()
-        # 没有 val 的情况下就不生成 val
-        return out
+def _read_image_any_ext(img_dir: str, img_name: str):
+    base = os.path.join(img_dir, str(img_name))
+    cand = [base, base + ".JPG", base + ".jpg", base + ".png", base + ".jpeg"]
+    for p in cand:
+        if os.path.exists(p):
+            return cv2.imread(p)
+    return None
 
-    raise FileNotFoundError(
-        "找不到 split 索引文件。请确认 SPLIT_DIR 下存在：\n"
-        f"  {paths_primary['train']} / {paths_primary['val']} / {paths_primary['test']}\n"
-        "或至少存在：\n"
-        f"  {paths_alt['train']} / {paths_alt['test']}\n"
-    )
+
+def build_cache_for_split(df: pd.DataFrame,
+                          indices: list,
+                          out_dir: str,
+                          seg_model,
+                          detector,
+                          theta_scan: np.ndarray):
+    ensure_dir(out_dir)
+    for row_idx in tqdm(indices, desc=f"cache->{os.path.basename(out_dir)}", ncols=90):
+        row = df.iloc[row_idx]
+        img_name = str(row.iloc[0])
+        try:
+            x1, y1, x2, y2 = float(row.iloc[1]), float(row.iloc[2]), float(row.iloc[3]), float(row.iloc[4])
+        except Exception:
+            continue
+
+        bgr = _read_image_any_ext(IMG_DIR, img_name)
+        if bgr is None:
+            continue
+
+        h_img, w_img = bgr.shape[:2]
+        rgb0 = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+
+        # 1) UNet letterbox input
+        rgb_sq, meta = letterbox_rgb_u8(rgb0, IMG_SIZE_UNET, pad_value=0)
+        inp = torch.from_numpy(rgb_sq.astype(np.float32) / 255.0).permute(2, 0, 1).unsqueeze(0).to(DEVICE)
+
+        # 2) forward
+        with torch.no_grad():
+            with amp.autocast(device_type=DEVICE_TYPE, enabled=(DEVICE_TYPE == "cuda")):
+                restored_t, seg_logits, _ = seg_model(inp, None)
+
+        # 3) restored back to original size
+        restored_sq_rgb = (restored_t[0].detach().float().clamp(0, 1).permute(1, 2, 0).cpu().numpy() * 255.0).round().astype(np.uint8)
+        restored_orig_rgb = unletterbox_rgb_u8(restored_sq_rgb, meta, out_w=w_img, out_h=h_img)
+        restored_orig_bgr = cv2.cvtColor(restored_orig_rgb, cv2.COLOR_RGB2BGR)
+
+        # 4) mask back to original size + robust post-process
+        pred_mask_sq = seg_logits.argmax(dim=1)[0].detach().cpu().numpy().astype(np.uint8)  # 0/1
+        pred_mask_orig = unletterbox_mask_u8(pred_mask_sq, meta, out_w=w_img, out_h=h_img)
+        pred_mask_pp = post_process_mask_top_connected(pred_mask_orig)
+
+        # A) 传统三通道（在复原图上）
+        try:
+            _, _, _, trad_sinos = detector.detect(restored_orig_bgr)
+        except Exception:
+            trad_sinos = []
+
+        processed_trad = []
+        for s in trad_sinos[:3]:
+            processed_trad.append(process_sinogram(s, RESIZE_H, RESIZE_W))
+        while len(processed_trad) < 3:
+            processed_trad.append(np.zeros((RESIZE_H, RESIZE_W), dtype=np.float32))
+
+        # B) 语义边界通道（mask 边界 -> Radon）
+        edges = cv2.Canny((pred_mask_pp * 255).astype(np.uint8), CANNY_LOW, CANNY_HIGH)
+        if EDGE_DILATE and EDGE_DILATE > 0:
+            k = np.ones((3, 3), np.uint8)
+            edges = cv2.dilate(edges, k, iterations=int(EDGE_DILATE))
+
+        seg_sino_raw = detector._radon_gpu(edges, theta_scan)
+        processed_seg = process_sinogram(seg_sino_raw, RESIZE_H, RESIZE_W)
+
+        combined_input = np.stack(processed_trad + [processed_seg], axis=0).astype(np.float32)
+
+        # label
+        l_rho, l_theta = calculate_radon_label(x1, y1, x2, y2, w_img, h_img, RESIZE_H, RESIZE_W)
+        label = np.array([l_rho, l_theta], dtype=np.float32)
+
+        np.save(os.path.join(out_dir, f"{row_idx}.npy"), {"input": combined_input, "label": label})
 
 
 def main():
     ensure_dir(SAVE_ROOT)
 
-    print(f"[Device] {DEVICE}")
-    print(f"[Params] MORPH_CLOSE={MORPH_CLOSE}, TOP_TOUCH_TOL={TOP_TOUCH_TOL}, "
-          f"CANNY=({CANNY_LOW},{CANNY_HIGH}), EDGE_DILATE_ITERS={EDGE_DILATE_ITERS}")
-    print(f"[Splits] SPLITS_TO_BUILD={SPLITS_TO_BUILD}")
-
-    # 读取 GroundTruth
-    if not os.path.exists(CSV_PATH):
-        raise FileNotFoundError(f"CSV not found: {CSV_PATH}")
-    df = pd.read_csv(CSV_PATH, header=None)
-
-    # 读取 split
-    splits = load_split_indices(SPLIT_DIR)
-    for k, v in splits.items():
-        print(f"[Split] {k}: {len(v)}")
-
-    # 加载 UNet
-    if not os.path.exists(RGHNET_CKPT):
-        raise FileNotFoundError(f"UNet checkpoint not found: {RGHNET_CKPT}")
+    splits = _load_split_indices(SPLIT_DIR)
+    for k in ("train", "val", "test"):
+        print(f"[Split] {k}: {len(splits[k])}")
 
     print(f"[Load] RG-HNet: {RGHNET_CKPT}")
     seg_model = RestorationGuidedHorizonNet(num_classes=2, dce_weights_path=DCE_WEIGHTS).to(DEVICE)
-    seg_model.load_state_dict(safe_load(RGHNET_CKPT, DEVICE), strict=False)
+    if not os.path.exists(RGHNET_CKPT):
+        raise FileNotFoundError(f"Checkpoint not found: {RGHNET_CKPT}")
+    state = torch.load(RGHNET_CKPT, map_location=DEVICE)
+    seg_model.load_state_dict(state, strict=False)
     seg_model.eval()
 
-    # 传统 Radon 提取器（GPU Radon）
-    print("[Load] Traditional Extractor (MuSCoWERT + GPU Radon)")
+    print("[Load] Traditional extractor...")
     detector = TextureSuppressedMuSCoWERT(scales=[1, 2, 3], full_scan=True)
-    theta_scan = np.linspace(0., 180., RESIZE_W, endpoint=False)
+    theta_scan = np.linspace(0.0, 180.0, RESIZE_W, endpoint=False)
 
-    # 保存 meta（方便你写实验记录）
-    meta = {
-        "csv_path": CSV_PATH,
-        "img_dir": IMG_DIR,
-        "save_root": SAVE_ROOT,
-        "ckpt": RGHNET_CKPT,
-        "dce_weights": DCE_WEIGHTS,
-        "img_size_unet": IMG_SIZE_UNET,
-        "resize_h": RESIZE_H,
-        "resize_w": RESIZE_W,
-        "mask_post": {
-            "morph_close": MORPH_CLOSE,
-            "top_touch_tol": TOP_TOUCH_TOL,
-            "sky_id": SKY_ID,
-            "canny_low": CANNY_LOW,
-            "canny_high": CANNY_HIGH,
-            "edge_dilate_iters": EDGE_DILATE_ITERS,
-        },
-        "splits_built": SPLITS_TO_BUILD,
-        "use_amp": USE_AMP,
-        "device": DEVICE,
-    }
-    with open(os.path.join(SAVE_ROOT, "cache_meta.json"), "w", encoding="utf-8") as f:
-        json.dump(meta, f, ensure_ascii=False, indent=2)
+    df = pd.read_csv(CSV_PATH, header=None)
+    print(f"[Data] rows={len(df)}")
 
-    # 开始生成
-    with torch.no_grad():
-        for split_name in SPLITS_TO_BUILD:
-            if split_name not in splits:
-                print(f"[Skip] split '{split_name}' not found in SPLIT_DIR. Available: {list(splits.keys())}")
-                continue
+    for split_name in ("train", "val", "test"):
+        build_cache_for_split(df, splits[split_name], os.path.join(SAVE_ROOT, split_name), seg_model, detector, theta_scan)
 
-            out_dir = os.path.join(SAVE_ROOT, split_name)
-            ensure_dir(out_dir)
-
-            indices = splits[split_name]
-            print(f"\n[Build] {split_name}: {len(indices)} samples -> {out_dir}")
-
-            for idx in tqdm(indices, desc=f"Cache {split_name}"):
-                out_path = os.path.join(out_dir, f"{idx}.npy")
-                if SKIP_IF_EXISTS and os.path.exists(out_path):
-                    continue
-
-                if idx < 0 or idx >= len(df):
-                    continue
-
-                # 读 GT 行
-                row = df.iloc[idx]
-                img_name = str(row.iloc[0])
-                try:
-                    x1, y1, x2, y2 = float(row.iloc[1]), float(row.iloc[2]), float(row.iloc[3]), float(row.iloc[4])
-                except Exception:
-                    continue
-
-                img_path = resolve_image_path(IMG_DIR, img_name)
-                if img_path is None:
-                    continue
-
-                bgr = cv2.imread(img_path)
-                if bgr is None:
-                    continue
-                h_img, w_img = bgr.shape[:2]
-
-                # ====== UNet 前处理 ======
-                rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-                rgb_resized = cv2.resize(rgb, (IMG_SIZE_UNET, IMG_SIZE_UNET), interpolation=cv2.INTER_AREA)
-                inp = torch.from_numpy(rgb_resized.astype(np.float32) / 255.0).permute(2, 0, 1).unsqueeze(0).to(DEVICE)
-
-                # ====== UNet 推理：复原 + 分割 ======
-                with amp.autocast(device_type=DEVICE_TYPE, enabled=(USE_AMP and DEVICE_TYPE == "cuda")):
-                    restored_t, seg_logits, _ = seg_model(inp, None)
-
-                pred_mask = seg_logits.argmax(dim=1)[0].detach().cpu().numpy().astype(np.uint8)
-
-                # ====== A) 三通道：复原输出 -> 传统梯度+Radon ======
-                restored_rgb = (restored_t[0].detach().cpu().permute(1, 2, 0).numpy() * 255.0).clip(0, 255).astype(np.uint8)
-                restored_rgb_full = cv2.resize(restored_rgb, (w_img, h_img), interpolation=cv2.INTER_AREA)
-                restored_bgr_full = cv2.cvtColor(restored_rgb_full, cv2.COLOR_RGB2BGR)
-
-                _, _, _, trad_sinograms = detector.detect(restored_bgr_full)
-
-                processed_trad = []
-                for s in trad_sinograms[:3]:
-                    processed_trad.append(process_sinogram(s, RESIZE_H, RESIZE_W))
-                while len(processed_trad) < 3:
-                    processed_trad.append(np.zeros((RESIZE_H, RESIZE_W), dtype=np.float32))
-
-                # ====== B) 第四通道：分割 -> 边界 -> Radon ======
-                pred_mask_full = cv2.resize(pred_mask, (w_img, h_img), interpolation=cv2.INTER_NEAREST)
-
-                # robust mask 清理（只保留顶边连通天空）
-                pred_mask_full = post_process_mask_top_connected_simple(
-                    pred_mask_full,
-                    sky_id=SKY_ID,
-                    morph_close=MORPH_CLOSE,
-                    top_touch_tol=TOP_TOUCH_TOL
-                )
-
-                edges = cv2.Canny((pred_mask_full * 255).astype(np.uint8), CANNY_LOW, CANNY_HIGH)
-                if EDGE_DILATE_ITERS and EDGE_DILATE_ITERS > 0:
-                    kernel = np.ones((3, 3), np.uint8)
-                    edges = cv2.dilate(edges, kernel, iterations=int(EDGE_DILATE_ITERS))
-
-                seg_sino_raw = detector._radon_gpu(edges, theta_scan)
-                processed_seg = process_sinogram(seg_sino_raw, RESIZE_H, RESIZE_W)
-
-                # ====== 融合 4 通道 ======
-                combined_input = np.stack(processed_trad + [processed_seg], axis=0).astype(np.float32)
-
-                # 标签
-                l_rho, l_theta = calculate_radon_label(x1, y1, x2, y2, w_img, h_img, RESIZE_H, RESIZE_W)
-
-                np.save(out_path, {
-                    "input": combined_input,
-                    "label": np.array([l_rho, l_theta], dtype=np.float32),
-                    "idx": int(idx),
-                    "img": os.path.basename(img_path),
-                    "split": split_name,
-                })
-
-    print("\n[DONE] Fusion cache built.")
-    print(f"Saved root: {os.path.abspath(SAVE_ROOT)}")
-    print("Subfolders:", ", ".join([s for s in SPLITS_TO_BUILD if os.path.isdir(os.path.join(SAVE_ROOT, s))]))
+    print(f"Done! Cache saved to: {SAVE_ROOT}")
 
 
 if __name__ == "__main__":

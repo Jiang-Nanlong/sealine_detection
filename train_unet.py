@@ -55,8 +55,8 @@ TEST_IDX_PATH  = os.path.join(SPLIT_DIR, "test_indices.npy")  # 仅打印数量�
 # 'A' / 'B' / 'C1' / 'B2' / 'C2'
 STAGE = "C2"
 
-IMG_SIZE = 384
-BATCH_SIZE = 16
+IMG_SIZE = 1024
+BATCH_SIZE = 4
 
 # 训练超参
 SEED = 42
