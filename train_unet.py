@@ -533,7 +533,9 @@ def main():
                 img=img.to(DEVICE); target=target.to(DEVICE)
                 with amp.autocast(device_type=DEVICE_TYPE, enabled=(DEVICE_TYPE=="cuda")):
                     r, _, t_dce = model(img, target, True, False)
-                    loss = crit_rest(r, t_dce)
+                    # loss = crit_rest(r, t_dce)
+                    # 调整损失函数，让unet不再学习 zerodce输出的泛白的图像
+                    loss = crit_rest(r, target)
             elif STAGE in ("B", "B2"):
                 img, mask = batch
                 img=img.to(DEVICE); mask=mask.to(DEVICE)
@@ -545,14 +547,17 @@ def main():
                 img=img.to(DEVICE); target=target.to(DEVICE)
                 with amp.autocast(device_type=DEVICE_TYPE, enabled=(DEVICE_TYPE=="cuda")):
                     r, _, t_dce = model(img, target, True, False)
-                    loss = crit_rest(r, t_dce)
+                    #loss = crit_rest(r, t_dce)
+                    #原因同 stage A
+                    loss = crit_rest(r, target)
             else: # C2
                 img, target, mask = batch
                 img=img.to(DEVICE); target=target.to(DEVICE); mask=mask.to(DEVICE)
                 with amp.autocast(device_type=DEVICE_TYPE, enabled=(DEVICE_TYPE=="cuda")):
                     r, s, t_dce = model(img, target, True, True)
-                    loss = crit_rest(r, t_dce) + curr_seg_w * crit_seg(s, mask)
-            
+                    #loss = crit_rest(r, t_dce) + curr_seg_w * crit_seg(s, mask)
+                    #原因同 stage A
+                    loss = crit_rest(r, target) + curr_seg_w * crit_seg(s, mask)
             scaler.scale(loss).backward()
             scaler.step(optimizer); scaler.update()
             loss_sum += float(loss.item())
