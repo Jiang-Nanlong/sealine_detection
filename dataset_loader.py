@@ -15,16 +15,19 @@ from torchvision.transforms import functional as TF
 # 0. Letterbox (keep aspect ratio + padding)
 # ==========================================
 def letterbox_rgb_u8(image_rgb_u8: np.ndarray, dst_size: int, pad_value: int = 0):
-    """Keep aspect ratio resize to fit in dst_size x dst_size and pad.
-
-    Returns:
-        canvas_rgb_u8: (dst_size, dst_size, 3)
-        meta: dict with scale, pad_left, pad_top, new_w, new_h, orig_w, orig_h
-    """
+    """Keep aspect ratio resize to fit in dst_size x dst_size and pad."""
     h, w = image_rgb_u8.shape[:2]
     if h <= 0 or w <= 0:
         canvas = np.zeros((dst_size, dst_size, 3), dtype=np.uint8)
-        meta = dict(scale=1.0, pad_left=0, pad_top=0, new_w=dst_size, new_h=dst_size, orig_w=w, orig_h=h)
+        meta = dict(
+            scale=1.0,
+            pad_left=0,
+            pad_top=0,
+            new_w=dst_size,
+            new_h=dst_size,
+            orig_w=w,
+            orig_h=h,
+        )
         return canvas, meta
 
     scale = min(dst_size / float(w), dst_size / float(h))
@@ -57,7 +60,7 @@ def letterbox_rgb_u8(image_rgb_u8: np.ndarray, dst_size: int, pad_value: int = 0
 # 1. 物理感知的合成退化函数
 # ==========================================
 def synthesize_rain_fog(image_rgb_u8):
-    """更真实的物理感知退化函数"""
+    """更真实的物理感知退化函数 (输入: uint8 RGB, 输出: float32 RGB[0,1])"""
     img = image_rgb_u8.astype(np.float32) / 255.0
     h, w, _ = img.shape
 
@@ -114,7 +117,7 @@ def synthesize_rain_fog(image_rgb_u8):
 
 
 def _scaled_ignore_band(ignore_band_at_384: int, img_size: int) -> int:
-    """ignore_band 原来是按 384 设计的厚度，这里按分辨率线性放大。"""
+    """ignore_band 原来按 384 设计，这里按分辨率线性放大。"""
     if ignore_band_at_384 <= 0:
         return 0
     return max(1, int(round(ignore_band_at_384 * (img_size / 384.0))))
@@ -138,15 +141,67 @@ def _y_on_line_at_x(p1, p2, x: float) -> float:
 # 2. Stage B/C 专用: 带 CSV 标签加载器
 # ===========================================
 class HorizonImageDataset(Dataset):
-    def __init__(self, csv_file, img_dir, img_size=384, mode='joint', ignore_band=10):
+    def __init__(
+        self,
+        csv_file,
+        img_dir,
+        img_size=384,
+        mode="joint",
+        ignore_band=10,
+        augment=True,
+        rotate_prob=0.5,
+        max_rotate_deg=45.0,
+        val_seed_offset=100000,
+    ):
+        """
+        augment (bool):
+          - True: train: 随机旋转 + 随机退化（每次不同）
+          - False: val/test: 不旋转 + 退化确定性（同一 idx 每次一致）
+
+        mask 标注:
+          - sea=0, sky=1, ignore=255
+          - padding/旋转空洞全部标为 255，配合 ignore_index=255
+        """
         self.data = pd.read_csv(csv_file, header=None)
         self.img_dir = img_dir
         self.img_size = int(img_size)
         self.mode = mode
         self.ignore_band = int(ignore_band)
 
+        self.augment = bool(augment)
+        self.rotate_prob = float(rotate_prob)
+        self.max_rotate_deg = float(max_rotate_deg)
+        self.val_seed_offset = int(val_seed_offset)
+
     def __len__(self):
         return len(self.data)
+
+    def _read_rgb(self, img_name: str):
+        path = os.path.join(self.img_dir, img_name)
+        possible_exts = ["", ".JPG", ".jpg", ".png", ".jpeg", ".JPEG", ".PNG"]
+        bgr = None
+        for ext in possible_exts:
+            if os.path.exists(path + ext):
+                bgr = cv2.imread(path + ext)
+                break
+
+        S = self.img_size
+        if bgr is None:
+            rgb = np.zeros((S, S, 3), dtype=np.uint8)
+            meta = dict(
+                scale=1.0,
+                pad_left=0,
+                pad_top=0,
+                new_w=S,
+                new_h=S,
+                orig_w=S,
+                orig_h=S,
+            )
+            return rgb, meta
+
+        rgb0 = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        rgb, meta = letterbox_rgb_u8(rgb0, S, pad_value=0)
+        return rgb, meta
 
     def __getitem__(self, idx):
         row = self.data.iloc[idx]
@@ -156,64 +211,119 @@ class HorizonImageDataset(Dataset):
         except Exception:
             x1, y1, x2, y2 = 0.0, 0.0, 0.0, 0.0
 
-        path = os.path.join(self.img_dir, img_name)
-        possible_exts = ['', '.JPG', '.jpg', '.png', '.jpeg']
-        bgr = None
-        for ext in possible_exts:
-            if os.path.exists(path + ext):
-                bgr = cv2.imread(path + ext)
-                break
-
-        if bgr is None:
-            rgb = np.zeros((self.img_size, self.img_size, 3), dtype=np.uint8)
-            meta = dict(scale=1.0, pad_left=0, pad_top=0, orig_w=self.img_size, orig_h=self.img_size)
-        else:
-            rgb0 = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-            rgb, meta = letterbox_rgb_u8(rgb0, self.img_size, pad_value=0)
-
+        rgb, meta = self._read_rgb(img_name)
         S = self.img_size
 
-        # 原坐标 -> letterbox 方图坐标
         scale = float(meta["scale"])
         pl = int(meta["pad_left"])
         pt = int(meta["pad_top"])
+        nw = int(meta["new_w"])
+        nh = int(meta["new_h"])
+
+        # ROI 有效区域（真实图像区域）
+        roi_left = pl
+        roi_top = pt
+        roi_right = pl + nw - 1
+        roi_bottom = pt + nh - 1
+
+        # 原坐标 -> letterbox 方图坐标
         p1 = (_clamp_int(x1 * scale + pl, 0, S - 1), _clamp_int(y1 * scale + pt, 0, S - 1))
         p2 = (_clamp_int(x2 * scale + pl, 0, S - 1), _clamp_int(y2 * scale + pt, 0, S - 1))
 
-        # sky=1 sea=0 ignore=255
-        mask = np.zeros((S, S), dtype=np.uint8)
+        # -------------------------
+        # 构造 mask: 默认全 ignore=255
+        # -------------------------
+        mask = np.full((S, S), 255, dtype=np.uint8)
 
-        # 用直线外推到左右边界，构造天空 polygon（避免斜线时填充错误）
-        y_left = _y_on_line_at_x(p1, p2, 0.0)
-        y_right = _y_on_line_at_x(p1, p2, float(S - 1))
-        y_left = _clamp_int(y_left, 0, S - 1)
-        y_right = _clamp_int(y_right, 0, S - 1)
+        # ROI 内先置 sea=0
+        if nw > 0 and nh > 0:
+            mask[roi_top:roi_top + nh, roi_left:roi_left + nw] = 0
 
-        pts = np.array([[0, 0], [S - 1, 0], [S - 1, y_right], [0, y_left]], np.int32)
+        # 只在 ROI 内画 sky polygon，避免覆盖 padding
+        xL = float(roi_left)
+        xR = float(roi_right)
+        yL = _y_on_line_at_x(p1, p2, xL)
+        yR = _y_on_line_at_x(p1, p2, xR)
+        yL = _clamp_int(yL, roi_top, roi_bottom)
+        yR = _clamp_int(yR, roi_top, roi_bottom)
+
+        pts = np.array(
+            [
+                [roi_left, roi_top],
+                [roi_right, roi_top],
+                [roi_right, yR],
+                [roi_left, yL],
+            ],
+            np.int32,
+        )
         cv2.fillPoly(mask, [pts], 1)
 
+        # 画 ignore band（线附近设为 255），厚度随分辨率缩放
         thick = _scaled_ignore_band(self.ignore_band, S)
         if thick > 0:
             cv2.line(mask, p1, p2, 255, thick)
 
-        # 随机旋转增强
-        if random.random() > 0.5:
-            angle = random.uniform(-45, 45)
+        # 再次强制 padding 为 ignore（双保险：防止 line/其他越界覆盖）
+        if roi_top > 0:
+            mask[:roi_top, :] = 255
+        if roi_top + nh < S:
+            mask[roi_top + nh :, :] = 255
+        if roi_left > 0:
+            mask[:, :roi_left] = 255
+        if roi_left + nw < S:
+            mask[:, roi_left + nw :] = 255
+
+        # -------------------------
+        # 旋转增强：只对训练集
+        # -------------------------
+        if self.augment and (random.random() < self.rotate_prob):
+            angle = random.uniform(-self.max_rotate_deg, self.max_rotate_deg)
+
             img_pil = Image.fromarray(rgb)
             mask_pil = Image.fromarray(mask)
-            img_pil = TF.rotate(img_pil, angle, interpolation=transforms.InterpolationMode.BILINEAR)
-            mask_pil = TF.rotate(mask_pil, angle, interpolation=transforms.InterpolationMode.NEAREST)
+
+            img_pil = TF.rotate(
+                img_pil,
+                angle,
+                interpolation=transforms.InterpolationMode.BILINEAR,
+                fill=0,
+            )
+            mask_pil = TF.rotate(
+                mask_pil,
+                angle,
+                interpolation=transforms.InterpolationMode.NEAREST,
+                fill=255,  # 旋转空洞标为 ignore
+            )
+
             rgb = np.array(img_pil)
             mask = np.array(mask_pil)
 
+        # tensors
         mask_tensor = torch.from_numpy(mask).long()
         clean_np = rgb.copy()
         target_clean = torch.from_numpy(clean_np.astype(np.float32) / 255.0).permute(2, 0, 1)
 
-        if self.mode == 'segmentation':
+        if self.mode == "segmentation":
             return target_clean, mask_tensor
 
-        degraded_np = synthesize_rain_fog(clean_np)
+        # -------------------------
+        # 合成退化：训练随机 / val-test 固定
+        # -------------------------
+        if not self.augment:
+            state_random = random.getstate()
+            state_numpy = np.random.get_state()
+
+            seed = int(idx) + self.val_seed_offset
+            random.seed(seed)
+            np.random.seed(seed)
+
+            degraded_np = synthesize_rain_fog(clean_np)
+
+            random.setstate(state_random)
+            np.random.set_state(state_numpy)
+        else:
+            degraded_np = synthesize_rain_fog(clean_np)
+
         input_tensor = torch.from_numpy(degraded_np).permute(2, 0, 1)
         return input_tensor, target_clean, mask_tensor
 
@@ -222,33 +332,74 @@ class HorizonImageDataset(Dataset):
 # 3. Stage A 专用: 文件夹直接加载器
 # ===========================================
 class SimpleFolderDataset(Dataset):
-    def __init__(self, img_dir, img_size=384):
+    def __init__(
+        self,
+        img_dir,
+        img_size=384,
+        augment=True,
+        rotate_prob=0.5,
+        max_rotate_deg=45.0,
+        val_seed_offset=200000,
+    ):
         self.img_dir = img_dir
         self.img_size = int(img_size)
-        self.img_paths = glob.glob(os.path.join(img_dir, "*.[jJ][pP]*[gG]")) + \
-                         glob.glob(os.path.join(img_dir, "*.png")) + \
-                         glob.glob(os.path.join(img_dir, "*.jpeg")) + \
-                         glob.glob(os.path.join(img_dir, "*.jpg"))
+        self.augment = bool(augment)
+        self.rotate_prob = float(rotate_prob)
+        self.max_rotate_deg = float(max_rotate_deg)
+        self.val_seed_offset = int(val_seed_offset)
+
+        raw_paths = []
+        raw_paths += glob.glob(os.path.join(img_dir, "*.[jJ][pP][gG]"))
+        raw_paths += glob.glob(os.path.join(img_dir, "*.[jJ][pP][eE][gG]"))
+        raw_paths += glob.glob(os.path.join(img_dir, "*.[pP][nN][gG]"))
+        raw_paths += glob.glob(os.path.join(img_dir, "*.[jJ][pP][eE][gG]"))
+        raw_paths += glob.glob(os.path.join(img_dir, "*.[jJ][pP][gG]"))
+        raw_paths += glob.glob(os.path.join(img_dir, "*.[jJ][pP][eE][gG]"))
+
+        # 去重 + 排序：保证不同对象/不同机器一致
+        self.img_paths = sorted(set(raw_paths))
 
     def __len__(self):
         return len(self.img_paths)
 
     def __getitem__(self, idx):
+        S = self.img_size
         path = self.img_paths[idx]
+
         bgr = cv2.imread(path)
         if bgr is None:
-            rgb = np.zeros((self.img_size, self.img_size, 3), dtype=np.uint8)
+            rgb = np.zeros((S, S, 3), dtype=np.uint8)
         else:
             rgb0 = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-            rgb, _meta = letterbox_rgb_u8(rgb0, self.img_size, pad_value=0)
+            rgb, _meta = letterbox_rgb_u8(rgb0, S, pad_value=0)
 
-        if random.random() > 0.5:
-            angle = random.uniform(-45, 45)
+        if self.augment and (random.random() < self.rotate_prob):
+            angle = random.uniform(-self.max_rotate_deg, self.max_rotate_deg)
             img_pil = Image.fromarray(rgb)
-            img_pil = TF.rotate(img_pil, angle, interpolation=transforms.InterpolationMode.BILINEAR)
+            img_pil = TF.rotate(
+                img_pil,
+                angle,
+                interpolation=transforms.InterpolationMode.BILINEAR,
+                fill=0,
+            )
             rgb = np.array(img_pil)
 
         target_clean = torch.from_numpy(rgb.astype(np.float32) / 255.0).permute(2, 0, 1)
-        degraded_np = synthesize_rain_fog(rgb)
+
+        if not self.augment:
+            state_random = random.getstate()
+            state_numpy = np.random.get_state()
+
+            seed = int(idx) + self.val_seed_offset
+            random.seed(seed)
+            np.random.seed(seed)
+
+            degraded_np = synthesize_rain_fog(rgb)
+
+            random.setstate(state_random)
+            np.random.set_state(state_numpy)
+        else:
+            degraded_np = synthesize_rain_fog(rgb)
+
         input_tensor = torch.from_numpy(degraded_np).permute(2, 0, 1)
         return input_tensor, target_clean

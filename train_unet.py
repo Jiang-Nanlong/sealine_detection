@@ -1,28 +1,16 @@
-# -*- coding: utf-8 -*-
 """
-train_unet.py (Fixed Split Version)
+train_unet.py (Final Version)
 - 支持 Stage: A / B / B2 / C1 / C2
 - ✅ MU-SID 使用固定 train/val/test 划分（从 splits_musid 读 indices）
+- ✅ 配合 dataset_loader.py 实现 Train(旋转+随机退化) / Val(无旋转+固定退化)
 - ✅ UNet 训练/选 best 全程不使用 test（避免后续 CNN 端到端泄漏）
-- 每个 epoch 末自动验证并打印指标
-- 自动保存：
-    1) last: rghnet_stage_{stage}.pth
-    2) best_seg: rghnet_best_seg.pth   (按 IoU 优先，其次 Horizon MAE)
-    3) best_joint: rghnet_best_joint.pth (按验证 joint_loss 最小)
-
-Stage 语义：
-- A : 只训 Restoration（encoder+rest），用 clear 图（与 MU-SID 无关，仍可随机切）
-- B : 只训 Seg（分割头），从 stage_a 初始化（MU-SID 固定切分）
-- C1: 联合数据 joint，但只训 Restoration（encoder+rest），分割头冻结（MU-SID 固定切分）
-- B2: “Seg Repair”——只训 Seg（分割头），从 C1（或 best_seg）初始化（MU-SID 固定切分）
-- C2: 全量联合微调（encoder+rest+seg）（MU-SID 固定切分）
 """
 import os
 import csv
 import math
 import platform
 from dataclasses import dataclass
-from typing import Dict, Tuple, Optional
+from typing import Dict, Tuple
 
 import numpy as np
 import torch
@@ -136,23 +124,25 @@ def load_fixed_split_indices() -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
 def build_musid_datasets(stage: str):
     """
     对 MU-SID 阶段(B/B2/C1/C2)使用固定划分：
-      train_ds = Subset(full_ds, train_indices)
-      val_ds   = Subset(full_ds, val_indices)
-    test_indices 只打印数量，不参与训练/选 best（避免泄漏）
+    关键：分别为训练集和验证集实例化不同的 Dataset 对象，控制 augment 参数。
     """
     train_idx, val_idx, test_idx = load_fixed_split_indices()
 
     if stage in ("B", "B2"):
-        full_ds = HorizonImageDataset(CSV_PATH, IMG_DIR, img_size=IMG_SIZE, mode="segmentation")
+        mode = "segmentation"
         eval_mode = "seg"
     else:
-        full_ds = HorizonImageDataset(CSV_PATH, IMG_DIR, img_size=IMG_SIZE, mode="joint")
+        mode = "joint"
         eval_mode = "joint"
 
-    train_ds = Subset(full_ds, train_idx.tolist())
-    val_ds = Subset(full_ds, val_idx.tolist())
+    # [关键] 分别实例化，确保验证集不旋转、退化固定
+    full_ds_train = HorizonImageDataset(CSV_PATH, IMG_DIR, img_size=IMG_SIZE, mode=mode, augment=True)
+    full_ds_val   = HorizonImageDataset(CSV_PATH, IMG_DIR, img_size=IMG_SIZE, mode=mode, augment=False)
 
-    print(f"[Fixed Split] full={len(full_ds)} | train={len(train_ds)} val={len(val_ds)} test={len(test_idx)}")
+    train_ds = Subset(full_ds_train, train_idx.tolist())
+    val_ds   = Subset(full_ds_val,   val_idx.tolist())
+
+    print(f"[Fixed Split] Train(Aug=True)={len(train_ds)} | Val(Aug=False)={len(val_ds)} | Test(Skipped)={len(test_idx)}")
     print("  (test split 不参与 UNet 训练/选 best，仅用于最终端到端一次性评估时再用)")
 
     return train_ds, val_ds, eval_mode
@@ -208,14 +198,12 @@ class HybridRestorationLoss(nn.Module):
 
 
 # =========================
-# Optimizer builder (模块名双兼容)
+# Optimizer builder
 # =========================
 def build_optimizer(model, stage: str, lr: float):
     restoration_names = [
-        # FPN style
         "rest_lat2", "rest_lat3", "rest_lat4", "rest_lat5",
         "rest_fuse", "rest_strip", "rest_out",
-        # legacy UNet style (if exists)
         "rest_up1", "rest_conv1", "rest_up2", "rest_conv2",
         "rest_up3", "rest_conv3", "rest_up4",
     ]
@@ -223,7 +211,6 @@ def build_optimizer(model, stage: str, lr: float):
         "seg_lat3", "seg_lat4", "seg_lat5",
         "seg_fuse", "seg_strip", "seg_head", "seg_final",
         "inject",
-        # legacy names (if exists)
         "strip_pool", "seg_conv_fuse", "injection_conv",
     ]
 
@@ -431,20 +418,12 @@ def save_vis(out_dir: str, prefix: str, img_tensor: torch.Tensor, gt_mask: torch
         sky_p = np.where(pr_col == 1)[0]
         sea_p = np.where(pr_col == 0)[0]
         if sky_p.size > 0 and sea_p.size > 0:
-            y_sky = int(sky_p.max()); y_sea = int(sea_p.min())
-            y = int((y_sky + y_sea) / 2) if y_sea > y_sky else y_sky
-        elif sky_p.size > 0:
-            y = int(sky_p.max())
-        elif sea_p.size > 0:
-            y = int(sea_p.min())
-        else:
-            y = None
-        if y is not None:
-            pr_points.append((x, y))
+            y_sky_p = int(sky_p.max()); y_sea_p = int(sea_p.min())
+            y_pr = (y_sky_p + y_sea_p) / 2.0 if y_sea_p > y_sky_p else y_sky_p
+            pr_points.append((x, int(y_pr)))
 
     try:
         import cv2
-        # 绿：GT，蓝：Pred（OpenCV 默认 BGR）
         if len(gt_points) > 1:
             cv2.polylines(overlay, [np.array(gt_points, dtype=np.int32)], False, (0, 255, 0), 2)
         if len(pr_points) > 1:
@@ -630,18 +609,24 @@ def main():
     # 1) Dataset
     if STAGE == "A":
         # Stage A 与 MU-SID 划分无关（用 clear 文件夹）
-        ds = SimpleFolderDataset(IMG_CLEAR_DIR, img_size=IMG_SIZE)
-        # 仍用固定 SEED 做可复现的随机切分
-        n = len(ds)
+        # [关键] 分别实例化，控制 augment
+        ds_train_full = SimpleFolderDataset(IMG_CLEAR_DIR, img_size=IMG_SIZE, augment=True)
+        ds_val_full   = SimpleFolderDataset(IMG_CLEAR_DIR, img_size=IMG_SIZE, augment=False)
+
+        # 保持划分索引一致
+        n = len(ds_train_full)
         g = torch.Generator().manual_seed(SEED)
         perm = torch.randperm(n, generator=g).tolist()
         n_val = max(1, int(n * 0.2))
+
         val_idx = perm[:n_val]
         train_idx = perm[n_val:]
-        train_ds = Subset(ds, train_idx)
-        val_ds = Subset(ds, val_idx)
+
+        train_ds = Subset(ds_train_full, train_idx)
+        val_ds   = Subset(ds_val_full, val_idx)
+
         eval_mode = "rest"
-        print(f"[Stage A Split] train={len(train_ds)} val={len(val_ds)} total={len(ds)}")
+        print(f"[Stage A Split] train(Aug=True)={len(train_ds)} val(Aug=False)={len(val_ds)} total={n}")
     else:
         # ✅ MU-SID 阶段使用固定 train/val/test 划分
         train_ds, val_ds, eval_mode = build_musid_datasets(STAGE)
@@ -742,12 +727,12 @@ def main():
     for epoch in range(1, epochs + 1):
         model.train()
 
-        # ✅ 当前 epoch 的 seg 权重（修复非C2阶段 seg_w 未定义问题）
+        # 当前 epoch 的 seg 权重
         curr_seg_w = JOINT_SEG_W
         if STAGE == "C2":
             curr_seg_w = C2_SEG_W_WARMUP if epoch <= C2_WARMUP_EPOCHS else JOINT_SEG_W
 
-        # ✅ Stage B / B2：encoder/restoration frozen 但 forward 会跑 -> 冻结 BN 统计
+        # Stage B / B2：冻结模块 forward 会跑 -> 冻结 BN 统计
         if STAGE in ("B", "B2"):
             if hasattr(model, "encoder"):
                 model.encoder.eval()
