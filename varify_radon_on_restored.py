@@ -4,182 +4,187 @@ import torch
 import numpy as np
 import matplotlib.pyplot as plt
 import random
+import glob
 
-# 导入你的模块
 from unet_model import RestorationGuidedHorizonNet
 from dataset_loader import synthesize_rain_fog, letterbox_rgb_u8
 from gradient_radon import TextureSuppressedMuSCoWERT
 
 # ================= 配置 =================
-# 图片路径 (找一张海天线明显的图测试)
-IMG_PATH = r"Hashmani's Dataset/MU-SID/DSC_0622_2.JPG" 
-# 或者是 dataset_loader 能找到的任意一张图
-
-# 权重路径
-UNET_CKPT = "rghnet_best_joint.pth"  # 或者 rghnet_stage_a.pth
+IMG_DIR = r"Hashmani's Dataset/clear"
+CKPT_PATH = "rghnet_best_a.pth"
 DCE_WEIGHTS = "Epoch99.pth"
 
-IMG_SIZE = 1024  # UNet 推理尺寸
+IMG_SIZE = 1024
+NUM_SAMPLES = 4
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+SEED = 42
+# =======================================
 
-def tensor_to_numpy(tensor):
-    """(C, H, W) tensor -> (H, W, C) numpy uint8 BGR for OpenCV"""
+def tensor_to_bgr_uint8(tensor):
     img = tensor.squeeze().detach().cpu().float().clamp(0, 1).numpy()
-    img = np.transpose(img, (1, 2, 0)) # CHW -> HWC
+    img = np.transpose(img, (1, 2, 0))
     img = (img * 255.0).astype(np.uint8)
-    return cv2.cvtColor(img, cv2.COLOR_RGB2BGR) # RGB -> BGR
+    return cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
 
-def draw_candidates(image, candidates, color=(0, 255, 255), alpha=0.3):
-    """画出所有候选线"""
-    vis = image.copy()
-    h, w = image.shape[:2]
+def draw_all_candidates_on_img(img_bgr, candidates_list, best_tuple):
+    """
+    画出所有候选线 + 最佳线
+    Scale 1 (小): 蓝色 (255, 0, 0)
+    Scale 2 (中): 绿色 (0, 255, 0)
+    Scale 3 (大): 黄色 (0, 255, 255)
+    Best: 红色粗线 (0, 0, 255)
+    """
+    vis = img_bgr.copy()
+    h, w = vis.shape[:2]
     cx = w / 2
     
-    # 按照分数从低到高画，这样高分的线会盖在上面
-    candidates = sorted(candidates, key=lambda x: x['score'])
+    # 颜色映射 (BGR)
+    colors = {
+        1: (255, 0, 0),   # Blue
+        2: (0, 255, 0),   # Green
+        3: (0, 255, 255)  # Yellow
+    }
+
+    # 1. 先画所有候选线 (细线)
+    # 按分数从低到高排序，让强的线盖在弱的线上面
+    candidates_list = sorted(candidates_list, key=lambda x: x['score'])
     
-    overlay = vis.copy()
-    for cand in candidates:
-        Y, a = cand['Y'], cand['alpha']
-        t = np.tan(np.deg2rad(a))
+    for cand in candidates_list:
+        scale = cand['scale']
+        Y, alpha = cand['Y'], cand['alpha']
         
-        # 计算直线端点
+        t = np.tan(np.deg2rad(alpha))
         y1 = int(Y - t * cx)
         y2 = int(Y + t * (w - cx))
         
-        cv2.line(overlay, (0, y1), (w, y2), color, 1)
-        
-    # 半透明叠加，避免完全遮挡原图
-    cv2.addWeighted(overlay, alpha, vis, 1 - alpha, 0, vis)
+        color = colors.get(scale, (200, 200, 200))
+        # 线宽 1，半透明效果靠眼睛脑补（或者本来就细）
+        cv2.line(vis, (0, y1), (w, y2), color, 1)
+
+    # 2. 再画最佳线 (粗红线，覆盖在上面)
+    if best_tuple is not None:
+        Y, alpha = best_tuple
+        t = np.tan(np.deg2rad(alpha))
+        y1 = int(Y - t * cx)
+        y2 = int(Y + t * (w - cx))
+        cv2.line(vis, (0, y1), (w, y2), (0, 0, 255), 3)
+
     return vis
 
 def main():
-    # 1. 准备模型
-    print(f"Loading UNet from {UNET_CKPT}...")
-    model = RestorationGuidedHorizonNet(num_classes=2, dce_weights_path=DCE_WEIGHTS).to(DEVICE)
+    random.seed(SEED)
+    np.random.seed(SEED)
+    torch.manual_seed(SEED)
     
-    if os.path.exists(UNET_CKPT):
-        state = torch.load(UNET_CKPT, map_location=DEVICE)
+    print(f"[Init] Loading model: {CKPT_PATH}")
+    model = RestorationGuidedHorizonNet(num_classes=2, dce_weights_path=DCE_WEIGHTS).to(DEVICE)
+    if os.path.exists(CKPT_PATH):
+        state = torch.load(CKPT_PATH, map_location=DEVICE)
         model.load_state_dict(state, strict=False)
     else:
-        print("Warning: Checkpoint not found, using initialized weights.")
+        print(f"[Error] Checkpoint not found: {CKPT_PATH}")
+        return 
     model.eval()
 
-    # 2. 准备输入图片 (模拟退化)
-    if not os.path.exists(IMG_PATH):
-        print(f"Error: Image not found at {IMG_PATH}")
-        return
-
-    bgr_raw = cv2.imread(IMG_PATH)
-    rgb_raw = cv2.cvtColor(bgr_raw, cv2.COLOR_BGR2RGB)
-    
-    # Letterbox resize
-    rgb_resized, meta = letterbox_rgb_u8(rgb_raw, IMG_SIZE, pad_value=0)
-    
-    # 合成雨雾 (Input)
-    random.seed(42) # 固定随机性以便复现
-    rgb_degraded_np = synthesize_rain_fog(rgb_resized) # 返回 float32
-    
-    # 转 Tensor
-    input_tensor = torch.from_numpy(rgb_degraded_np).permute(2, 0, 1).unsqueeze(0).to(DEVICE)
-
-    # 3. UNet 推理 (获取 Restored Image)
-    print("Running UNet inference...")
-    with torch.no_grad():
-        # forward 返回: restored, seg, target_dce
-        restored_tensor, _, _ = model(input_tensor, enable_restoration=True, enable_segmentation=False)
-    
-    # 转回 OpenCV 格式 (BGR uint8)
-    restored_bgr = tensor_to_numpy(restored_tensor)
-    
-    # 同时也把 Input 转回来对比
-    input_bgr = tensor_to_numpy(input_tensor)
-
-    # 4. Radon 变换检测
-    print("Running Radon Transform on Restored Image...")
-    # 初始化你的检测器
+    # 初始化检测器
     detector = TextureSuppressedMuSCoWERT(scales=[1, 2, 3], full_scan=True)
+
+    all_imgs = glob.glob(os.path.join(IMG_DIR, "*.[jJ][pP]*[gG]")) + \
+               glob.glob(os.path.join(IMG_DIR, "*.png"))
     
-    # 检测
-    final_res, all_candidates, debug_info, _ = detector.detect(restored_bgr)
-    
-    if final_res is None:
-        print("Radon failed to detect any lines.")
+    if len(all_imgs) < NUM_SAMPLES:
+        print("Not enough images.")
         return
-
-    # 5. 可视化结果
-    print("Visualizing...")
     
-    # A. 绘制所有候选线
-    vis_candidates = draw_candidates(restored_bgr, all_candidates, color=(0, 255, 255), alpha=0.4)
+    all_imgs = sorted(list(set(all_imgs)))
+    samples = random.sample(all_imgs, NUM_SAMPLES)
     
-    # B. 绘制最佳线 (红色加粗)
-    best_Y, best_alpha = final_res
-    h, w = restored_bgr.shape[:2]
-    cx = w / 2
-    t = np.tan(np.deg2rad(best_alpha))
-    y1 = int(best_Y - t * cx)
-    y2 = int(best_Y + t * (w - cx))
-    cv2.line(vis_candidates, (0, y1), (w, y2), (0, 0, 255), 3)
-
-    # C. 获取特征图 (Edge Map) - 看看过曝是否弄丢了边缘
-    # 我们取 Scale 2 的特征图来看看
-    edge_map = debug_info[2]['map'] # scale=2 usually is the best balance
+    fig, axes = plt.subplots(nrows=NUM_SAMPLES, ncols=4, figsize=(20, 4 * NUM_SAMPLES))
+    plt.subplots_adjust(wspace=0.1, hspace=0.1)
     
-    # D. 为了对比，我们也跑一下原始 Input (有雨雾的) 的 Radon
-    _, _, debug_info_input, _ = detector.detect(input_bgr)
-    edge_map_input = debug_info_input[2]['map']
+    cols = ["1. Degraded Input", "2. ROI (Green Box)", "3. ROI Feature Map", "4. Multi-Scale Radon"]
+    for ax, col in zip(axes[0], cols):
+        ax.set_title(col, fontsize=14, pad=10)
 
-    # --- 绘图 ---
-    plt.figure(figsize=(20, 10))
+    print(f"[Run] Processing {NUM_SAMPLES} images...")
 
-    # 1. 原始退化输入
-    plt.subplot(2, 3, 1)
-    plt.imshow(cv2.cvtColor(input_bgr, cv2.COLOR_BGR2RGB))
-    plt.title("1. Input (Degraded)")
-    plt.axis("off")
+    for i, path in enumerate(samples):
+        bgr_raw = cv2.imread(path)
+        if bgr_raw is None: continue
+        rgb_raw = cv2.cvtColor(bgr_raw, cv2.COLOR_BGR2RGB)
+        
+        # 1. 预处理
+        rgb_resized, meta = letterbox_rgb_u8(rgb_raw, IMG_SIZE, pad_value=0)
+        
+        # 2. 模拟退化
+        rgb_degraded_float = synthesize_rain_fog(rgb_resized)
+        inp_tensor = torch.from_numpy(rgb_degraded_float).permute(2, 0, 1).unsqueeze(0).to(DEVICE)
+        
+        # 3. UNet 推理
+        with torch.no_grad():
+            restored_tensor, _, _ = model(inp_tensor, enable_restoration=True, enable_segmentation=False)
+        
+        restored_bgr = tensor_to_bgr_uint8(restored_tensor)
+        input_bgr = tensor_to_bgr_uint8(inp_tensor)
 
-    # 2. Input 的特征图 (通常很乱，因为有雨)
-    plt.subplot(2, 3, 4)
-    plt.imshow(edge_map_input, cmap='gray')
-    plt.title("4. Input Edge Map (Noisy?)")
-    plt.axis("off")
+        # ================= [核心：ROI 提取] =================
+        pad_top = int(meta['pad_top'])
+        new_h = int(meta['new_h'])
+        ARTIFACT_WIDTH = 16 
+        
+        roi_y1 = pad_top + ARTIFACT_WIDTH
+        roi_y2 = pad_top + new_h - ARTIFACT_WIDTH
+        
+        if roi_y2 <= roi_y1:
+            roi_y1 = pad_top; roi_y2 = pad_top + new_h
 
-    # 3. UNet 复原图 (观察是否泛白/色偏)
-    plt.subplot(2, 3, 2)
-    plt.imshow(cv2.cvtColor(restored_bgr, cv2.COLOR_BGR2RGB))
-    plt.title("2. Restored (Note Color Shift)")
-    plt.axis("off")
+        roi_bgr = restored_bgr[roi_y1 : roi_y2, :]
+        
+        # ================= [核心：检测与坐标映射] =================
+        
+        # 1. 检测 (拿到所有候选)
+        final_res_roi, all_candidates_roi, debug_info_roi, _ = detector.detect(roi_bgr)
+        
+        # 2. 映射所有候选线坐标
+        all_candidates_full = []
+        for cand in all_candidates_roi:
+            c = cand.copy()
+            c['Y'] += roi_y1  # Y轴偏移
+            all_candidates_full.append(c)
+            
+        # 3. 映射最佳结果坐标
+        final_res_full = None
+        if final_res_roi is not None:
+            y_roi, alpha = final_res_roi
+            final_res_full = (y_roi + roi_y1, alpha)
+            
+        # 4. 准备特征图用于显示 (Scale 2)
+        edge_map_roi = debug_info_roi[2]['map']
+        edge_map_full = np.zeros((IMG_SIZE, IMG_SIZE), dtype=edge_map_roi.dtype)
+        edge_map_full[roi_y1 : roi_y2, :] = edge_map_roi
+        
+        # ================= [可视化] =================
+        
+        # 这里的函数改为了 draw_all_candidates_on_img
+        final_vis = draw_all_candidates_on_img(restored_bgr, all_candidates_full, final_res_full)
+        
+        # ROI 示意框
+        vis_restored = restored_bgr.copy()
+        cv2.rectangle(vis_restored, (0, roi_y1), (IMG_SIZE-1, roi_y2), (0, 255, 0), 2)
 
-    # 4. Restored 的特征图 (关键！看海天线边缘是否清晰)
-    plt.subplot(2, 3, 5)
-    plt.imshow(edge_map, cmap='gray')
-    plt.title("5. Restored Edge Map (Is Horizon Clear?)")
-    plt.axis("off")
+        axes[i, 0].imshow(cv2.cvtColor(input_bgr, cv2.COLOR_BGR2RGB))
+        axes[i, 1].imshow(cv2.cvtColor(vis_restored, cv2.COLOR_BGR2RGB))
+        axes[i, 2].imshow(edge_map_full, cmap='gray')
+        axes[i, 3].imshow(cv2.cvtColor(final_vis, cv2.COLOR_BGR2RGB))
 
-    # 5. 最终检测结果 (所有候选+最佳)
-    plt.subplot(2, 3, 3)
-    plt.imshow(cv2.cvtColor(vis_candidates, cv2.COLOR_BGR2RGB))
-    plt.title(f"3. Radon Candidates\nBest: alpha={best_alpha:.1f}")
-    plt.axis("off")
-    
-    # 6. Sinogram (正弦图)
-    # 取 scale 2 的 sinogram
-    sinograms = detector.get_sinograms(restored_bgr) # 需确保你的 detector 有这个 helper，或者直接用 detector._radon_gpu
-    # 这里简单处理，如果不方便获取，可以忽略。但上面的 detector.detect 已经返回了 collected_sinograms
-    # detector.detect 返回值的第四个是 collected_sinograms list
-    # 我们在上面接收了: final_res, all_candidates, debug_info, sinograms_list = ...
-    # 假设 dataset_loader_gradient_radon_cnn.py 里的逻辑返回了 sinograms
-    
-    # 这里为了通用性，我直接画 edge map 即可，sinogram 比较抽象
-    plt.subplot(2, 3, 6)
-    plt.text(0.5, 0.5, "Check Fig 5.\nIf the white line is clear,\nRadon works fine.", 
-             ha='center', va='center', fontsize=14)
-    plt.axis("off")
+        for ax in axes[i]: ax.axis('off')
 
+    out_file = "vis_radon_multiscale.png"
     plt.tight_layout()
+    plt.savefig(out_file, dpi=100)
     plt.show()
-    print("Done.")
+    print(f"[Done] Result saved to {os.path.abspath(out_file)}")
 
 if __name__ == "__main__":
     main()
