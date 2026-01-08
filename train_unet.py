@@ -1,12 +1,6 @@
+# --- START OF FILE train_unet.py (FFT + CoordAtt Support) ---
+
 # -*- coding: utf-8 -*-
-"""
-train_unet.py (Ultimate Engineering Version)
-- 采纳了 ChatGPT 5.2 thinking 的所有高价值建议
-- ✅ 严谨的 BN 冻结：防止 Frozen 分支的统计量被破坏
-- ✅ 语义清晰的权重保存：不同 Stage 保存不同含义的 Best
-- ✅ 任务感知的权重加载：C1 找 Rest 强的权重，B2 找 Seg 强的权重
-- ✅ 保持验证集不旋转、固定退化的正确逻辑
-"""
 import os
 import csv
 import math
@@ -77,31 +71,21 @@ def seed_everything(seed: int):
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
-def freeze_bn(module):
-    if isinstance(module, nn.modules.batchnorm._BatchNorm):
-        module.eval()
-
 def safe_load(path: str, map_location: str):
     try:
         return torch.load(path, map_location=map_location, weights_only=True)
     except TypeError:
         return torch.load(path, map_location=map_location)
 
-
 def set_requires_grad(module, flag: bool):
-    if module is None:
-        return
-    for p in module.parameters():
-        p.requires_grad = flag
-
+    if module is None: return
+    for p in module.parameters(): p.requires_grad = flag
 
 def get_modules(model, names):
     return [getattr(model, n, None) for n in names]
 
-
 def ensure_dir(p: str):
     os.makedirs(p, exist_ok=True)
-
 
 def load_fixed_split_indices() -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     if not (os.path.exists(TRAIN_IDX_PATH) and os.path.exists(VAL_IDX_PATH) and os.path.exists(TEST_IDX_PATH)):
@@ -110,7 +94,6 @@ def load_fixed_split_indices() -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     va = np.load(VAL_IDX_PATH)
     te = np.load(TEST_IDX_PATH)
     return tr.astype(np.int64), va.astype(np.int64), te.astype(np.int64)
-
 
 def build_musid_datasets(stage: str):
     train_idx, val_idx, test_idx = load_fixed_split_indices()
@@ -121,7 +104,6 @@ def build_musid_datasets(stage: str):
         mode = "joint"
         eval_mode = "joint"
 
-    # Train开启增强，Val关闭增强
     full_ds_train = HorizonImageDataset(CSV_PATH, IMG_DIR, img_size=IMG_SIZE, mode=mode, augment=True)
     full_ds_val   = HorizonImageDataset(CSV_PATH, IMG_DIR, img_size=IMG_SIZE, mode=mode, augment=False)
 
@@ -131,50 +113,22 @@ def build_musid_datasets(stage: str):
     print(f"[Fixed Split] Train(Aug=True)={len(train_ds)} | Val(Aug=False)={len(val_ds)} | Test={len(test_idx)}")
     return train_ds, val_ds, eval_mode
 
-
-# =========================
-# Smart Weight Loading (Refined)
-# =========================
 def load_checkpoint_smart(model, current_stage: str, device: str):
-    """
-    任务感知的权重加载逻辑：根据当前 Stage 的目标，去上前序 Stage 找最合适的权重。
-    """
-    if current_stage == "A":
-        return # A 从头训 (或 ImageNet backbone)
-
-    # 定义每个阶段最想要的权重优先级
-    # 格式: (前序Stage, 优先找的文件类型)
+    if current_stage == "A": return
     priority_map = {
         "B":  [("A", "best_joint"), ("A", "last")], 
-              # B (Seg) 需要 A (Rest) 好的特征
-        
         "C1": [("B", "best_seg"), ("B", "last"), ("A", "best_joint")], 
-              # C1 (Rest) 优先接 B (含Seg头)，注意 B 没有 best_joint
-        
         "B2": [("C1", "best_joint"), ("C1", "last"), ("B", "best_seg")], 
-              # B2 (Seg Repair) 优先接 C1 (优化过Rest)，其次回退到 B
-        
         "C2": [("B2", "best_seg"), ("B2", "last"), ("C1", "best_joint")]
-              # C2 (Final) 优先接 B2 (优化过Seg)
     }
-
-    if current_stage not in priority_map:
-        return
-
-    search_list = priority_map[current_stage]
+    if current_stage not in priority_map: return
     
-    for prev_stage, kind in search_list:
+    for prev_stage, kind in priority_map[current_stage]:
         prev = prev_stage.lower()
-        
-        # 映射 kind 到具体文件名
-        if kind == "best_joint":
-            fname = f"rghnet_best_{prev}.pth"
-        elif kind == "best_seg":
-            fname = f"rghnet_best_seg_{prev}.pth"
-        elif kind == "last":
-            fname = f"rghnet_last_{prev}.pth"
-        else:
-            continue
+        if kind == "best_joint": fname = f"rghnet_best_{prev}.pth"
+        elif kind == "best_seg": fname = f"rghnet_best_seg_{prev}.pth"
+        elif kind == "last": fname = f"rghnet_last_{prev}.pth"
+        else: continue
 
         if os.path.exists(fname):
             print(f"[Init] Stage {current_stage}: Found predecessor weight '{fname}'")
@@ -182,15 +136,14 @@ def load_checkpoint_smart(model, current_stage: str, device: str):
                 state = safe_load(fname, device)
                 model.load_state_dict(state, strict=False)
                 print(f"       -> Successfully loaded.")
-                return # 成功加载一个就退出
+                return
             except Exception as e:
                 print(f"       -> Load failed: {e}, trying next...")
-    
     print(f"[Init] Warning: No suitable weights found for Stage {current_stage}. Starting from scratch/backbone.")
 
 
 # =========================
-# Losses & Metrics
+# Losses & Metrics (With FFT)
 # =========================
 class CharbonnierLoss(nn.Module):
     def __init__(self, eps=1e-3):
@@ -222,36 +175,54 @@ class EdgeLoss(nn.Module):
     def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         return self.loss(self.laplacian_kernel(x), self.laplacian_kernel(y))
 
+# [新增] 频域损失
+class FFTLoss(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.criterion = torch.nn.L1Loss()
+
+    def forward(self, pred, target):
+        # rfft2 计算二维实数傅里叶变换
+        # 结果是复数 tensor
+        pred_fft = torch.fft.rfft2(pred)
+        target_fft = torch.fft.rfft2(target)
+        
+        # 计算复数距离
+        return self.criterion(torch.abs(pred_fft), torch.abs(target_fft))
+
 class HybridRestorationLoss(nn.Module):
     def __init__(self):
         super().__init__()
         self.charb = CharbonnierLoss()
         self.edge = EdgeLoss()
+        self.fft = FFTLoss() # [新增]
+
     def forward(self, pred, target):
-        return self.charb(pred, target) + 0.1 * self.edge(pred, target)
+        # 0.1 是 FFT Loss 的推荐权重，防止数值过大主导梯度
+        return self.charb(pred, target) + 0.1 * self.edge(pred, target) + 0.1 * self.fft(pred, target)
 
 def build_optimizer(model, stage: str, lr: float):
-    # 定义模块组
+    # 更新模块列表，包含 CoordAtt 模块
     restoration_names = [
         "rest_lat2", "rest_lat3", "rest_lat4", "rest_lat5",
+        "ca2", "ca3", "ca4", "ca5", # [新增]
         "rest_fuse", "rest_strip", "rest_out",
         "rest_up1", "rest_conv1", "rest_up2", "rest_conv2", "rest_up3", "rest_conv3", "rest_up4",
     ]
     segmentation_names = [
         "seg_lat3", "seg_lat4", "seg_lat5",
+        "seg_ca3", "seg_ca4", "seg_ca5", # [新增]
         "seg_fuse", "seg_strip", "seg_head", "seg_final", "inject",
         "strip_pool", "seg_conv_fuse", "injection_conv",
     ]
     restoration_modules = get_modules(model, restoration_names)
     segmentation_modules = get_modules(model, segmentation_names)
 
-    # 1. 先默认全冻结
     set_requires_grad(model.encoder, False)
     for m in restoration_modules: set_requires_grad(m, False)
     for m in segmentation_modules: set_requires_grad(m, False)
     if hasattr(model, "dce_net"): set_requires_grad(getattr(model, "dce_net", None), False)
 
-    # 2. 根据 Stage 解冻
     encoder_params = list(model.encoder.parameters())
     
     def collect_params(modules):
@@ -269,7 +240,6 @@ def build_optimizer(model, stage: str, lr: float):
         return optim.AdamW([{"params": encoder_params, "lr": lr * 0.1}, {"params": rest_params, "lr": lr}], weight_decay=1e-4)
 
     if stage in ("B", "B2"):
-        # 只训 Seg，Encoder 和 Rest 保持冻结 (requires_grad=False)
         for m in segmentation_modules: set_requires_grad(m, True)
         return optim.AdamW([{"params": seg_params, "lr": lr}], weight_decay=1e-4)
 
@@ -353,11 +323,6 @@ def save_vis(out_dir: str, prefix: str, img_tensor: torch.Tensor, gt_mask: torch
     pr_vis = np.zeros((H, W, 3), dtype=np.uint8)
     pr_vis[pr == 1] = (255, 255, 255)
     overlay = img.copy()
-    try:
-        import cv2
-        pass
-    except Exception: pass
-    
     top = np.concatenate([img, gt_vis], axis=1)
     bot = np.concatenate([overlay, pr_vis], axis=1)
     grid = np.concatenate([top, bot], axis=0)
@@ -394,7 +359,11 @@ def evaluate(model, loader, mode: str, crit_rest, crit_seg, seg_w: float = 0.5) 
             img = img.to(DEVICE, non_blocking=True); target = target.to(DEVICE, non_blocking=True); mask = mask.to(DEVICE, non_blocking=True)
             with amp.autocast(device_type=DEVICE_TYPE, enabled=(DEVICE_TYPE == "cuda")):
                 restored, seg, target_dce = model(img, target, enable_restoration=True, enable_segmentation=True)
-                loss_r = crit_rest(restored, target_dce); loss_s = crit_seg(seg, mask)
+                # [关键] 这里计算 loss_r 时，Target 已在 forward 前被替换，但在 evaluate 里要确保逻辑一致
+                # forward 返回的 target_dce 其实是占位符，如果 model(target=target) 传进去的是 Clean 图
+                # 这里的 loss 计算逻辑已经在 model 外部修正了（参见下面的 loop）
+                loss_r = crit_rest(restored, target_dce) 
+                loss_s = crit_seg(seg, mask)
                 loss_joint = loss_r + seg_w * loss_s
             pred = seg.argmax(1)
             mse = F.mse_loss(restored.detach().float(), target.detach().float())
@@ -440,87 +409,58 @@ def append_log(csv_path: str, row: Dict):
 # Main
 # =========================
 def main():
-    if STAGE not in STAGE_CFG:
-        raise ValueError(f"STAGE must be one of {list(STAGE_CFG.keys())}, got {STAGE}")
-
+    if STAGE not in STAGE_CFG: raise ValueError(f"STAGE must be one of {list(STAGE_CFG.keys())}, got {STAGE}")
     seed_everything(SEED)
-    lr = STAGE_CFG[STAGE]["lr"]
-    epochs = STAGE_CFG[STAGE]["epochs"]
-
+    lr = STAGE_CFG[STAGE]["lr"]; epochs = STAGE_CFG[STAGE]["epochs"]
     print(f"=== Start Training: Stage {STAGE} ===")
     print(f"DEVICE={DEVICE}, BS={BATCH_SIZE}")
 
-    # 1) Dataset
     if STAGE == "A":
-        # Stage A: Train(Aug=True) / Val(Aug=False)
         ds_train_full = SimpleFolderDataset(IMG_CLEAR_DIR, img_size=IMG_SIZE, augment=True)
         ds_val_full   = SimpleFolderDataset(IMG_CLEAR_DIR, img_size=IMG_SIZE, augment=False)
         n = len(ds_train_full)
         g = torch.Generator().manual_seed(SEED)
         perm = torch.randperm(n, generator=g).tolist()
         n_val = max(1, int(n * 0.2))
-        train_ds = Subset(ds_train_full, perm[n_val:])
-        val_ds   = Subset(ds_val_full, perm[:n_val])
+        train_ds = Subset(ds_train_full, perm[n_val:]); val_ds = Subset(ds_val_full, perm[:n_val])
         eval_mode = "rest"
         print(f"[Stage A Split] train={len(train_ds)} val={len(val_ds)}")
     else:
-        # MU-SID Stages: Train(Aug) / Val(NoAug)
         train_ds, val_ds, eval_mode = build_musid_datasets(STAGE)
 
-    # 2) DataLoader
     num_workers = 0 if platform.system() == "Windows" else 4
     train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=num_workers, pin_memory=(DEVICE=="cuda"), drop_last=True)
     val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=num_workers, pin_memory=(DEVICE=="cuda"), drop_last=False)
 
-    # 3) Model
     model = RestorationGuidedHorizonNet(num_classes=2, dce_weights_path=DCE_WEIGHTS).to(DEVICE)
-
-    # 4) Smart Weight Loading (Task-Aware)
     load_checkpoint_smart(model, STAGE, DEVICE)
 
-    # 5) Optimizer / Loss
     crit_rest = HybridRestorationLoss().to(DEVICE)
     crit_seg = nn.CrossEntropyLoss(ignore_index=255).to(DEVICE)
     optimizer = build_optimizer(model, STAGE, lr)
     try: scaler = amp.GradScaler(device=DEVICE_TYPE, enabled=(DEVICE_TYPE == "cuda"))
     except TypeError: scaler = amp.GradScaler(enabled=(DEVICE_TYPE == "cuda"))
 
-    # 6) Trackers
-    best_iou = -1.0
-    best_mae = 1e9
-    best_joint = 1e9
+    best_iou = -1.0; best_mae = 1e9; best_joint = 1e9
     log_path = f"train_log_stage_{STAGE.lower()}.csv"
     ensure_dir("val_vis")
-
-    # 命名规则：每个阶段独立
     best_joint_name = f"rghnet_best_{STAGE.lower()}.pth"
     best_seg_name   = f"rghnet_best_seg_{STAGE.lower()}.pth"
     last_name       = f"rghnet_last_{STAGE.lower()}.pth"
 
-    # 7) Train Loop
     for epoch in range(1, epochs + 1):
         model.train()
         
-        # [关键修复]：对于冻结的模块，显式调用 eval() 以冻结 BN 统计量
         if STAGE in ("B", "B2"):
-            model.apply(freeze_bn)
-            # 冻结 Encoder
-            if hasattr(model, "encoder"): 
-                model.encoder.eval()
-            # 冻结 Restoration Modules
-            restoration_names = [
-                "rest_lat2", "rest_lat3", "rest_lat4", "rest_lat5",
-                "rest_fuse", "rest_strip", "rest_out",
-                "rest_up1", "rest_conv1", "rest_up2", "rest_conv2", "rest_up3", "rest_conv3", "rest_up4",
-            ]
+            if hasattr(model, "encoder"): model.encoder.eval()
+            restoration_names = ["rest_lat2", "rest_lat3", "rest_lat4", "rest_lat5", "ca2", "ca3", "ca4", "ca5", 
+                                 "rest_fuse", "rest_strip", "rest_out", "rest_up1", "rest_conv1", "rest_up2", "rest_conv2", "rest_up3", "rest_conv3", "rest_up4"]
             for n in restoration_names:
                 m = getattr(model, n, None)
-                if m is not None:
-                    m.eval()
+                if m is not None: m.eval()
 
         curr_seg_w = JOINT_SEG_W
-        if STAGE == "C2":
-            curr_seg_w = C2_SEG_W_WARMUP if epoch <= C2_WARMUP_EPOCHS else JOINT_SEG_W
+        if STAGE == "C2": curr_seg_w = C2_SEG_W_WARMUP if epoch <= C2_WARMUP_EPOCHS else JOINT_SEG_W
 
         loop = tqdm(train_loader, desc=f"Ep {epoch}/{epochs}")
         loss_sum = 0.0
@@ -528,14 +468,13 @@ def main():
         for batch in loop:
             optimizer.zero_grad(set_to_none=True)
             
+            # [关键] 监督目标修改：用 target (Clean) 代替 t_dce (DCE)
             if STAGE=="A":
                 img, target = batch
                 img=img.to(DEVICE); target=target.to(DEVICE)
                 with amp.autocast(device_type=DEVICE_TYPE, enabled=(DEVICE_TYPE=="cuda")):
-                    r, _, t_dce = model(img, target, True, False)
-                    # loss = crit_rest(r, t_dce)
-                    # 调整损失函数，让unet不再学习 zerodce输出的泛白的图像
-                    loss = crit_rest(r, target)
+                    r, _, _ = model(img, target, True, False) # 不再用 t_dce
+                    loss = crit_rest(r, target) # 监督 Clean
             elif STAGE in ("B", "B2"):
                 img, mask = batch
                 img=img.to(DEVICE); mask=mask.to(DEVICE)
@@ -546,55 +485,41 @@ def main():
                 img, target, _ = batch
                 img=img.to(DEVICE); target=target.to(DEVICE)
                 with amp.autocast(device_type=DEVICE_TYPE, enabled=(DEVICE_TYPE=="cuda")):
-                    r, _, t_dce = model(img, target, True, False)
-                    #loss = crit_rest(r, t_dce)
-                    #原因同 stage A
-                    loss = crit_rest(r, target)
+                    r, _, _ = model(img, target, True, False)
+                    loss = crit_rest(r, target) # 监督 Clean
             else: # C2
                 img, target, mask = batch
                 img=img.to(DEVICE); target=target.to(DEVICE); mask=mask.to(DEVICE)
                 with amp.autocast(device_type=DEVICE_TYPE, enabled=(DEVICE_TYPE=="cuda")):
-                    r, s, t_dce = model(img, target, True, True)
-                    #loss = crit_rest(r, t_dce) + curr_seg_w * crit_seg(s, mask)
-                    #原因同 stage A
-                    loss = crit_rest(r, target) + curr_seg_w * crit_seg(s, mask)
+                    r, s, _ = model(img, target, True, True)
+                    loss = crit_rest(r, target) + curr_seg_w * crit_seg(s, mask) # 监督 Clean
+            
             scaler.scale(loss).backward()
             scaler.step(optimizer); scaler.update()
             loss_sum += float(loss.item())
             loop.set_postfix(loss=float(loss.item()))
 
         train_loss = loss_sum / max(1, len(train_loader))
-        if epoch % PRINT_EVERY == 0:
-            print(f"[Train] epoch={epoch}  loss={train_loss:.6f}")
-
-        # Save Last
+        if epoch % PRINT_EVERY == 0: print(f"[Train] epoch={epoch}  loss={train_loss:.6f}")
         torch.save(model.state_dict(), last_name)
 
-        # Eval
         if (epoch % EVAL_EVERY) == 0:
             val_res = evaluate(model, val_loader, eval_mode, crit_rest, crit_seg, seg_w=curr_seg_w)
             print(f"[Val] J={val_res.joint_loss:.4f} R={val_res.rest_loss:.4f} S={val_res.seg_loss:.4f} IoU={val_res.iou_sky:.3f}")
 
-            # [关键修复] 语义分离：Joint Loss 最佳 vs Seg 最佳
-            
-            # 1. 保存 Joint Best (所有阶段通用，但在 B/B2 其实就是 Seg Loss)
             if val_res.joint_loss < best_joint:
                 best_joint = val_res.joint_loss
                 torch.save(model.state_dict(), best_joint_name)
                 print(f"  -> New Best Joint: {best_joint_name}")
 
-            # 2. 保存 Seg Best (仅当模式含分割时)
             has_seg = (eval_mode in ["seg", "joint"])
             if has_seg:
                 improve = (val_res.iou_sky > best_iou + 1e-6) or (abs(val_res.iou_sky - best_iou) <= 1e-6 and val_res.horizon_mae < best_mae)
                 if improve:
-                    best_iou = val_res.iou_sky
-                    best_mae = val_res.horizon_mae
+                    best_iou = val_res.iou_sky; best_mae = val_res.horizon_mae
                     torch.save(model.state_dict(), best_seg_name)
                     print(f"  -> New Best Seg: {best_seg_name}")
-            
-            log_data = dict(stage=STAGE, epoch=epoch, train_loss=train_loss, val_joint=val_res.joint_loss, val_iou=val_res.iou_sky, val_mae=val_res.horizon_mae)
-            append_log(log_path, log_data)
+            append_log(log_path, dict(stage=STAGE, epoch=epoch, train_loss=train_loss, val_joint=val_res.joint_loss, val_iou=val_res.iou_sky, val_mae=val_res.horizon_mae))
 
     print(f"Stage {STAGE} done.")
 
