@@ -157,8 +157,16 @@ def main():
         
         roi_restored = restored_sq[pad_top : pad_top + new_h, pad_left : pad_left + new_w]
         roi_mask = mask_sq[pad_top : pad_top + new_h, pad_left : pad_left + new_w]
-        
+
+        ARTIFACT_MARGIN = 20
+        if roi_restored.shape[0] > 2 * ARTIFACT_MARGIN:
+            roi_restored[:ARTIFACT_MARGIN, :] = 0
+            roi_restored[-ARTIFACT_MARGIN:, :] = 0
+            # Mask 也顺便处理一下，虽然影响不大
+            roi_mask[:ARTIFACT_MARGIN, :] = 255 # Ignore
+            roi_mask[-ARTIFACT_MARGIN:, :] = 255
         h_orig, w_orig = rgb_raw.shape[:2]
+        
         roi_restored_orig = cv2.resize(roi_restored, (w_orig, h_orig), interpolation=cv2.INTER_LINEAR)
         roi_mask_orig = cv2.resize(roi_mask, (w_orig, h_orig), interpolation=cv2.INTER_NEAREST)
         
