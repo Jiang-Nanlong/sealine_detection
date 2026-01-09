@@ -37,7 +37,7 @@ TEST_IDX_PATH  = os.path.join(SPLIT_DIR, "test_indices.npy")
 # 当前运行阶段: 'A' -> 'B' -> 'C1' -> 'B2' -> 'C2'
 STAGE = "A"
 
-IMG_SIZE = 1024
+IMG_SIZE = (576, 1024) 
 BATCH_SIZE = 4
 
 SEED = 42
