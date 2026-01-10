@@ -3,20 +3,31 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class BasicBlock(nn.Module):
+    """ResNet BasicBlock with tuple-stride support.
+
+    We need to preserve the angle (W) resolution for theta regression, so later stages
+    may use stride=(2, 1) (downsample only in H).
+    """
     expansion = 1
 
     def __init__(self, in_planes, planes, stride=1):
-        super(BasicBlock, self).__init__()
-        self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=3, stride=stride, padding=1, bias=False)
+        super().__init__()
+        stride_ = stride if isinstance(stride, tuple) else (stride, stride)
+
+        self.conv1 = nn.Conv2d(
+            in_planes, planes, kernel_size=3, stride=stride_, padding=1, bias=False
+        )
         self.bn1 = nn.BatchNorm2d(planes)
-        self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=1, padding=1, bias=False)
+        self.conv2 = nn.Conv2d(
+            planes, planes, kernel_size=3, stride=1, padding=1, bias=False
+        )
         self.bn2 = nn.BatchNorm2d(planes)
 
         self.shortcut = nn.Sequential()
-        if stride != 1 or in_planes != self.expansion * planes:
+        if stride_ != (1, 1) or in_planes != self.expansion * planes:
             self.shortcut = nn.Sequential(
-                nn.Conv2d(in_planes, self.expansion * planes, kernel_size=1, stride=stride, bias=False),
-                nn.BatchNorm2d(self.expansion * planes)
+                nn.Conv2d(in_planes, self.expansion * planes, kernel_size=1, stride=stride_, bias=False),
+                nn.BatchNorm2d(self.expansion * planes),
             )
 
     def forward(self, x):
@@ -25,6 +36,7 @@ class BasicBlock(nn.Module):
         out += self.shortcut(x)
         out = F.relu(out)
         return out
+
 
 
 class CBAM(nn.Module):
@@ -68,13 +80,16 @@ class HorizonResNet(nn.Module):
         self.img_w = img_w
 
         # ... (ResNet Backbone 部分保持不变: conv1 到 layer4 + cbam) ...
-        self.conv1 = nn.Conv2d(in_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        self.expected_in_channels = in_channels
+
+        # Keep more angle (W) resolution: only downsample W in early stem.
+        self.conv1 = nn.Conv2d(in_channels, 64, kernel_size=7, stride=(2, 2), padding=3, bias=False)
         self.bn1 = nn.BatchNorm2d(64)
-        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=(2, 2), padding=1)
         self.layer1 = self._make_layer(block, 64, num_blocks[0], stride=1)
-        self.layer2 = self._make_layer(block, 128, num_blocks[1], stride=2)
-        self.layer3 = self._make_layer(block, 256, num_blocks[2], stride=2)
-        self.layer4 = self._make_layer(block, 512, num_blocks[3], stride=2)
+        self.layer2 = self._make_layer(block, 128, num_blocks[1], stride=(2, 1))
+        self.layer3 = self._make_layer(block, 256, num_blocks[2], stride=(2, 1))
+        self.layer4 = self._make_layer(block, 512, num_blocks[3], stride=(2, 1))
         self.cbam = CBAM(512)
 
         # === 修改部分：新的 Head ===
@@ -101,7 +116,14 @@ class HorizonResNet(nn.Module):
         return nn.Sequential(*layers)
 
     def forward(self, x):
-        # x: [B, 3, 2240, 180]
+        # x: [B, C, 2240, 180] (C is usually 4: 3 radon + 1 semantic-edge radon)
+        # Backward-compat: if an older loader provides only 3 channels, pad a zero 4th channel.
+        if x.shape[1] != self.expected_in_channels:
+            if x.shape[1] == self.expected_in_channels - 1:
+                pad = torch.zeros((x.size(0), 1, x.size(2), x.size(3)), device=x.device, dtype=x.dtype)
+                x = torch.cat([x, pad], dim=1)
+            else:
+                raise ValueError(f"Expected {self.expected_in_channels} input channels, got {x.shape[1]}")
         x = F.relu(self.bn1(self.conv1(x)))
         x = self.maxpool(x)
 
@@ -112,11 +134,11 @@ class HorizonResNet(nn.Module):
         x = self.cbam(x)  # Feature Map: [B, 512, H_feat, W_feat]
 
         # 1. 降维成单通道热力图
-        x = self.conv_end(x)  # [B, 1, 70, 6] (尺寸取决于输入和 padding)
+        x = self.conv_end(x)  # e.g. [B, 1, 70, 45] with width-preserving strides
 
         # 2. 分离 Rho 和 Theta 的特征分布
         # Rho 分布: 在宽度方向求和 (挤压掉 Theta 维度) -> [B, 1, 70, 1] -> [B, 70]
-        # Theta 分布: 在高度方向求和 (挤压掉 Rho 维度) -> [B, 1, 1, 6] -> [B, 6]
+        # Theta 分布: 在高度方向求和 (挤压掉 Rho 维度) -> [B, 1, 1, W] -> [B, W]  (W keeps more theta bins)
 
         # 注意：这里我们假设特征图的响应值代表 logit (未归一化的概率)
         feat_h = x.shape[2]

@@ -4,10 +4,20 @@ import pandas as pd
 import numpy as np
 import cv2
 import os
+import warnings
 # 导入你的 GPU 加速类
 from gradient_radon import TextureSuppressedMuSCoWERT
 from scipy.ndimage import center_of_mass
 
+
+warnings.warn(
+    "dataset_loader_gradient_radon_cnn.py is DEPRECATED. "
+    "The recommended training/inference path is the OFFLINE 4-channel fusion cache built by make_fusion_cache.py, "
+    "then loaded by dataset_loader_offline.py. "
+    "This loader now pads a 4th zero channel for compatibility, but it does NOT include semantic-edge Radon.",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
 class HorizonFusionDataset(Dataset):
     def __init__(self, csv_file, img_dir, resize_h=2240, resize_w=180):
@@ -109,8 +119,8 @@ class HorizonFusionDataset(Dataset):
             processed_stack.append(container)
 
         # 补齐通道 (防止提取失败只返回了空列表)
-        while len(processed_stack) < 3:
-            processed_stack.append(np.zeros((self.resize_h, self.resize_w)))
+        while len(processed_stack) < 4:
+            processed_stack.append(np.zeros((self.resize_h, self.resize_w), dtype=np.float32))
 
         input_tensor = torch.from_numpy(np.array(processed_stack)).float()
 

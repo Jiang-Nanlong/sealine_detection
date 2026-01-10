@@ -192,7 +192,7 @@ class TextureSuppressedMuSCoWERT:
             theta = np.linspace(85., 95., 180, endpoint=False)  # 局部扫描
         # 替换为gpu版本的radon
         # sinogram = radon(weighted_map, theta=theta, circle=False)
-        sinogram = self._radon_gpu(weighted_map, self.theta)
+        sinogram = self._radon_gpu(weighted_map, theta)
 
         max_score = np.max(sinogram)
         if max_score == 0: return [], sinogram

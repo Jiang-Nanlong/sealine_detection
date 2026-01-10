@@ -10,50 +10,48 @@ from dataset_loader_gradient_radon_cnn import HorizonFusionDataset
 from cnn_model import get_resnet34_model
 
 
-def draw_pred_line(img, rho_norm, theta_norm, color=(0, 255, 0)):
+def draw_pred_line(img, rho_norm, theta_norm, resize_h=2240, color=(0, 255, 0), thickness=2):
     """
-    根据网络预测的 Radon 坐标画线。
-    关键：Radon 变换是基于图像中心的，需要进行坐标转换。
+    Draw the predicted horizon line on an image.
+
+    IMPORTANT: this matches the label definition used in make_fusion_cache.py::calculate_radon_label
+    (and test.py::get_line_ends):
+
+        label_rho = (rho + diag/2 + pad_top) / (resize_h - 1)
+        label_theta = theta_deg / 180
+
+    where:
+        - diag = sqrt(w^2 + h^2) computed on the *current image size*
+        - pad_top = (resize_h - diag) / 2 is the vertical padding used to place the sinogram
+          into a fixed container of height resize_h.
+
+    Args:
+        img: BGR image (H, W, 3)
+        rho_norm: predicted rho in [0, 1]
+        theta_norm: predicted theta in [0, 1]  -> degrees in [0, 180)
+        resize_h: sinogram container height used during training (default 2240)
     """
     h, w = img.shape[:2]
-    cx, cy = w / 2, h / 2
-    diag = np.sqrt(h ** 2 + w ** 2)
+    cx, cy = w / 2.0, h / 2.0
 
-    # 1. 还原 Theta (0~1 -> 0~180度)
-    theta_deg = theta_norm * 180.0
-    theta_rad = np.deg2rad(theta_deg)
+    diag = float(np.sqrt(w ** 2 + h ** 2))
+    pad_top = (float(resize_h) - diag) / 2.0
 
-    # 2. 还原 Rho (0~1 -> -Diag/2 ~ +Diag/2)
-    # Radon 变换后的 sinogram 高度约为对角线长度
-    # 0.5 对应中心 (Offset = 0)
-    # 实际上 skimage.radon 的 rho 轴是通过 center 的
-    # rho_norm = 0.5 -> offset = 0
-    # rho_norm = 1.0 -> offset = +diag/2
-    r_offset = (rho_norm - 0.5) * diag
+    # Invert label mapping back to centered polar line parameters:
+    # (x-cx)*cos(theta) + (y-cy)*sin(theta) = rho
+    rho = float(rho_norm) * (float(resize_h) - 1.0) - pad_top - (diag / 2.0)
+    theta_rad = np.deg2rad(float(theta_norm) * 180.0)
 
-    # 3. 直线方程推导
-    # Radon 定义: (x-cx)cos(t) + (y-cy)sin(t) = r_offset
-    # 展开: x cos + y sin = r_offset + cx cos + cy sin
-    # 令 total_rho = r_offset + cx cos + cy sin
-    # 标准 Hough/Polar 方程: x cos + y sin = total_rho
+    cos_t, sin_t = float(np.cos(theta_rad)), float(np.sin(theta_rad))
+    x0 = cos_t * rho
+    y0 = sin_t * rho
 
-    cos_t = np.cos(theta_rad)
-    sin_t = np.sin(theta_rad)
+    scale = int(max(w, h) * 2)
+    pt1 = (int(cx + x0 - scale * sin_t), int(cy + y0 + scale * cos_t))
+    pt2 = (int(cx + x0 + scale * sin_t), int(cy + y0 - scale * cos_t))
 
-    total_rho = r_offset + cx * cos_t + cy * sin_t
-
-    # 4. 计算两个端点画线
-    # x0, y0 是垂足
-    x0 = cos_t * total_rho
-    y0 = sin_t * total_rho
-
-    # 沿着直线方向延伸 (-sin, cos)
-    scale = 3000
-    pt1 = (int(x0 - scale * sin_t), int(y0 + scale * cos_t))
-    pt2 = (int(x0 + scale * sin_t), int(y0 - scale * cos_t))
-
-    cv2.line(img, pt1, pt2, color, 3)
-    return theta_deg
+    cv2.line(img, pt1, pt2, color, thickness)
+    return img
 
 
 def visualize_results():

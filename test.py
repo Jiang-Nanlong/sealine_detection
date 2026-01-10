@@ -20,7 +20,9 @@ CNN_CKPT = "splits_musid/best_fusion_cnn_1024x576.pth"
 DCE_WEIGHTS = "Epoch99.pth"
 
 ENABLE_DEGRADATION = True
-UNET_W, UNET_H = 1024, 576
+UNET_IN_W, UNET_IN_H = 1024, 576
+# Backward-compatible aliases
+UNET_W, UNET_H = UNET_IN_W, UNET_IN_H
 RESIZE_H, RESIZE_W = 2240, 180
 
 NUM_SAMPLES = 6
