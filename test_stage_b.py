@@ -13,15 +13,16 @@ from dataset_loader import HorizonImageDataset
 # [切换开关] 这里填 'B' 或 'B2'
 CURRENT_SUB_STAGE = "B"
 
-# 权重路径自动生成
-# Stage B/B2 主要看 Best Seg 权重
+# 权重路径
 CKPT_PATH = f"rghnet_best_seg_{CURRENT_SUB_STAGE.lower()}.pth"
 
 CSV_PATH = r"Hashmani's Dataset/GroundTruth.csv"
 IMG_DIR = r"Hashmani's Dataset/MU-SID"
 DCE_WEIGHTS = "Epoch99.pth"
 
-IMG_SIZE = 1024
+# [核心修正] 必须改成 (H, W) 元组，对应 16:9
+IMG_SIZE = (576, 1024) 
+
 NUM_SAMPLES = 4
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 SEED = 42
@@ -54,9 +55,12 @@ def main():
     
     print(f"--- Visualizing Stage {CURRENT_SUB_STAGE} (Segmentation Focus) ---")
     print(f"Loading: {CKPT_PATH}")
+    print(f"Image Size: {IMG_SIZE}")
 
     # 1. 数据 (Val模式: augment=False)
+    # 注意：这里会根据 IMG_SIZE 是 tuple 自动切换到 Resize 模式 (无黑边)
     ds = HorizonImageDataset(CSV_PATH, IMG_DIR, img_size=IMG_SIZE, mode="joint", augment=False)
+    
     indices = random.sample(range(len(ds)), NUM_SAMPLES)
     subset = Subset(ds, indices)
     loader = DataLoader(subset, batch_size=1, shuffle=False)
@@ -66,6 +70,7 @@ def main():
     if os.path.exists(CKPT_PATH):
         state = torch.load(CKPT_PATH, map_location=DEVICE)
         model.load_state_dict(state, strict=False)
+        print("Weights loaded.")
     else:
         print(f"[Error] Checkpoint not found: {CKPT_PATH}")
         return
@@ -73,7 +78,9 @@ def main():
 
     # 3. 绘图
     cols = 3
-    fig, axes = plt.subplots(nrows=NUM_SAMPLES, ncols=cols, figsize=(12, 3.5 * NUM_SAMPLES))
+    # 动态调整画布高度比例 (因为现在是宽图了，高度不用那么高)
+    fig_h_unit = 2.5 
+    fig, axes = plt.subplots(nrows=NUM_SAMPLES, ncols=cols, figsize=(12, fig_h_unit * NUM_SAMPLES))
     plt.subplots_adjust(wspace=0.05, hspace=0.05)
     
     headers = ["Degraded Input", f"Pred Mask ({CURRENT_SUB_STAGE})", "Overlay"]

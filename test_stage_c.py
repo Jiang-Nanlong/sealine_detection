@@ -21,22 +21,26 @@ CSV_PATH = r"Hashmani's Dataset/GroundTruth.csv"
 IMG_DIR = r"Hashmani's Dataset/MU-SID"
 DCE_WEIGHTS = "Epoch99.pth"
 
-IMG_SIZE = 1024
+# [核心修正] 必须改成 (H, W) 元组，对应 16:9 无黑边
+IMG_SIZE = (576, 1024)
+
 NUM_SAMPLES = 4
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 SEED = 42 # 保持和 Stage B 一样的种子，方便对比同一张图的变化
 # ===========================================
 
 def tensor_to_img(t):
+    """(C,H,W) -> (H,W,C) numpy uint8"""
     t = t.squeeze().detach().cpu().float().clamp(0, 1)
     return (t.permute(1, 2, 0).numpy() * 255.0).astype(np.uint8)
 
 def mask_to_color(mask):
+    """0=Sea(Black), 1=Sky(Blue), 255=Ignore(Gray)"""
     h, w = mask.shape
     vis = np.zeros((h, w, 3), dtype=np.uint8)
-    vis[mask == 0] = [0, 0, 0]
-    vis[mask == 1] = [100, 200, 255]
-    vis[mask == 255] = [128, 128, 128]
+    vis[mask == 0] = [0, 0, 0]       # Sea
+    vis[mask == 1] = [100, 200, 255] # Sky
+    vis[mask == 255] = [128, 128, 128] # Ignore
     return vis
 
 def overlay_mask(img_rgb, mask, alpha=0.5):
@@ -52,22 +56,28 @@ def main():
     
     print(f"--- Visualizing Stage {CURRENT_SUB_STAGE} (Joint/Restoration Focus) ---")
     print(f"Loading: {CKPT_PATH}")
+    print(f"Image Size: {IMG_SIZE}")
 
+    # 1. 数据加载 (Val模式: augment=False)
+    # 注意：dataset_loader 会根据 tuple 尺寸自动使用 resize 模式 (无黑边)
     ds = HorizonImageDataset(CSV_PATH, IMG_DIR, img_size=IMG_SIZE, mode="joint", augment=False)
+    
     indices = random.sample(range(len(ds)), NUM_SAMPLES)
     subset = Subset(ds, indices)
     loader = DataLoader(subset, batch_size=1, shuffle=False)
 
+    # 2. 模型加载
     model = RestorationGuidedHorizonNet(num_classes=2, dce_weights_path=DCE_WEIGHTS).to(DEVICE)
     if os.path.exists(CKPT_PATH):
         state = torch.load(CKPT_PATH, map_location=DEVICE)
         model.load_state_dict(state, strict=False)
+        print("Weights loaded successfully.")
     else:
         print(f"[Error] Checkpoint not found: {CKPT_PATH}")
         return
     model.eval()
 
-    # 根据 C1 还是 C2 决定画什么
+    # 3. 绘图布局
     if CURRENT_SUB_STAGE == "C1":
         # C1: 重点看复原是否崩了 (Restoration Tuning)
         cols = 3
@@ -77,7 +87,9 @@ def main():
         cols = 5
         headers = ["Input", "Restored", "Pred Mask", "Overlay", "GT Mask"]
 
-    fig, axes = plt.subplots(nrows=NUM_SAMPLES, ncols=cols, figsize=(4*cols, 3.5 * NUM_SAMPLES))
+    # 调整画布比例适应 16:9
+    fig_h_unit = 2.5
+    fig, axes = plt.subplots(nrows=NUM_SAMPLES, ncols=cols, figsize=(4*cols, fig_h_unit * NUM_SAMPLES))
     plt.subplots_adjust(wspace=0.05, hspace=0.05)
     
     if NUM_SAMPLES > 1:
@@ -96,9 +108,15 @@ def main():
             vis_restored = tensor_to_img(restored[0])
             vis_target = tensor_to_img(target[0])
             
-            pred_mask = seg_logits.argmax(dim=1)[0].cpu().numpy().astype(np.uint8)
+            if seg_logits is not None:
+                pred_mask = seg_logits.argmax(dim=1)[0].cpu().numpy().astype(np.uint8)
+            else:
+                pred_mask = np.zeros(vis_in.shape[:2], dtype=np.uint8)
+                
+            gt_mask = mask[0].cpu().numpy().astype(np.uint8)
+            
             vis_pred = mask_to_color(pred_mask)
-            vis_gt = mask_to_color(mask[0].cpu().numpy().astype(np.uint8))
+            vis_gt = mask_to_color(gt_mask)
             
             # 在复原图上叠加Mask，效果最好
             vis_overlay = overlay_mask(vis_restored, pred_mask)
