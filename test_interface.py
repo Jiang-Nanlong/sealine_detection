@@ -21,10 +21,24 @@ DCE_WEIGHTS = "Epoch99.pth"
 
 ENABLE_DEGRADATION = True
 UNET_W, UNET_H = 1024, 576
+# 与 make_fusion_cache_interface.py 统一命名，避免脚本里引用未定义变量
+UNET_IN_W, UNET_IN_H = UNET_W, UNET_H
 RESIZE_H, RESIZE_W = 2240, 180
 
 # seg-mask -> Radon 方式（需与训练 cache 一致）
 SEG_EDGE_MODE = "interface"      # "interface" / "canny"
+
+# ========= 门控回退（建议开启，与训练 cache 一致） =========
+ENABLE_SEG_GATING = True
+SEG_FALLBACK_MODE = "canny"   # "canny" / "zeros"
+
+GATE_SKY_RATIO_MIN = 0.05
+GATE_SKY_RATIO_MAX = 0.95
+GATE_COL_SKY_MIN_RATIO = 0.60
+GATE_BOUNDARY_RMSE_MAX = 8.0
+GATE_LEAK_MARGIN_PX = 5
+GATE_LEAK_RATIO_MAX = 0.02
+GATE_LEAK_SAMPLE_COLS = 256
 INTERFACE_THICKNESS = 2
 INTERFACE_SMOOTH_K = 15
 INTERFACE_USE_RANSAC = True
@@ -201,6 +215,85 @@ def build_interface_line_image(mask_pp: np.ndarray,
     pts = np.stack([xs, ys], axis=1).astype(np.int32)
     cv2.polylines(line_img, [pts], isClosed=False, color=255, thickness=int(thickness))
     return line_img
+
+
+def assess_interface_mask_quality(mask_pp: np.ndarray,
+                                 smooth_k: int = 15,
+                                 sky_ratio_min: float = 0.05,
+                                 sky_ratio_max: float = 0.95,
+                                 col_sky_min_ratio: float = 0.60,
+                                 boundary_rmse_max: float = 8.0,
+                                 leak_margin_px: int = 5,
+                                 leak_ratio_max: float = 0.02,
+                                 leak_sample_cols: int = 256):
+    """轻量门控：判断当前 sky/non-sky mask 是否可信，适合用 interface-line Radon。"""
+    info = {}
+
+    sky = (mask_pp > 0)
+    H, W = sky.shape
+
+    sky_ratio = float(sky.mean())
+    info["sky_ratio"] = sky_ratio
+    if sky_ratio < float(sky_ratio_min) or sky_ratio > float(sky_ratio_max):
+        info["reason"] = "sky_ratio_out_of_range"
+        return False, info
+
+    col_has = (sky.sum(axis=0) > 0)
+    col_ratio = float(col_has.mean())
+    info["col_sky_ratio"] = col_ratio
+    if col_ratio < float(col_sky_min_ratio):
+        info["reason"] = "too_many_empty_columns"
+        return False, info
+
+    # 提取并平滑边界 y(x)
+    rev = sky[::-1, :]
+    idx_from_bottom = rev.argmax(axis=0)
+    ys = (H - 1 - idx_from_bottom).astype(np.float32)
+    ys[~col_has] = np.nan
+    xs = np.arange(W, dtype=np.float32)
+
+    valid = np.isfinite(ys)
+    if int(valid.sum()) < 2:
+        info["reason"] = "not_enough_boundary_points"
+        return False, info
+    ys = np.interp(xs, xs[valid], ys[valid]).astype(np.float32)
+    ys = _smooth_1d(ys, smooth_k)
+
+    # 1) 用拟合直线残差 RMSE 衡量边界是否过于波浪/破碎
+    try:
+        k1, k0 = np.polyfit(xs, ys, deg=1)
+        pred = k1 * xs + k0
+        rmse = float(np.sqrt(np.mean((ys - pred) ** 2)))
+    except Exception:
+        rmse = 1e9
+    info["boundary_rmse"] = rmse
+    if rmse > float(boundary_rmse_max):
+        info["reason"] = "boundary_too_wavy"
+        return False, info
+
+    # 2) 边界下方 sky 泄漏比例
+    sample_n = int(min(max(8, leak_sample_cols), W))
+    cols = np.linspace(0, W - 1, sample_n).round().astype(np.int32)
+    cols = np.unique(cols)
+
+    leak = 0
+    denom = 0
+    m = int(max(0, leak_margin_px))
+    for x in cols:
+        y0 = int(round(float(ys[x]) + m))
+        y0 = 0 if y0 < 0 else (H if y0 > H else y0)
+        if y0 >= H:
+            continue
+        denom += (H - y0)
+        leak += int(sky[y0:, int(x)].sum())
+    leak_ratio = float(leak / denom) if denom > 0 else 0.0
+    info["leak_ratio"] = leak_ratio
+    if leak_ratio > float(leak_ratio_max):
+        info["reason"] = "too_much_sky_leak_below_boundary"
+        return False, info
+
+    info["reason"] = "ok"
+    return True, info
 # =========================================================
 
 def process_sinogram(sino, th, tw):
@@ -306,18 +399,44 @@ def main():
         while len(stack) < 3: stack.append(np.zeros((RESIZE_H, RESIZE_W), dtype=np.float32))
         
         # --- seg-mask -> Radon (第4通道) ---
-        if str(SEG_EDGE_MODE).lower() == "canny":
+        seg_mode = str(SEG_EDGE_MODE).lower().strip()
+        if seg_mode == "canny":
             seg_img = cv2.Canny((mask_pp * 255).astype(np.uint8), 50, 150)
         else:
-            seg_img = build_interface_line_image(
-                mask_pp,
-                thickness=INTERFACE_THICKNESS,
-                smooth_k=INTERFACE_SMOOTH_K,
-                use_ransac=INTERFACE_USE_RANSAC,
-                ransac_iters=RANSAC_ITERS,
-                ransac_thresh=RANSAC_THRESH_PX,
-                ransac_min_inlier_ratio=RANSAC_MIN_INLIER_RATIO,
-            )
+            use_interface = True
+            if ENABLE_SEG_GATING:
+                ok, info = assess_interface_mask_quality(
+                    mask_pp,
+                    smooth_k=INTERFACE_SMOOTH_K,
+                    sky_ratio_min=GATE_SKY_RATIO_MIN,
+                    sky_ratio_max=GATE_SKY_RATIO_MAX,
+                    col_sky_min_ratio=GATE_COL_SKY_MIN_RATIO,
+                    boundary_rmse_max=GATE_BOUNDARY_RMSE_MAX,
+                    leak_margin_px=GATE_LEAK_MARGIN_PX,
+                    leak_ratio_max=GATE_LEAK_RATIO_MAX,
+                    leak_sample_cols=GATE_LEAK_SAMPLE_COLS,
+                )
+                if not ok:
+                    use_interface = False
+
+            if use_interface:
+                seg_img = build_interface_line_image(
+                    mask_pp,
+                    thickness=INTERFACE_THICKNESS,
+                    smooth_k=INTERFACE_SMOOTH_K,
+                    use_ransac=INTERFACE_USE_RANSAC,
+                    ransac_iters=RANSAC_ITERS,
+                    ransac_thresh=RANSAC_THRESH_PX,
+                    ransac_min_inlier_ratio=RANSAC_MIN_INLIER_RATIO,
+                )
+            else:
+                fb = str(SEG_FALLBACK_MODE).lower().strip()
+                if fb == "zeros":
+                    seg_img = np.zeros((UNET_IN_H, UNET_IN_W), dtype=np.uint8)
+                else:
+                    seg_img = cv2.Canny((mask_pp * 255).astype(np.uint8), 50, 150)
+                # 只做 demo：打印一下回退原因，便于你定位问题样本
+                print(f"[GateFallback] {os.path.basename(path)} reason={info.get('reason','?')} sky={info.get('sky_ratio',-1):.3f} rmse={info.get('boundary_rmse',-1):.2f} leak={info.get('leak_ratio',-1):.3f}")
         seg_sino = detector._radon_gpu(seg_img, theta_scan)
         stack.append(process_sinogram(seg_sino, RESIZE_H, RESIZE_W))
 

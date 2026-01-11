@@ -6,6 +6,7 @@ import pandas as pd
 import torch
 from tqdm import tqdm
 import torch.amp as amp
+from datetime import datetime
 from unet_model import RestorationGuidedHorizonNet
 from gradient_radon import TextureSuppressedMuSCoWERT
 
@@ -40,6 +41,31 @@ EDGE_DILATE = 1
 # - "interface": 只提取 sky/non-sky 主交界线(按列取 sky 下边界)并可选 RANSAC 捋直，再做 Radon（推荐，与你论文设想一致）
 # - "canny":     直接对二值 mask 做 Canny 得到所有边缘，再做 Radon（旧基线）
 SEG_EDGE_MODE = "interface"
+
+# ========= 门控回退（建议开启） =========
+# 目标：当 UNet 的 sky/non-sky 掩码非常破碎或边界明显不可信时，
+# 不强行用 interface-line Radon（容易把第4通道带偏），而是回退到更“粗糙但稳”的方案。
+ENABLE_SEG_GATING = True
+
+# 回退方式：
+# - "canny": 回退到 old baseline（对 mask 做 Canny 得到所有边缘，再 Radon）
+# - "zeros": 直接把第4通道置零（让 CNN 只依赖传统3通道）
+SEG_FALLBACK_MODE = "canny"
+
+# 门控阈值（在 1024x576 尺度上调参）
+GATE_SKY_RATIO_MIN = 0.05      # sky 像素占比过低/过高通常说明 mask 崩了
+GATE_SKY_RATIO_MAX = 0.95
+GATE_COL_SKY_MIN_RATIO = 0.60  # 至少 60% 的列需要存在 sky，否则交界线不稳定
+
+# 用“交界线点集拟合到直线”的残差 RMSE 衡量边界是否过于波浪/破碎（单位：像素）
+GATE_BOUNDARY_RMSE_MAX = 8.0
+
+# 检查“边界下方(海面区域)仍被预测为 sky”的泄漏比例
+GATE_LEAK_MARGIN_PX = 5        # 从边界往下留一点 margin，避免线宽/平滑导致误判
+GATE_LEAK_RATIO_MAX = 0.02     # 海面区域若 >2% 仍是 sky，说明 mask 很破碎
+
+# 计算泄漏比例时采样列数（越大越准，越小越快；W=1024 时 256 很合适）
+GATE_LEAK_SAMPLE_COLS = 256
 
 # interface-line 细节
 INTERFACE_THICKNESS = 2          # 画线粗细（建议 1~3）
@@ -220,6 +246,91 @@ def build_interface_line_image(mask_pp: np.ndarray,
     pts = np.stack([xs, ys], axis=1).astype(np.int32)
     cv2.polylines(line_img, [pts], isClosed=False, color=255, thickness=int(thickness))
     return line_img
+
+
+def assess_interface_mask_quality(mask_pp: np.ndarray,
+                                 smooth_k: int = 15,
+                                 sky_ratio_min: float = 0.05,
+                                 sky_ratio_max: float = 0.95,
+                                 col_sky_min_ratio: float = 0.60,
+                                 boundary_rmse_max: float = 8.0,
+                                 leak_margin_px: int = 5,
+                                 leak_ratio_max: float = 0.02,
+                                 leak_sample_cols: int = 256):
+    """\
+    用非常轻量的规则判断：当前 sky/non-sky mask 是否足够“可信”，适合用 interface-line Radon。
+
+    返回：
+      ok: bool
+      info: dict（可用于 debug 打印）
+    """
+    info = {}
+
+    sky = (mask_pp > 0)
+    H, W = sky.shape
+
+    sky_ratio = float(sky.mean())
+    info["sky_ratio"] = sky_ratio
+    if sky_ratio < float(sky_ratio_min) or sky_ratio > float(sky_ratio_max):
+        info["reason"] = "sky_ratio_out_of_range"
+        return False, info
+
+    col_has = (sky.sum(axis=0) > 0)
+    col_ratio = float(col_has.mean())
+    info["col_sky_ratio"] = col_ratio
+    if col_ratio < float(col_sky_min_ratio):
+        info["reason"] = "too_many_empty_columns"
+        return False, info
+
+    # 提取并平滑边界 y(x)
+    rev = sky[::-1, :]
+    idx_from_bottom = rev.argmax(axis=0)
+    ys = (H - 1 - idx_from_bottom).astype(np.float32)
+    ys[~col_has] = np.nan
+    xs = np.arange(W, dtype=np.float32)
+
+    valid = np.isfinite(ys)
+    if int(valid.sum()) < 2:
+        info["reason"] = "not_enough_boundary_points"
+        return False, info
+    ys = np.interp(xs, xs[valid], ys[valid]).astype(np.float32)
+    ys = _smooth_1d(ys, smooth_k)
+
+    # 1) 用“拟合直线的残差 RMSE”衡量边界是否过于波浪/破碎
+    try:
+        k1, k0 = np.polyfit(xs, ys, deg=1)
+        pred = k1 * xs + k0
+        rmse = float(np.sqrt(np.mean((ys - pred) ** 2)))
+    except Exception:
+        rmse = 1e9
+    info["boundary_rmse"] = rmse
+    if rmse > float(boundary_rmse_max):
+        info["reason"] = "boundary_too_wavy"
+        return False, info
+
+    # 2) 检查边界下方是否存在大量 sky 泄漏（海面碎 sky 小岛 / 大块误分）
+    sample_n = int(min(max(8, leak_sample_cols), W))
+    cols = np.linspace(0, W - 1, sample_n).round().astype(np.int32)
+    cols = np.unique(cols)
+
+    leak = 0
+    denom = 0
+    m = int(max(0, leak_margin_px))
+    for x in cols:
+        y0 = int(round(float(ys[x]) + m))
+        y0 = 0 if y0 < 0 else (H if y0 > H else y0)
+        if y0 >= H:
+            continue
+        denom += (H - y0)
+        leak += int(sky[y0:, int(x)].sum())
+    leak_ratio = float(leak / denom) if denom > 0 else 0.0
+    info["leak_ratio"] = leak_ratio
+    if leak_ratio > float(leak_ratio_max):
+        info["reason"] = "too_much_sky_leak_below_boundary"
+        return False, info
+
+    info["reason"] = "ok"
+    return True, info
 # =========================================================
 
 def _read_image_any_ext(img_dir: str, img_name: str):
@@ -308,7 +419,40 @@ def _load_split_indices(split_dir):
 
 def build_cache_for_split(df, indices, out_dir, seg_model, detector, theta_scan):
     ensure_dir(out_dir)
-    print(f"Processing {os.path.basename(out_dir)}: {len(indices)}")
+    split_name = os.path.basename(out_dir)
+    print(f"Processing {split_name}: {len(indices)}")
+
+    # === Gate 日志：用于你后续统计/调参 GATE_BOUNDARY_RMSE_MAX 与 GATE_LEAK_RATIO_MAX ===
+    gate_log_fp = None
+    gate_log_path = None
+    if str(SEG_EDGE_MODE).lower().strip() == "interface" and bool(ENABLE_SEG_GATING):
+        ensure_dir("eval_outputs")
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        gate_log_path = os.path.join("eval_outputs", f"gate_fallback_{split_name}_{ts}.txt")
+        gate_log_fp = open(gate_log_path, "w", encoding="utf-8")
+        gate_log_fp.write("# gate log (one line per sample)\\n")
+        gate_log_fp.write(f"# split={split_name}  fallback_mode={SEG_FALLBACK_MODE}\\n")
+        gate_log_fp.write(
+            "idx\\timg_name\\tgate_ok\\tuse_interface\\treason\\tsky_ratio\\tcol_sky_ratio\\tboundary_rmse\\tleak_ratio\\tfallback_mode\\n"
+        )
+
+    def _fmt(x, nd=6):
+        if x is None:
+            return ""
+        try:
+            if isinstance(x, (float, int, np.floating, np.integer)):
+                if np.isfinite(float(x)):
+                    return f"{float(x):.{nd}f}"
+                return ""
+        except Exception:
+            pass
+        return str(x)
+
+
+    # 统计门控回退情况（便于你写论文对比/做消融）
+    n_interface = 0
+    n_canny = 0
+    n_fallback = 0
     
     for idx in tqdm(indices, ncols=80):
         row = df.iloc[idx]
@@ -353,25 +497,74 @@ def build_cache_for_split(df, indices, out_dir, seg_model, detector, theta_scan)
             processed_stack.append(np.zeros((RESIZE_H, RESIZE_W), dtype=np.float32))
 
         # --- seg-mask -> Radon (第4通道) ---
-        if str(SEG_EDGE_MODE).lower() == "canny":
+        seg_mode = str(SEG_EDGE_MODE).lower().strip()
+
+        if seg_mode == "canny":
+            # 旧基线：mask 全边缘
             seg_img = cv2.Canny((mask_pp * 255).astype(np.uint8), CANNY_LOW, CANNY_HIGH)
             if EDGE_DILATE > 0:
                 k = np.ones((3, 3), np.uint8)
                 seg_img = cv2.dilate(seg_img, k, iterations=EDGE_DILATE)
+            n_canny += 1
+
         else:
-            seg_img = build_interface_line_image(
-                mask_pp,
-                thickness=INTERFACE_THICKNESS,
-                smooth_k=INTERFACE_SMOOTH_K,
-                use_ransac=INTERFACE_USE_RANSAC,
-                ransac_iters=RANSAC_ITERS,
-                ransac_thresh=RANSAC_THRESH_PX,
-                ransac_min_inlier_ratio=RANSAC_MIN_INLIER_RATIO,
-            )
-            # 可选：再膨胀一点点，增强 Radon 峰值
-            if EDGE_DILATE > 0:
-                k = np.ones((3, 3), np.uint8)
-                seg_img = cv2.dilate(seg_img, k, iterations=EDGE_DILATE)
+            # 新方案：只取 sky/non-sky 主交界线（可 RANSAC 捋直）
+            use_interface = True
+            gate_info = {"reason": "gating_disabled"}
+            if ENABLE_SEG_GATING:
+                ok, gate_info = assess_interface_mask_quality(
+                    mask_pp,
+                    smooth_k=INTERFACE_SMOOTH_K,
+                    sky_ratio_min=GATE_SKY_RATIO_MIN,
+                    sky_ratio_max=GATE_SKY_RATIO_MAX,
+                    col_sky_min_ratio=GATE_COL_SKY_MIN_RATIO,
+                    boundary_rmse_max=GATE_BOUNDARY_RMSE_MAX,
+                    leak_margin_px=GATE_LEAK_MARGIN_PX,
+                    leak_ratio_max=GATE_LEAK_RATIO_MAX,
+                    leak_sample_cols=GATE_LEAK_SAMPLE_COLS,
+                )
+                if not ok:
+                    use_interface = False
+
+
+            # 记录 gate 指标（无论最终是否 fallback）
+            if gate_log_fp is not None:
+                gate_ok_int = 1 if bool(ok) else 0
+                reason = gate_info.get("reason", "")
+                sky_ratio = gate_info.get("sky_ratio", None)
+                col_ratio = gate_info.get("col_sky_ratio", None)
+                rmse = gate_info.get("boundary_rmse", None)
+                leak = gate_info.get("leak_ratio", None)
+                fb_mode = "" if bool(use_interface) else str(SEG_FALLBACK_MODE)
+                gate_log_fp.write(
+                    f"{idx}\t{img_name}\t{gate_ok_int}\t{int(bool(use_interface))}\t{reason}\t"
+                    f"{_fmt(sky_ratio)}\t{_fmt(col_ratio)}\t{_fmt(rmse, nd=4)}\t{_fmt(leak)}\t{fb_mode}\n"
+                )
+            if use_interface:
+                seg_img = build_interface_line_image(
+                    mask_pp,
+                    thickness=INTERFACE_THICKNESS,
+                    smooth_k=INTERFACE_SMOOTH_K,
+                    use_ransac=INTERFACE_USE_RANSAC,
+                    ransac_iters=RANSAC_ITERS,
+                    ransac_thresh=RANSAC_THRESH_PX,
+                    ransac_min_inlier_ratio=RANSAC_MIN_INLIER_RATIO,
+                )
+                if EDGE_DILATE > 0:
+                    k = np.ones((3, 3), np.uint8)
+                    seg_img = cv2.dilate(seg_img, k, iterations=EDGE_DILATE)
+                n_interface += 1
+            else:
+                # 门控失败：回退
+                fb = str(SEG_FALLBACK_MODE).lower().strip()
+                if fb == "zeros":
+                    seg_img = np.zeros((UNET_IN_H, UNET_IN_W), dtype=np.uint8)
+                else:
+                    seg_img = cv2.Canny((mask_pp * 255).astype(np.uint8), CANNY_LOW, CANNY_HIGH)
+                    if EDGE_DILATE > 0:
+                        k = np.ones((3, 3), np.uint8)
+                        seg_img = cv2.dilate(seg_img, k, iterations=EDGE_DILATE)
+                n_fallback += 1
 
         seg_sino = detector._radon_gpu(seg_img, theta_scan)
         processed_stack.append(process_sinogram(seg_sino, RESIZE_H, RESIZE_W))
@@ -390,6 +583,17 @@ def build_cache_for_split(df, indices, out_dir, seg_model, detector, theta_scan)
         label = np.array([l_rho, l_theta], dtype=np.float32)
 
         np.save(os.path.join(out_dir, f"{idx}.npy"), {"input": combined_input, "label": label})
+
+    
+    if gate_log_fp is not None:
+        gate_log_fp.close()
+        print(f"[GateLog] saved -> {gate_log_path}")
+
+# split 完成后打印统计
+    if str(SEG_EDGE_MODE).lower().strip() == "interface":
+        total = max(1, (n_interface + n_fallback))
+        fb_rate = 100.0 * n_fallback / float(total)
+        print(f"[Seg-Interface] ok={n_interface} fallback={n_fallback} (fallback_rate={fb_rate:.2f}%)")
 
 def main():
     ensure_dir(SAVE_ROOT)
