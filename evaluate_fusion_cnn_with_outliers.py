@@ -38,9 +38,9 @@ from cnn_model import HorizonResNet
 # =========================
 # 配置区（按你本机路径修改）
 # =========================
-WEIGHTS_PATH = r"splits_musid/best_fusion_cnn_1024x576_interface.pth"
+WEIGHTS_PATH = r"splits_musid/best_fusion_cnn_1024x576.pth"
 
-CACHE_ROOT = r"Hashmani's Dataset/FusionCache_1024x576_interface"
+CACHE_ROOT = r"Hashmani's Dataset/FusionCache_1024x576"
 SPLIT = "test"  # "train" / "val" / "test"
 
 # GroundTruth.csv：第一列是图片名；后四列是两点坐标（x1,y1,x2,y2），坐标基于原图(通常1920x1080)
@@ -61,7 +61,7 @@ NUM_WORKERS = 0
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # 输出目录（不要和原图同路径）
-OUT_DIR = r"eval_outputs_interface"
+OUT_DIR = r"eval_outputs"
 SAVE_CSV = True
 CSV_NAME = f"eval_{SPLIT}.csv"
 
@@ -266,14 +266,24 @@ def mean_point_to_line_distance_unet(
     theta_gt_deg: float,
     w: int,
     h: int,
-    n_samples: int = 60
+    n_samples: int = 60,
 ) -> float:
+    """在 GT 线上（落在图像内部的部分）采样点，计算点到预测线的平均垂直距离（UNet 尺度像素）。
+
+    说明：
+    - 旧实现是先求 GT 与图像边框的交点作为线段端点；当 GT 线因归一化/解码原因落在图外时，会触发裁剪回退，
+      导致采样点不再是真正的 GT 线点，从而出现“rho/theta 很小但 lineDist 巨大”的不一致。
+    - 新实现直接在 x=0..w-1 上采样并筛选落在 [0,h-1] 内的点；若 GT 线在整幅图内都不可见，则返回 NaN（后续统计会跳过）。
     """
-    在 GT 线段上采样点，计算这些点到预测线的平均垂直距离（UNet 尺度像素）。
-    """
-    (x0, y0), (x1, y1) = endpoints_in_unet(rho_gt, theta_gt_deg, w, h)
-    xs = np.linspace(x0, x1, n_samples)
-    ys = np.linspace(y0, y1, n_samples)
+    xs = np.linspace(0.0, w - 1.0, n_samples, dtype=np.float64)
+    ys = np.array([y_at_x(rho_gt, theta_gt_deg, float(x), w, h) for x in xs], dtype=np.float64)
+
+    valid = np.isfinite(ys) & (ys >= 0.0) & (ys <= (h - 1.0))
+    if int(valid.sum()) < 2:
+        return float('nan')
+
+    xs = xs[valid]
+    ys = ys[valid]
 
     theta_p = math.radians(theta_pred_deg)
     cos_p, sin_p = math.cos(theta_p), math.sin(theta_p)
@@ -281,7 +291,7 @@ def mean_point_to_line_distance_unet(
 
     x_c = xs - cx
     y_c = ys - cy
-    d = np.abs(x_c * cos_p + y_c * sin_p - rho_pred)  # 因 cos^2+sin^2=1
+    d = np.abs(x_c * cos_p + y_c * sin_p - rho_pred)  # cos^2+sin^2=1
     return float(np.mean(d))
 
 
@@ -441,6 +451,9 @@ def main():
     edgey_unet = np.asarray(edgey_unet, dtype=np.float64)
     edgey_orig = np.asarray(edgey_orig, dtype=np.float64)
 
+    n_line_unet_nan = int(np.sum(~np.isfinite(line_dist_unet)))
+    n_line_orig_nan = int(np.sum(~np.isfinite(line_dist_orig)))
+
     print("========== Fusion-CNN Evaluation ==========")
     print(f"Split: {SPLIT} | N={len(ds)} | Device={DEVICE}")
     print(f"Weights: {WEIGHTS_PATH}")
@@ -456,6 +469,8 @@ def main():
     pr("Theta error (deg, wrap-aware, period=180)", theta_err_deg)
     pr("Mean point->line distance (px, UNet)", line_dist_unet)
     pr("Mean point->line distance (px, original-scale approx)", line_dist_orig)
+    if n_line_unet_nan > 0 or n_line_orig_nan > 0:
+        print(f"[Note] lineDist skipped NaN samples: UNet={n_line_unet_nan}, orig={n_line_orig_nan}")
     pr("Edge-Y error (px, UNet)", edgey_unet)
     pr("Edge-Y error (px, original-scale approx)", edgey_orig)
     print("")

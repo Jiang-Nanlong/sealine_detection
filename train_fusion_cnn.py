@@ -22,15 +22,14 @@ from torch.utils.data import Dataset, DataLoader
 
 from cnn_model import HorizonResNet
 
-
 # =========================
 # Config
 # =========================
 # Cache root produced by the NEW make_fusion_cache.py
 CACHE_ROOT = r"Hashmani's Dataset/FusionCache_1024x576"
 TRAIN_CACHE_DIR = os.path.join(CACHE_ROOT, "train")
-VAL_CACHE_DIR   = os.path.join(CACHE_ROOT, "val")
-TEST_CACHE_DIR  = os.path.join(CACHE_ROOT, "test")
+VAL_CACHE_DIR = os.path.join(CACHE_ROOT, "val")
+TEST_CACHE_DIR = os.path.join(CACHE_ROOT, "test")
 
 # Fixed split indices (row indices of GroundTruth.csv)
 SPLIT_DIR = r"splits_musid"
@@ -40,7 +39,7 @@ BATCH_SIZE = 16  # CNN 比较轻，Batch Size 可以大一点，比如 16 或 32
 NUM_WORKERS = 4
 
 # [修改点 1] 训练轮数
-NUM_EPOCHS = 100 
+NUM_EPOCHS = 100
 LR = 2e-4
 WEIGHT_DECAY = 1e-4
 
@@ -49,16 +48,27 @@ GRAD_CLIP_NORM = 1.0
 
 # [修改点 2] 学习率调度与早停策略调整
 # 既然要跑满 100 轮，就把耐心值调大，不要太快降学习率，也不要太早停止
-PLATEAU_PATIENCE = 10      # 10个epoch不降才减小LR
-PLATEAU_FACTOR = 0.5       # 每次减半
+PLATEAU_PATIENCE = 10  # 10个epoch不降才减小LR
+PLATEAU_FACTOR = 0.5  # 每次减半
 EARLY_STOP_PATIENCE = 100  # 设为 100，实际上就是禁用了早停，保证跑满
 
 # Model / log outputs
 BEST_PATH = os.path.join(SPLIT_DIR, "best_fusion_cnn_1024x576.pth")
-OUT_JSON  = os.path.join(SPLIT_DIR, "train_fusion_cnn_1024x576.json")
+OUT_JSON = os.path.join(SPLIT_DIR, "train_fusion_cnn_1024x576.json")
 
 # Dataset fallback shape (should match cache input shape)
 FALLBACK_SHAPE = (4, 2240, 180)
+
+# =========================
+# Data augmentation (ship-line / spurious straight-line interference)
+# =========================
+AUG_ENABLE = True
+AUG_SPURIOUS_P = 0.60  # probability to inject spurious Radon peaks (train only)
+AUG_MAX_PEAKS = 3  # how many spurious peaks to inject per sample
+AUG_AMP_MIN, AUG_AMP_MAX = 0.15, 0.60
+AUG_SIGMA_RHO = 18.0  # gaussian radius along rho axis (pixels)
+AUG_SIGMA_THETA = 1.8  # gaussian radius along theta axis (bins)
+AUG_TARGET_CHANNELS = (0, 1, 2)  # default: only traditional Radon channels
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -84,14 +94,14 @@ def ensure_dir(p: str):
 def load_split_indices(split_dir: str):
     primary = {
         "train": os.path.join(split_dir, "train_indices.npy"),
-        "val":   os.path.join(split_dir, "val_indices.npy"),
-        "test":  os.path.join(split_dir, "test_indices.npy"),
+        "val": os.path.join(split_dir, "val_indices.npy"),
+        "test": os.path.join(split_dir, "test_indices.npy"),
     }
     if all(os.path.exists(p) for p in primary.values()):
         return {
             "train": np.load(primary["train"]).astype(np.int64).tolist(),
-            "val":   np.load(primary["val"]).astype(np.int64).tolist(),
-            "test":  np.load(primary["test"]).astype(np.int64).tolist(),
+            "val": np.load(primary["val"]).astype(np.int64).tolist(),
+            "test": np.load(primary["test"]).astype(np.int64).tolist(),
         }
     raise FileNotFoundError(f"Cannot find split indices in {split_dir}")
 
@@ -99,12 +109,57 @@ def load_split_indices(split_dir: str):
 # =========================
 # Dataset
 # =========================
+def _inject_gaussian_peak(x: torch.Tensor, ch: int, rho0: int, th0: int, amp: float,
+                          sigma_rho: float, sigma_th: float) -> None:
+    """In-place add a small 2D Gaussian peak to x[ch] at (rho0, th0).
+
+    This is used to simulate strong non-horizon straight-line responses (e.g., ship decks/masts)
+    that can create competing peaks in the Radon domain.
+    """
+    _, H, W = x.shape
+    # local window for efficiency
+    sr = int(max(3, min(H // 2, round(3.0 * sigma_rho))))
+    st = int(max(2, min(W // 2, round(3.0 * sigma_th))))
+    r1 = max(0, rho0 - sr)
+    r2 = min(H, rho0 + sr + 1)
+    t1 = max(0, th0 - st)
+    t2 = min(W, th0 + st + 1)
+
+    rr = torch.arange(r1, r2, device=x.device, dtype=x.dtype) - float(rho0)
+    tt = torch.arange(t1, t2, device=x.device, dtype=x.dtype) - float(th0)
+    gr = torch.exp(-(rr * rr) / (2.0 * sigma_rho * sigma_rho))
+    gt = torch.exp(-(tt * tt) / (2.0 * sigma_th * sigma_th))
+    g2d = gr[:, None] * gt[None, :]
+    x[ch, r1:r2, t1:t2] = torch.clamp(x[ch, r1:r2, t1:t2] + amp * g2d, 0.0, 1.0)
+
+
+def augment_fusion_tensor(x: torch.Tensor) -> torch.Tensor:
+    """On-the-fly augmentation for FusionCache tensors.
+
+    x: [C, H, W], values assumed in [0,1].
+    """
+    if (not AUG_ENABLE) or (torch.rand(1).item() > AUG_SPURIOUS_P):
+        return x
+
+    C, H, W = x.shape
+    n_peaks = int(torch.randint(1, AUG_MAX_PEAKS + 1, (1,)).item())
+    for _ in range(n_peaks):
+        ch = int(AUG_TARGET_CHANNELS[int(torch.randint(0, len(AUG_TARGET_CHANNELS), (1,)).item())])
+        rho0 = int(torch.randint(0, H, (1,)).item())
+        th0 = int(torch.randint(0, W, (1,)).item())
+        amp = float(AUG_AMP_MIN + (AUG_AMP_MAX - AUG_AMP_MIN) * torch.rand(1).item())
+        _inject_gaussian_peak(x, ch, rho0, th0, amp, AUG_SIGMA_RHO, AUG_SIGMA_THETA)
+    return x
+
+
 class SplitCacheDataset(Dataset):
-    def __init__(self, cache_dir: str, indices: list, fallback_shape=(4, 2240, 180), strict_missing: bool = True):
+    def __init__(self, cache_dir: str, indices: list, fallback_shape=(4, 2240, 180), strict_missing: bool = True,
+                 augment: bool = False):
         self.cache_dir = cache_dir
         self.indices = list(indices)
         self.fallback_shape = tuple(fallback_shape)
         self.strict_missing = bool(strict_missing)
+        self.augment = bool(augment)
 
     def __len__(self):
         return len(self.indices)
@@ -120,8 +175,10 @@ class SplitCacheDataset(Dataset):
             return x, y
 
         data = np.load(path, allow_pickle=True).item()
-        x = torch.from_numpy(data["input"]).float()   # [C,H,W]
-        y = torch.from_numpy(data["label"]).float()   # [2]
+        x = torch.from_numpy(data["input"]).float()  # [C,H,W]
+        y = torch.from_numpy(data["label"]).float()  # [2]
+        if self.augment:
+            x = augment_fusion_tensor(x)
         return x, y
 
 
@@ -153,10 +210,12 @@ class HorizonPeriodicLoss(nn.Module):
 # =========================
 try:
     import torch.amp as torch_amp
+
     _HAS_TORCH_AMP = True
 except Exception:
     _HAS_TORCH_AMP = False
     torch_amp = None
+
 
 def autocast_ctx():
     if not USE_AMP or not DEVICE.startswith("cuda"):
@@ -165,6 +224,7 @@ def autocast_ctx():
     if _HAS_TORCH_AMP:
         return torch_amp.autocast(device_type="cuda", enabled=True)
     return torch.cuda.amp.autocast(enabled=True)
+
 
 def make_scaler():
     if not USE_AMP or not DEVICE.startswith("cuda"):
@@ -252,9 +312,11 @@ def main():
         raise RuntimeError("val_indices is empty.")
 
     # dataset/loader
-    train_ds = SplitCacheDataset(TRAIN_CACHE_DIR, train_indices, fallback_shape=FALLBACK_SHAPE, strict_missing=True)
-    val_ds   = SplitCacheDataset(VAL_CACHE_DIR,   val_indices,   fallback_shape=FALLBACK_SHAPE, strict_missing=True)
-    test_ds  = SplitCacheDataset(TEST_CACHE_DIR,  test_indices,  fallback_shape=FALLBACK_SHAPE, strict_missing=True) if os.path.isdir(TEST_CACHE_DIR) else None
+    train_ds = SplitCacheDataset(TRAIN_CACHE_DIR, train_indices, fallback_shape=FALLBACK_SHAPE, strict_missing=True,
+                                 augment=True)
+    val_ds = SplitCacheDataset(VAL_CACHE_DIR, val_indices, fallback_shape=FALLBACK_SHAPE, strict_missing=True)
+    test_ds = SplitCacheDataset(TEST_CACHE_DIR, test_indices, fallback_shape=FALLBACK_SHAPE,
+                                strict_missing=True) if os.path.isdir(TEST_CACHE_DIR) else None
 
     pin = DEVICE.startswith("cuda")
     train_loader = DataLoader(
@@ -322,7 +384,7 @@ def main():
         model.load_state_dict(torch.load(BEST_PATH, map_location=DEVICE))
         final_test = evaluate(model, test_loader, criterion)
         print(f"[FINAL TEST] loss={final_test:.6f}")
-    
+
     # save log
     payload = {
         "best_val_loss": best_val,
