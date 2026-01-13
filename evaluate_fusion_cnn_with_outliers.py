@@ -1,386 +1,467 @@
-# -*- coding: utf-8 -*-
-"""
-Evaluate Fusion-CNN on cached FusionCache_* and save outlier visualizations.
-
-- No CLI needed (PyCharm friendly).
-- Deterministic outlier selection (topK + threshold).
-- Saves:
-    eval_outputs/eval_test.csv
-    eval_outputs/outliers_test/*.png
-    eval_outputs/outliers_test.txt
-"""
+# evaluate_fusion_cnn_with_outliers.py
+# ------------------------------------------------------------
+# Evaluate Fusion-CNN on FusionCache and export:
+#   - per-sample metrics CSV
+#   - outlier list TXT
+#   - outlier visualizations (GT vs Pred lines)
+#
+# IMPORTANT:
+# This script is aligned with the CURRENT FusionCache label encoding
+# produced by make_fusion_cache.py in this repo:
+#   label[0] = rho_norm in [0,1] where rho_index = rho_norm * RESIZE_H (padded height)
+#   label[1] = theta_norm in [0,1] where theta_rad = theta_norm * pi  (theta period=180°)
+#
+# The returned (rho, theta) are in the UNet-image coordinate system (1024x576):
+# origin at image center, compatible with drawing on UNet output images.
+# ------------------------------------------------------------
 
 import os
 import math
 import csv
+import glob
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Tuple, List, Dict
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
-import cv2
+
 import torch
 from torch.utils.data import Dataset, DataLoader
 
-# -----------------------
-# User config (edit here)
-# -----------------------
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+import cv2
 
-# weights from your training
+from cnn_model import HorizonResNet
+
+
+# =========================
+# User config (PyCharm friendly)
+# =========================
+SPLIT = "test"  # "train" / "val" / "test"
 WEIGHTS_PATH = r"splits_musid/best_fusion_cnn_1024x576.pth"
+CACHE_ROOT = r"Hashmani's Dataset/FusionCache_1024x576"
+CACHE_DIR = os.path.join(CACHE_ROOT, SPLIT)
 
-# fusion cache root for split
-CACHE_DIR = r"Hashmani's Dataset/FusionCache_1024x576\test"
+# Where to find original images to draw outliers.
+# If your cache stores only basename (e.g., DSC_0001.jpg), set this to the dataset root.
+ORIGINAL_IMG_ROOT = r"Hashmani's Dataset"  # <-- change to your image root if needed
 
-# original images root (for visualization). You MUST set this to your real image folder
-# If you don't want to visualize on raw image, set to "" and it will visualize on a blank canvas.
-ORIGINAL_IMG_ROOT = r"Hashmani's Dataset\MU-SID"  # <-- change to your image folder
+OUT_DIR = "eval_outputs"
+OUTLIER_DIR = os.path.join(OUT_DIR, f"outliers_{SPLIT}")
+CSV_PATH = os.path.join(OUT_DIR, f"eval_{SPLIT}.csv")
+OUTLIER_TXT = os.path.join(OUT_DIR, f"outliers_{SPLIT}.txt")
 
-# output dirs
-OUT_DIR = r"eval_outputs"
-OUTLIER_DIR = os.path.join(OUT_DIR, "outliers_test")
-CSV_PATH = os.path.join(OUT_DIR, "eval_test.csv")
-OUTLIER_TXT = os.path.join(OUT_DIR, "outliers_test.txt")
-
-# cache sample format
-# Each .npy expected to be dict-like or array:
-#   - array shape (C,H,W) and label separately stored in same npy OR
-#   - dict with keys {"input","label","img_path"} etc.
-# This script supports two common patterns (see _load_one()).
-
-# image size in UNet space (used to draw lines consistently)
-UNET_W, UNET_H = 1024, 576
-
-# outlier selection
+# Outlier selection
 TOPK_OUTLIERS = 50
 THRESH_RHO_ORIG_PX = 20.0
 THRESH_EDGEY_ORIG_PX = 20.0
 THRESH_THETA_DEG = 2.0
+THRESH_LINE_DIST_ORIG_PX = 20.0
+THRESH_CONF_MAX = 0.15  # also treat very low confidence as outlier (if conf head exists)
 
-# visualization options
-DRAW_THICKNESS = 2
-FONT_SCALE = 0.6
+# Visualization
+DRAW_THICKNESS = 3
+FONT_SCALE = 0.55
 
-# -----------------------
-# Helper math
-# -----------------------
-def wrap_angle_deg(err_deg: float, period: float = 180.0) -> float:
-    """Wrap absolute error on a periodic angle domain (0..period)."""
-    err = abs(err_deg) % period
-    return min(err, period - err)
+# Original resolution scaling (approx) for reporting pixel errors in the original image
+ORIG_W_APPROX = 1920.0
+ORIG_H_APPROX = 1080.0
 
-def polar_to_line_pts(theta_deg: float, rho: float, w: int, h: int) -> Tuple[Tuple[int,int], Tuple[int,int]]:
-    """
-    Convert (theta, rho) in image coordinates to two endpoints within image.
-    Here theta is in degrees, consistent with your pipeline (period 180).
-    Using line normal form: x*cos + y*sin = rho
-    """
+# FusionCache / UNet geometry
+UNET_W = 1024
+UNET_H = 576
+
+# FusionCache label geometry (padded height for Radon rho axis)
+RESIZE_W = 1024
+RESIZE_H = 2240
+PAD_TOP = 832
+
+BATCH_SIZE = 32
+NUM_WORKERS = 0
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+
+# =========================
+# Label de-normalization (must match make_fusion_cache.py)
+# =========================
+@dataclass
+class DenormConfig:
+    resize_w: int = RESIZE_W
+    resize_h: int = RESIZE_H
+    unet_w: int = UNET_W
+    unet_h: int = UNET_H
+    pad_top: int = PAD_TOP
+
+    @property
+    def x0(self) -> float:
+        return self.resize_w / 2.0
+
+    @property
+    def y0(self) -> float:
+        # padded origin center in resize_h space
+        return self.pad_top + self.unet_h / 2.0
+
+
+def denorm_rho_theta(rho_norm: float, theta_norm: float, cfg: DenormConfig) -> Tuple[float, float]:
+    """Convert normalized (rho_norm, theta_norm) to (rho_px, theta_deg) in UNet-image coordinates."""
+    theta_rad = float(theta_norm) * math.pi
+    theta_deg = theta_rad * 180.0 / math.pi
+
+    # rho_norm corresponds to an absolute rho-index (y) in padded RESIZE_H space.
+    y = float(rho_norm) * float(cfg.resize_h)
+
+    # Convert to centered rho in the coordinate system whose origin is the UNet center.
+    # Because both the point coordinates and origin shift by pad_top, this rho is
+    # directly usable in UNet-space computations with origin at (unet_w/2, unet_h/2).
+    rho = y - float(cfg.y0)
+    return rho, theta_deg
+
+
+def angular_diff_deg(a_deg: float, b_deg: float, period: float = 180.0) -> float:
+    """Minimum absolute angular difference with wrap-around (period=180° for Radon)."""
+    d = abs(a_deg - b_deg) % period
+    return min(d, period - d)
+
+
+# =========================
+# Line geometry / metrics
+# =========================
+def _theta_ab(theta_deg: float) -> Tuple[float, float]:
     th = math.radians(theta_deg)
-    a, b = math.cos(th), math.sin(th)
-    # choose intersections with image borders
-    pts = []
+    return math.cos(th), math.sin(th)  # a,b
 
-    # x=0 => y = (rho - 0*a)/b
-    if abs(b) > 1e-6:
-        y = (rho - 0 * a) / b
-        if 0 <= y <= h-1:
-            pts.append((0, int(round(y))))
-        y = (rho - (w-1) * a) / b
-        if 0 <= y <= h-1:
-            pts.append((w-1, int(round(y))))
 
-    # y=0 => x = (rho - 0*b)/a
-    if abs(a) > 1e-6:
-        x = (rho - 0 * b) / a
-        if 0 <= x <= w-1:
-            pts.append((int(round(x)), 0))
-        x = (rho - (h-1) * b) / a
-        if 0 <= x <= w-1:
-            pts.append((int(round(x)), h-1))
+def line_y_at_x(rho: float, theta_deg: float, x: float, w: int, h: int) -> float:
+    """Return y (in pixels) where the line (rho, theta) crosses x, in UNet image coordinates."""
+    a, b = _theta_ab(theta_deg)
+    x0 = w / 2.0
+    y0 = h / 2.0
 
-    # dedup & pick two farthest
-    pts_unique = []
-    for p in pts:
-        if p not in pts_unique:
-            pts_unique.append(p)
-
-    if len(pts_unique) >= 2:
-        # choose farthest pair
-        best = (pts_unique[0], pts_unique[1])
-        best_d = -1
-        for i in range(len(pts_unique)):
-            for j in range(i+1, len(pts_unique)):
-                dx = pts_unique[i][0] - pts_unique[j][0]
-                dy = pts_unique[i][1] - pts_unique[j][1]
-                d = dx*dx + dy*dy
-                if d > best_d:
-                    best_d = d
-                    best = (pts_unique[i], pts_unique[j])
-        return best
-    # fallback: horizontal line
-    return (0, int(h/2)), (w-1, int(h/2))
-
-def point_line_dist_mean(theta_deg: float, rho: float, pts_xy: np.ndarray) -> float:
-    """Mean distance from points to line x*cos+y*sin=rho."""
-    th = math.radians(theta_deg)
-    a, b = math.cos(th), math.sin(th)
-    # distance = |ax+by-rho|
-    d = np.abs(pts_xy[:,0]*a + pts_xy[:,1]*b - rho)
-    return float(d.mean()) if len(d) else 0.0
-
-def edge_y_error(theta_deg: float, rho_pred: float, rho_gt: float, x_ref: float = 0.0) -> float:
-    """
-    Convert rho error to y-intercept error at a reference x.
-    For near-horizontal lines this approximates pixel shift at image edge.
-    """
-    th = math.radians(theta_deg)
-    b = math.sin(th)
-    a = math.cos(th)
+    # rho = a*(x-x0) + b*(y-y0)
     if abs(b) < 1e-6:
-        return abs(rho_pred - rho_gt)  # degenerate
-    y_pred = (rho_pred - x_ref * a) / b
-    y_gt = (rho_gt - x_ref * a) / b
-    return float(abs(y_pred - y_gt))
+        # nearly vertical line: no single y
+        return float("nan")
+    return (rho - a * (x - x0)) / b + y0
 
-# -----------------------
+
+def point_to_line_distance(x: float, y: float, rho: float, theta_deg: float, w: int, h: int) -> float:
+    a, b = _theta_ab(theta_deg)
+    x0 = w / 2.0
+    y0 = h / 2.0
+    return abs(a * (x - x0) + b * (y - y0) - rho)
+
+
+def mean_point_to_line_distance(
+    rho_pred: float,
+    theta_pred_deg: float,
+    rho_gt: float,
+    theta_gt_deg: float,
+    w: int,
+    h: int,
+    n_samples: int = 200,
+) -> float:
+    """Mean distance from sampled points on GT line to the predicted line."""
+    xs = np.linspace(0.0, float(w - 1), n_samples, dtype=np.float32)
+    ys = np.array([line_y_at_x(rho_gt, theta_gt_deg, float(x), w, h) for x in xs], dtype=np.float32)
+
+    ok = np.isfinite(ys)
+    if not np.any(ok):
+        return float("nan")
+
+    xs = xs[ok]
+    ys = ys[ok]
+    d = [point_to_line_distance(float(x), float(y), rho_pred, theta_pred_deg, w, h) for x, y in zip(xs, ys)]
+    return float(np.mean(d)) if len(d) else float("nan")
+
+
+def edge_y_error(
+    rho_pred: float,
+    theta_pred_deg: float,
+    rho_gt: float,
+    theta_gt_deg: float,
+    w: int,
+    h: int,
+) -> float:
+    """Avg |y_pred - y_gt| at left and right image edges."""
+    yL_p = line_y_at_x(rho_pred, theta_pred_deg, 0.0, w, h)
+    yR_p = line_y_at_x(rho_pred, theta_pred_deg, float(w - 1), w, h)
+    yL_g = line_y_at_x(rho_gt, theta_gt_deg, 0.0, w, h)
+    yR_g = line_y_at_x(rho_gt, theta_gt_deg, float(w - 1), w, h)
+
+    vals = []
+    if np.isfinite(yL_p) and np.isfinite(yL_g):
+        vals.append(abs(float(yL_p) - float(yL_g)))
+    if np.isfinite(yR_p) and np.isfinite(yR_g):
+        vals.append(abs(float(yR_p) - float(yR_g)))
+
+    if not vals:
+        return float("nan")
+    return float(np.mean(vals))
+
+
+# =========================
 # Dataset
-# -----------------------
+# =========================
 class FusionCacheDataset(Dataset):
     def __init__(self, cache_dir: str):
         self.cache_dir = cache_dir
-        self.files = sorted([str(p) for p in Path(cache_dir).glob("*.npy")])
+        self.files = sorted(glob.glob(os.path.join(cache_dir, "*.npy")), key=lambda p: int(Path(p).stem))
+        if len(self.files) == 0:
+            raise FileNotFoundError(f"No .npy found under: {cache_dir}")
 
     def __len__(self):
         return len(self.files)
 
-    def _load_one(self, path: str):
-        obj = np.load(path, allow_pickle=True)
-        # pattern A: dict saved
-        if isinstance(obj, np.ndarray) and obj.dtype == object:
-            obj = obj.item()
+    def __getitem__(self, i: int):
+        path = self.files[i]
+        idx = int(Path(path).stem)
+        d = np.load(path, allow_pickle=True).item()
+        x = torch.from_numpy(d["input"]).float()
+        y = torch.from_numpy(d["label"]).float()
+        img_name = d.get("img_name") or d.get("image_name") or d.get("name") or ""
+        if not img_name:
+            # fallback: store idx only
+            img_name = f"{idx}.jpg"
+        return x, y, img_name, f"{idx}.npy"
 
-        if isinstance(obj, dict):
-            x = obj.get("input", None)
-            y = obj.get("label", None)
-            img_name = obj.get("img_name", None) or obj.get("image_name", None)
-        else:
-            # pattern B: array saved directly; label may be in same file last element
-            # If your cache format differs, adjust here.
-            arr = obj
-            if arr.ndim == 3:
-                x = arr
-                y = None
-            elif arr.ndim == 1 and len(arr) == 2 and isinstance(arr[0], np.ndarray):
-                x = arr[0]
-                y = arr[1]
-            else:
-                x = arr
-                y = None
-            img_name = None
 
-        # If label not found, try infer from separate label file (optional)
-        if y is None:
-            raise RuntimeError(f"Label not found in cache npy: {path}")
+# =========================
+# Model loading (with optional confidence head)
+# =========================
+def load_model() -> HorizonResNet:
+    model = HorizonResNet(in_channels=4).to(DEVICE)
 
-        if img_name is None:
-            # fallback: use npy filename with jpg extension guess
-            img_name = Path(path).stem + ".jpg"
+    try:
+        ckpt = torch.load(WEIGHTS_PATH, map_location=DEVICE, weights_only=True)
+    except TypeError:
+        ckpt = torch.load(WEIGHTS_PATH, map_location=DEVICE)
 
-        x = x.astype(np.float32)
-        y = np.array(y, dtype=np.float32)  # [rho_norm, theta_norm] or [rho,theta] depending your cache
-        return x, y, img_name
-
-    def __getitem__(self, idx):
-        path = self.files[idx]
-        x, y, img_name = self._load_one(path)
-        return torch.from_numpy(x), torch.from_numpy(y), img_name, os.path.basename(path)
-
-# -----------------------
-# Model loader
-# -----------------------
-def load_model():
-    # Import your model here
-    from cnn_model import HorizonResNet  # must exist in your project
-    model = HorizonResNet(in_channels=4)  # if your input channels differ, modify
-    ckpt = torch.load(WEIGHTS_PATH, map_location=DEVICE)
-    # support either {'state_dict':...} or raw state dict
-    state = ckpt.get("state_dict", ckpt) if isinstance(ckpt, dict) else ckpt
-    # strip "module." if needed
-    new_state = {}
-    for k, v in state.items():
-        nk = k.replace("module.", "")
-        new_state[nk] = v
-    model.load_state_dict(new_state, strict=True)
-    model.to(DEVICE)
+    # support both pure state_dict and dict checkpoints
+    state = ckpt["model"] if isinstance(ckpt, dict) and "model" in ckpt else ckpt
+    model.load_state_dict(state, strict=True)
     model.eval()
     return model
 
-# -----------------------
-# Label / prediction decoding
-# -----------------------
-def decode_label(label: np.ndarray) -> Tuple[float, float]:
-    """
-    Convert label array into (rho_px, theta_deg) in UNet space.
-    Your existing pipeline seems to store normalized [rho_norm, theta_norm] in [0,1].
-    If your cache uses different encoding, adjust here to match your training.
-    """
-    rho_norm = float(label[0])
-    theta_norm = float(label[1])
-    rho_px = rho_norm * math.sqrt(UNET_W**2 + UNET_H**2)  # same as your evaluation earlier (approx)
-    theta_deg = theta_norm * 180.0
-    return rho_px, theta_deg
 
-def decode_pred(pred: np.ndarray) -> Tuple[float, float]:
-    rho_norm = float(pred[0])
-    theta_norm = float(pred[1])
-    rho_px = rho_norm * math.sqrt(UNET_W**2 + UNET_H**2)
-    theta_deg = theta_norm * 180.0
-    return rho_px, theta_deg
+def _sigmoid(x: float) -> float:
+    return 1.0 / (1.0 + math.exp(-float(x)))
 
-# -----------------------
-# Visualization
-# -----------------------
-def load_original_image(img_name: str) -> np.ndarray:
-    if not ORIGINAL_IMG_ROOT:
-        return np.zeros((UNET_H, UNET_W, 3), dtype=np.uint8)
-    cand = os.path.join(ORIGINAL_IMG_ROOT, img_name)
-    if not os.path.exists(cand):
-        # fallback blank
-        return np.zeros((UNET_H, UNET_W, 3), dtype=np.uint8)
-    im = cv2.imread(cand, cv2.IMREAD_COLOR)
-    if im is None:
-        return np.zeros((UNET_H, UNET_W, 3), dtype=np.uint8)
-    im = cv2.resize(im, (UNET_W, UNET_H))
-    return im
 
-def draw_lines_and_text(img: np.ndarray,
-                        rho_gt: float, theta_gt: float,
-                        rho_pr: float, theta_pr: float,
-                        text_lines: List[str]) -> np.ndarray:
+# =========================
+# Visualization helpers
+# =========================
+def _safe_int(v: float, lo: int, hi: int) -> int:
+    if not np.isfinite(v):
+        return int((lo + hi) // 2)
+    return int(max(lo, min(hi, round(float(v)))))
+
+
+def draw_lines_and_text(
+    img: np.ndarray,
+    rho_gt: float,
+    theta_gt: float,
+    rho_pr: float,
+    theta_pr: float,
+    text_lines: List[str],
+) -> np.ndarray:
     out = img.copy()
-    p1g, p2g = polar_to_line_pts(theta_gt, rho_gt, UNET_W, UNET_H)
-    p1p, p2p = polar_to_line_pts(theta_pr, rho_pr, UNET_W, UNET_H)
 
-    # GT green
+    yL_g = line_y_at_x(rho_gt, theta_gt, 0.0, UNET_W, UNET_H)
+    yR_g = line_y_at_x(rho_gt, theta_gt, float(UNET_W - 1), UNET_W, UNET_H)
+    yL_p = line_y_at_x(rho_pr, theta_pr, 0.0, UNET_W, UNET_H)
+    yR_p = line_y_at_x(rho_pr, theta_pr, float(UNET_W - 1), UNET_W, UNET_H)
+
+    p1g = (0, _safe_int(yL_g, -UNET_H, 2 * UNET_H))
+    p2g = (UNET_W - 1, _safe_int(yR_g, -UNET_H, 2 * UNET_H))
+    p1p = (0, _safe_int(yL_p, -UNET_H, 2 * UNET_H))
+    p2p = (UNET_W - 1, _safe_int(yR_p, -UNET_H, 2 * UNET_H))
+
+    # GT: green, Pred: red
     cv2.line(out, p1g, p2g, (0, 255, 0), DRAW_THICKNESS)
-    # Pred red
     cv2.line(out, p1p, p2p, (0, 0, 255), DRAW_THICKNESS)
 
     y0 = 22
     for t in text_lines:
-        cv2.putText(out, t, (10, y0), cv2.FONT_HERSHEY_SIMPLEX, FONT_SCALE, (255,255,255), 2, cv2.LINE_AA)
-        cv2.putText(out, t, (10, y0), cv2.FONT_HERSHEY_SIMPLEX, FONT_SCALE, (0,0,0), 1, cv2.LINE_AA)
+        cv2.putText(out, t, (10, y0), cv2.FONT_HERSHEY_SIMPLEX, FONT_SCALE, (255, 255, 255), 2, cv2.LINE_AA)
+        cv2.putText(out, t, (10, y0), cv2.FONT_HERSHEY_SIMPLEX, FONT_SCALE, (0, 0, 0), 1, cv2.LINE_AA)
         y0 += 20
+
     return out
 
-# -----------------------
-# Main evaluation
-# -----------------------
+
+def find_image_path(img_name: str) -> Optional[str]:
+    # absolute
+    if os.path.isabs(img_name) and os.path.exists(img_name):
+        return img_name
+
+    # common direct joins
+    cand = [
+        os.path.join(ORIGINAL_IMG_ROOT, img_name),
+        os.path.join(ORIGINAL_IMG_ROOT, SPLIT, img_name),
+        os.path.join(ORIGINAL_IMG_ROOT, "test", img_name),
+        os.path.join(ORIGINAL_IMG_ROOT, "val", img_name),
+        os.path.join(ORIGINAL_IMG_ROOT, "train", img_name),
+    ]
+    for p in cand:
+        if os.path.exists(p):
+            return p
+
+    # fallback: recursive search (only used for outliers)
+    hits = glob.glob(os.path.join(ORIGINAL_IMG_ROOT, "**", img_name), recursive=True)
+    if hits:
+        return hits[0]
+    return None
+
+
+def load_original_image(img_name: str) -> np.ndarray:
+    p = find_image_path(img_name)
+    if p is None:
+        # blank placeholder
+        return np.zeros((UNET_H, UNET_W, 3), dtype=np.uint8)
+
+    img = cv2.imread(p)
+    if img is None:
+        return np.zeros((UNET_H, UNET_W, 3), dtype=np.uint8)
+
+    img = cv2.resize(img, (UNET_W, UNET_H), interpolation=cv2.INTER_AREA)
+    return img
+
+
+# =========================
+# Main
+# =========================
 def main():
     os.makedirs(OUT_DIR, exist_ok=True)
     os.makedirs(OUTLIER_DIR, exist_ok=True)
 
+    cfg = DenormConfig()
+    scale_to_orig = ORIG_W_APPROX / float(UNET_W)
+
     ds = FusionCacheDataset(CACHE_DIR)
-    dl = DataLoader(ds, batch_size=32, shuffle=False, num_workers=0)
+    dl = DataLoader(ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS)
 
     model = load_model()
-
-    diag = math.sqrt(UNET_W**2 + UNET_H**2)
-    scale_to_orig = 1920.0 / UNET_W  # approx, consistent with your earlier script
 
     rows: List[Dict] = []
 
     with torch.no_grad():
         for xb, yb, img_names, npy_names in dl:
             xb = xb.to(DEVICE, non_blocking=True)
-            pred = model(xb)
-            pred = pred.detach().cpu().numpy()
-            yb = yb.numpy()
+
+            # Support optional confidence head
+            conf = None
+            try:
+                pred, conf = model(xb, return_conf=True)  # type: ignore
+            except TypeError:
+                pred = model(xb)
+
+            pred_np = pred.detach().cpu().numpy()
+            yb_np = yb.numpy()
+            conf_np = conf.detach().cpu().numpy().reshape(-1) if conf is not None else None
 
             for i in range(len(img_names)):
-                rho_gt, theta_gt = decode_label(yb[i])
-                rho_pr, theta_pr = decode_pred(pred[i])
+                rho_gt, theta_gt = denorm_rho_theta(float(yb_np[i, 0]), float(yb_np[i, 1]), cfg)
+                rho_pr, theta_pr = denorm_rho_theta(float(pred_np[i, 0]), float(pred_np[i, 1]), cfg)
 
                 rho_err = abs(rho_pr - rho_gt)
-                theta_err = wrap_angle_deg(theta_pr - theta_gt, 180.0)
+                theta_err = angular_diff_deg(theta_pr, theta_gt, period=180.0)
 
-                # mean point->line distance: sample points along GT line (approx)
-                # We approximate by using endpoints of GT line and interpolate.
-                p1, p2 = polar_to_line_pts(theta_gt, rho_gt, UNET_W, UNET_H)
-                xs = np.linspace(p1[0], p2[0], 200)
-                ys = np.linspace(p1[1], p2[1], 200)
-                pts = np.stack([xs, ys], axis=1).astype(np.float32)
-                line_dist = point_line_dist_mean(theta_pr, rho_pr, pts)
+                line_dist = mean_point_to_line_distance(rho_pr, theta_pr, rho_gt, theta_gt, UNET_W, UNET_H)
+                ey = edge_y_error(rho_pr, theta_pr, rho_gt, theta_gt, UNET_W, UNET_H)
 
-                edge_y = edge_y_error(theta_gt, rho_pr, rho_gt, x_ref=0.0)
+                row = {
+                    "img_name": str(img_names[i]),
+                    "npy": str(npy_names[i]),
+                    "rho_gt": float(rho_gt),
+                    "theta_gt": float(theta_gt),
+                    "rho_pred": float(rho_pr),
+                    "theta_pred": float(theta_pr),
+                    "rho_err": float(rho_err),
+                    "theta_err_deg": float(theta_err),
+                    "line_dist": float(line_dist),
+                    "edge_y": float(ey),
+                    "rho_err_orig": float(rho_err * scale_to_orig),
+                    "line_dist_orig": float(line_dist * scale_to_orig),
+                    "edge_y_orig": float(ey * scale_to_orig),
+                }
 
-                rows.append({
-                    "img_name": img_names[i],
-                    "npy": npy_names[i],
-                    "rho_gt": rho_gt, "theta_gt": theta_gt,
-                    "rho_pred": rho_pr, "theta_pred": theta_pr,
-                    "rho_err": rho_err,
-                    "theta_err_deg": theta_err,
-                    "line_dist": line_dist,
-                    "edge_y": edge_y,
-                    "rho_err_orig": rho_err * scale_to_orig,
-                    "line_dist_orig": line_dist * scale_to_orig,
-                    "edge_y_orig": edge_y * scale_to_orig,
-                })
+                if conf_np is not None:
+                    row["conf"] = float(_sigmoid(conf_np[i]))
 
-    # write csv
+                rows.append(row)
+
+    # ---------- CSV ----------
+    fieldnames = list(rows[0].keys()) if rows else []
     with open(CSV_PATH, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        w = csv.DictWriter(f, fieldnames=fieldnames)
         w.writeheader()
         for r in rows:
             w.writerow(r)
 
-    # select outliers
-    # threshold based
-    out_thr = [r for r in rows if
-               (r["rho_err_orig"] >= THRESH_RHO_ORIG_PX) or
-               (r["edge_y_orig"] >= THRESH_EDGEY_ORIG_PX) or
-               (r["theta_err_deg"] >= THRESH_THETA_DEG)]
-    # topK by edge_y_orig
+    # ---------- outliers ----------
+    def is_outlier(r: Dict) -> bool:
+        if r["rho_err_orig"] >= THRESH_RHO_ORIG_PX:
+            return True
+        if r["edge_y_orig"] >= THRESH_EDGEY_ORIG_PX:
+            return True
+        if r["theta_err_deg"] >= THRESH_THETA_DEG:
+            return True
+        if r["line_dist_orig"] >= THRESH_LINE_DIST_ORIG_PX:
+            return True
+        if "conf" in r and float(r["conf"]) <= THRESH_CONF_MAX:
+            return True
+        return False
+
+    out_thr = [r for r in rows if is_outlier(r)]
     out_top = sorted(rows, key=lambda d: d["edge_y_orig"], reverse=True)[:TOPK_OUTLIERS]
 
-    # merge
     out_map = {(r["img_name"], r["npy"]): r for r in (out_thr + out_top)}
-    outliers = list(out_map.values())
-    outliers = sorted(outliers, key=lambda d: d["edge_y_orig"], reverse=True)
+    outliers = sorted(list(out_map.values()), key=lambda d: d["edge_y_orig"], reverse=True)
 
-    # save outlier txt + images
     with open(OUTLIER_TXT, "w", encoding="utf-8") as f:
         for k, r in enumerate(outliers):
-            f.write(f"{k}\t{r['img_name']}\ttheta={r['theta_err_deg']:.3f}\t"
-                    f"rho~{r['rho_err_orig']:.2f}\tlineDist~{r['line_dist_orig']:.2f}\tedgeY~{r['edge_y_orig']:.2f}\n")
+            conf_str = f"\tconf={r['conf']:.3f}" if "conf" in r else ""
+            f.write(
+                f"{k}\t{r['img_name']}\t"
+                f"theta={r['theta_err_deg']:.3f}\t"
+                f"rho~{r['rho_err_orig']:.2f}\t"
+                f"lineDist~{r['line_dist_orig']:.2f}\t"
+                f"edgeY~{r['edge_y_orig']:.2f}{conf_str}\n"
+            )
 
+    # Save outlier visualizations
     for r in outliers:
         img = load_original_image(r["img_name"])
         text = [
-            f"{r['img_name']}",
+            Path(r["img_name"]).name,
             f"theta_err={r['theta_err_deg']:.3f} deg",
-            f"rho_err={r['rho_err_orig']:.2f}px (orig approx)",
-            f"edgeY_err={r['edge_y_orig']:.2f}px",
+            f"rho_err~{r['rho_err_orig']:.2f}px (orig approx)",
+            f"lineDist~{r['line_dist_orig']:.2f}px",
+            f"edgeY~{r['edge_y_orig']:.2f}px",
         ]
+        if "conf" in r:
+            text.append(f"conf={r['conf']:.3f}")
+
         vis = draw_lines_and_text(img, r["rho_gt"], r["theta_gt"], r["rho_pred"], r["theta_pred"], text)
         out_path = os.path.join(OUTLIER_DIR, Path(r["img_name"]).stem + ".png")
         cv2.imwrite(out_path, vis)
 
-    # print summary
-    rho = np.array([r["rho_err"] for r in rows], dtype=np.float32)
-    rhoo = np.array([r["rho_err_orig"] for r in rows], dtype=np.float32)
-    th = np.array([r["theta_err_deg"] for r in rows], dtype=np.float32)
-    ld = np.array([r["line_dist"] for r in rows], dtype=np.float32)
-    ldo = np.array([r["line_dist_orig"] for r in rows], dtype=np.float32)
-    ey = np.array([r["edge_y"] for r in rows], dtype=np.float32)
-    eyo = np.array([r["edge_y_orig"] for r in rows], dtype=np.float32)
+    # ---------- summary ----------
+    def _arr(key: str) -> np.ndarray:
+        return np.array([r[key] for r in rows], dtype=np.float32)
 
-    def stat(x):
-        return float(x.mean()), float(np.median(x)), float(np.percentile(x, 90)), float(np.percentile(x, 95)), float(x.max())
+    def stat(x: np.ndarray) -> Tuple[float, float, float, float, float]:
+        return float(np.mean(x)), float(np.median(x)), float(np.percentile(x, 90)), float(np.percentile(x, 95)), float(np.max(x))
+
+    rho = _arr("rho_err")
+    rhoo = _arr("rho_err_orig")
+    th = _arr("theta_err_deg")
+    ld = _arr("line_dist")
+    ldo = _arr("line_dist_orig")
+    ey = _arr("edge_y")
+    eyo = _arr("edge_y_orig")
 
     print("========== Fusion-CNN Evaluation (with outliers) ==========")
-    print(f"Split: test | N={len(rows)} | Device={DEVICE}")
+    print(f"Split: {SPLIT} | N={len(rows)} | Device={DEVICE}")
     print(f"Weights: {WEIGHTS_PATH}")
     print(f"Cache:   {CACHE_DIR}\n")
 
@@ -402,7 +483,6 @@ def main():
     m, md, p90, p95, mx = stat(eyo)
     print(f"Edge-Y error (px, original-scale approx): mean={m:.4f}, median={md:.4f}, p90={p90:.4f}, p95={p95:.4f}, max={mx:.4f}\n")
 
-    # threshold stats
     theta1 = float((th <= 1.0).mean() * 100)
     theta2 = float((th <= 2.0).mean() * 100)
     theta5 = float((th <= 5.0).mean() * 100)
@@ -427,6 +507,7 @@ def main():
     print(f"[Outliers] saving visualization to: {OUTLIER_DIR}")
     print(f"[Saved] outlier list -> {OUTLIER_TXT}")
     print("Done.")
+
 
 if __name__ == "__main__":
     main()
