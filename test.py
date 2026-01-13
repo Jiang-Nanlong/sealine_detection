@@ -15,8 +15,8 @@ from dataset_loader import synthesize_rain_fog
 IMG_DIR = r"Hashmani's Dataset/clear"
 OUT_DIR = r"demo_results"
 
-UNET_CKPT = "rghnet_best_c2.pth"
-CNN_CKPT = "splits_musid/best_fusion_cnn_1024x576.pth"
+UNET_CKPT = "rghnet_best_c2.pth"       
+CNN_CKPT = "splits_musid/best_fusion_cnn_1024x576.pth" 
 DCE_WEIGHTS = "Epoch99.pth"
 
 ENABLE_DEGRADATION = True
@@ -26,38 +26,32 @@ RESIZE_H, RESIZE_W = 2240, 180
 
 NUM_SAMPLES = 6
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-SEED = 39
+SEED = 2024
 
 # ---- Postprocess configs (RANSAC refine using sky/non-sky boundary points) ----
-CONF_RANSAC_TRIGGER = 0.35  # only run RANSAC when CNN confidence is low
-LEAK_RATIO_MAX = 0.08  # max allowed non-sky pixels in top band (mask quality gate)
-TOP_BAND_RATIO = 0.15  # top band height ratio for leak check
-BOUNDARY_STEP = 2  # sample boundary points every N columns
+CONF_RANSAC_TRIGGER = 0.35   # only run RANSAC when CNN confidence is low
+LEAK_RATIO_MAX = 0.08        # max allowed non-sky pixels in top band (mask quality gate)
+TOP_BAND_RATIO = 0.15        # top band height ratio for leak check
+BOUNDARY_STEP = 2            # sample boundary points every N columns
 MIN_BOUNDARY_PTS = 80
 RANSAC_ITERS = 300
-RANSAC_DIST_THRESH = 3.0  # in UNet-scale pixels
+RANSAC_DIST_THRESH = 3.0     # in UNet-scale pixels
 RANSAC_MIN_INLIER_RATIO = 0.25
-
-
 # -----------------------------------------------------------------------------
 # =======================================
 
 def process_sinogram(sino, th, tw):
     mi, ma = float(sino.min()), float(sino.max())
-    if ma - mi > 1e-6:
-        sino_norm = (sino - mi) / (ma - mi)
-    else:
-        sino_norm = np.zeros_like(sino, dtype=np.float32)
+    if ma - mi > 1e-6: sino_norm = (sino - mi) / (ma - mi)
+    else: sino_norm = np.zeros_like(sino, dtype=np.float32)
     h = sino_norm.shape[0]
     c = np.zeros((th, tw), dtype=np.float32)
     st = (th - h) // 2
-    if h <= th:
-        c[st:st + h, :] = sino_norm
-    else:
+    if h <= th: c[st:st+h, :] = sino_norm
+    else: 
         cs = (h - th) // 2
-        c[:, :] = sino_norm[cs:cs + th, :]
+        c[:, :] = sino_norm[cs:cs+th, :]
     return c
-
 
 def post_process_mask(mask_np):
     # 简单的连通域处理，保持一致性
@@ -73,26 +67,24 @@ def post_process_mask(mask_np):
     out[(mask_np == 1) & (keep == 0)] = 0
     return out
 
-
 def get_line_ends(rho_norm, theta_norm, w, h):
     # 1. 还原到 resize_h 尺度
-    diag = np.sqrt(w ** 2 + h ** 2)
+    diag = np.sqrt(w**2 + h**2)
     pad_top = (RESIZE_H - diag) / 2.0
     rho_real = rho_norm * (RESIZE_H - 1) - pad_top - (diag / 2.0)
-
+    
     theta_rad = np.deg2rad(theta_norm * 180.0)
-
+    
     # 2. 计算端点
     cx, cy = w / 2.0, h / 2.0
     cos_t, sin_t = np.cos(theta_rad), np.sin(theta_rad)
     x0 = cos_t * rho_real
     y0 = sin_t * rho_real
-
+    
     scale = max(w, h) * 2
     pt1 = (int(cx + x0 - scale * sin_t), int(cy + y0 + scale * cos_t))
     pt2 = (int(cx + x0 + scale * sin_t), int(cy + y0 - scale * cos_t))
     return pt1, pt2
-
 
 def _line_from_2pts(p1, p2):
     x1, y1 = float(p1[0]), float(p1[1])
@@ -103,11 +95,9 @@ def _line_from_2pts(p1, p2):
     n = np.hypot(a, b) + 1e-12
     return a / n, b / n, c / n
 
-
 def _point_line_dist(pts, a, b, c):
     # pts: [N,2]
     return np.abs(a * pts[:, 0] + b * pts[:, 1] + c)
-
 
 def _fit_line_tls(pts):
     # Total least squares fit: returns normalized (a,b,c) for ax+by+c=0
@@ -122,7 +112,6 @@ def _fit_line_tls(pts):
     c = -(a * float(mu[0]) + b * float(mu[1]))
     nn = np.hypot(a, b) + 1e-12
     return a / nn, b / nn, c / nn
-
 
 def _line_to_endpoints(a, b, c, w, h):
     # Intersect with image rectangle; return two points for drawing
@@ -155,14 +144,12 @@ def _line_to_endpoints(a, b, c, w, h):
     p2 = (int(cx + 2 * w * dx), int(cy + 2 * w * dy))
     return p1, p2
 
-
 def compute_leak_ratio(mask_pp, top_band_ratio=TOP_BAND_RATIO):
     h, w = mask_pp.shape[:2]
     top_h = max(1, int(round(h * float(top_band_ratio))))
     top = mask_pp[:top_h, :]
     # non-sky(0) pixels in top band
     return float(np.mean(top == 0))
-
 
 def extract_boundary_points(mask_pp, step=BOUNDARY_STEP):
     """Extract sky/non-sky boundary points from a 0/1 mask.
@@ -182,7 +169,6 @@ def extract_boundary_points(mask_pp, step=BOUNDARY_STEP):
     if len(pts) == 0:
         return np.zeros((0, 2), dtype=np.float32)
     return np.array(pts, dtype=np.float32)
-
 
 def ransac_refine_line(boundary_pts, w, h, n_iters=RANSAC_ITERS, dist_thresh=RANSAC_DIST_THRESH,
                        min_inlier_ratio=RANSAC_MIN_INLIER_RATIO, seed=SEED):
@@ -220,12 +206,10 @@ def ransac_refine_line(boundary_pts, w, h, n_iters=RANSAC_ITERS, dist_thresh=RAN
     pt1, pt2 = _line_to_endpoints(a, b, c, w, h)
     return pt1, pt2, rmse, inlier_ratio
 
-
 def main():
     if not os.path.exists(OUT_DIR): os.makedirs(OUT_DIR)
-    random.seed(SEED);
-    torch.manual_seed(SEED)
-
+    random.seed(SEED); torch.manual_seed(SEED)
+    
     print("Loading models...")
     unet = RestorationGuidedHorizonNet(num_classes=2, dce_weights_path=DCE_WEIGHTS).to(DEVICE)
     unet.load_state_dict(torch.load(UNET_CKPT, map_location=DEVICE), strict=False)
@@ -248,10 +232,10 @@ def main():
         if bgr is None: continue
         h_orig, w_orig = bgr.shape[:2]
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-
+        
         # 1. Resize to UNet size (1024x576)
         rgb_unet = cv2.resize(rgb, (UNET_IN_W, UNET_IN_H), interpolation=cv2.INTER_LINEAR)
-
+        
         if ENABLE_DEGRADATION:
             rgb_in_np = synthesize_rain_fog(rgb_unet, p_clean=0.0)
         else:
@@ -262,24 +246,22 @@ def main():
         # 2. UNet
         with torch.no_grad():
             res_t, seg_t, _ = unet(t_in, None, True, True)
-
+        
         res_np = (res_t[0].permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
         mask_np = seg_t.argmax(dim=1)[0].cpu().numpy().astype(np.uint8)
-
+        
         # 3. Post process
         res_bgr = cv2.cvtColor(res_np, cv2.COLOR_RGB2BGR)
         mask_pp = post_process_mask(mask_np)
 
         # 4. Feature Extraction (on 1024x576)
-        try:
-            _, _, _, trads = detector.detect(res_bgr)
-        except:
-            trads = []
-
+        try: _, _, _, trads = detector.detect(res_bgr)
+        except: trads = []
+        
         stack = []
         for s in trads[:3]: stack.append(process_sinogram(s, RESIZE_H, RESIZE_W))
         while len(stack) < 3: stack.append(np.zeros((RESIZE_H, RESIZE_W), dtype=np.float32))
-
+        
         edges = cv2.Canny((mask_pp * 255).astype(np.uint8), 50, 150)
         seg_sino = detector._radon_gpu(edges, theta_scan)
         stack.append(process_sinogram(seg_sino, RESIZE_H, RESIZE_W))
@@ -290,15 +272,15 @@ def main():
         with torch.no_grad():
             preds, conf = cnn(cnn_in, return_conf=True)
             preds = preds.cpu().numpy()[0]
-            conf = float(conf.cpu().numpy()[0])  # 6. Visualize
+            conf = float(conf.cpu().numpy()[0])# 6. Visualize
         # 注意：preds 是基于 1024x576 的，我们需要把它画在原图 1920x1080 上
         # 所以先在 1024x576 上算出端点，再按比例缩放端点坐标
-
+        
         pt1_s, pt2_s = get_line_ends(preds[0], preds[1], UNET_IN_W, UNET_IN_H)
-
+        
         scale_x = w_orig / UNET_IN_W
         scale_y = h_orig / UNET_IN_H
-
+        
         pt1_orig = (int(pt1_s[0] * scale_x), int(pt1_s[1] * scale_y))
         pt2_orig = (int(pt2_s[0] * scale_x), int(pt2_s[1] * scale_y))
 
@@ -311,18 +293,17 @@ def main():
         vis_in_show = (vis_in_show * 255).astype(np.uint8)
 
         comb = np.hstack([vis_in_show, res_show, vis_final])
-
+        
         # Resize for display convenience (too wide)
         h_disp = 400
         r = h_disp / h_orig
-        comb_disp = cv2.resize(comb, (int(comb.shape[1] * r), h_disp))
-
+        comb_disp = cv2.resize(comb, (int(comb.shape[1]*r), h_disp))
+        
         prefix = "degraded" if ENABLE_DEGRADATION else "clean"
         cv2.imwrite(os.path.join(OUT_DIR, f"{prefix}_{i}.png"), comb_disp)
         print(f"Saved {i}")
 
     print("Done")
-
 
 if __name__ == "__main__":
     main()
