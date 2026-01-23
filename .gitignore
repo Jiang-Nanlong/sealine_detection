@@ -1,3 +1,9 @@
 .idea/
 venv/
 __pycache__/
+weights/
+test4/FusionCache_SMD_1024x576/
+Hashmani's Dataset/FusionCache_1024x576/
+Hashmani's Dataset/OfflineCache/
+Singapore Maritime Dataset/
+paper_figures_4panels/

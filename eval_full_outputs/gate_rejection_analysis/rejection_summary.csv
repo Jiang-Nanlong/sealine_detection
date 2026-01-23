@@ -1,0 +1,4 @@
+run,scope,N,attempted,not_attempted,used_ref,rejected_after_attempt,fail_leak,fail_rmse,fail_inlier,fail_improve,other_reject
+gate_stats,all,268,100,168,66,34,12,3,0,19,0
+gate_stats,topk,100,100,0,66,34,12,3,0,19,0
+gate_stats,non_topk,168,0,168,0,0,0,0,0,0,0

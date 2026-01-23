@@ -1,0 +1,24 @@
+{
+  "seed": 42,
+  "ratios": {
+    "train": 0.8,
+    "val": 0.1,
+    "test": 0.1
+  },
+  "counts": {
+    "valid_total": 2673,
+    "train": 2138,
+    "val": 267,
+    "test": 268
+  },
+  "use_group_split": true,
+  "paths": {
+    "train_csv": "splits_musid\\GroundTruth_train.csv",
+    "val_csv": "splits_musid\\GroundTruth_val.csv",
+    "test_csv": "splits_musid\\GroundTruth_test.csv"
+  },
+  "notes": [
+    "indices are CSV row indices (compatible with cache naming idx.npy if you use iterrows index).",
+    "test split should never be used for UNet training or checkpoint selection to avoid leakage."
+  ]
+}

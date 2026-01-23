@@ -173,4 +173,4 @@ class HorizonResNet(nn.Module):
 
 def get_resnet34_model():
     # 注意：这里我们不再需要全连接层，输入尺寸对结构有影响但 Soft-Argmax 自动适应
-    return HorizonResNet(in_channels=4, num_blocks=[3, 4, 6, 3])
+    return HorizonResNet(in_channels=3, num_blocks=[3, 4, 6, 3])

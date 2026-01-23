@@ -1,0 +1,16 @@
+NIR	MVI_1474_NIR.avi	Mismatch avi=83 mat=299
+NIR	MVI_1483_NIR.avi	Empty GT at frame 129, field X
+VIS_Onboard	MVI_0790_VIS_OB.avi	Mismatch avi=600 mat=299
+VIS_Onboard	MVI_0795_VIS_OB.avi	Mismatch avi=255 mat=299
+VIS_Onboard	MVI_0797_VIS_OB.avi	Mismatch avi=600 mat=299
+VIS_Onboard	MVI_0799_VIS_OB.avi	Mismatch avi=600 mat=299
+VIS_Onboard	MVI_0801_VIS_OB.avi	Mismatch avi=600 mat=299
+VIS_Onshore	MVI_1448_VIS.avi	No matching *_HorizonGT.mat
+VIS_Onshore	MVI_1451_VIS.avi	No matching *_HorizonGT.mat
+VIS_Onshore	MVI_1452_VIS.avi	No matching *_HorizonGT.mat
+VIS_Onshore	MVI_1470_VIS.avi	Mismatch avi=266 mat=299
+VIS_Onshore	MVI_1486_VIS.avi	Mismatch avi=629 mat=299
+VIS_Onboard	MVI_0794_VIS_OB.avi	Invalid endpoints at frame 291
+VIS_Onboard	MVI_0794_VIS_OB.avi	Invalid endpoints at frame 294
+VIS_Onboard	MVI_0794_VIS_OB.avi	Invalid endpoints at frame 296
+VIS_Onboard	MVI_0794_VIS_OB.avi	Invalid endpoints at frame 298

@@ -38,15 +38,39 @@ EDGE_DILATE = 1
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 DEVICE_TYPE = "cuda" if torch.cuda.is_available() else "cpu"
 
+
 def ensure_dir(p: str):
     os.makedirs(p, exist_ok=True)
 
-def _read_image_any_ext(img_dir: str, img_name: str):
-    candidates = [img_name, img_name + ".jpg", img_name + ".JPG", img_name + ".png"]
-    for f in candidates:
-        p = os.path.join(img_dir, f)
-        if os.path.exists(p): return cv2.imread(p)
-    return None
+
+def _read_image_any_ext(img_dir: str, img_stem_or_name: str):
+    """Read image by stem or filename.
+
+    MU-SID GroundTruth.csv stores the *stem* (e.g., "DSC_0051_9") without extension,
+    while the actual file is typically ".JPG".
+
+    Returns:
+      (bgr, resolved_filename)
+        - bgr: cv2 image (BGR)
+        - resolved_filename: basename with extension (e.g., "DSC_0051_9.JPG")
+    """
+    name = str(img_stem_or_name)
+    lower = name.lower()
+
+    # If the caller already provides an extension, try it first.
+    candidates = [name] if (lower.endswith(".jpg") or lower.endswith(".jpeg") or lower.endswith(".png")) else []
+
+    # Common extensions (MU-SID images are often .JPG)
+    candidates += [name + ".JPG", name + ".jpg", name + ".jpeg", name + ".png"]
+
+    for fn in candidates:
+        p = os.path.join(img_dir, fn)
+        if os.path.exists(p):
+            im = cv2.imread(p, cv2.IMREAD_COLOR)
+            if im is not None:
+                return im, os.path.basename(fn)
+    return None, None
+
 
 def process_sinogram(sino: np.ndarray, target_h: int, target_w: int) -> np.ndarray:
     mi, ma = float(sino.min()), float(sino.max())
@@ -64,17 +88,18 @@ def process_sinogram(sino: np.ndarray, target_h: int, target_w: int) -> np.ndarr
         container[:, :] = sino_norm[crop_start:crop_start + target_h, :]
     return container
 
+
 def calculate_radon_label(x1, y1, x2, y2, img_w, img_h, resize_h, resize_w):
     # 计算中心偏移
     cx, cy = img_w / 2.0, img_h / 2.0
     dx, dy = x2 - x1, y2 - y1
-    
+
     # 角度计算
     line_angle = np.arctan2(dy, dx)
     theta_rad = line_angle - np.pi / 2
     while theta_rad < 0: theta_rad += np.pi
     while theta_rad >= np.pi: theta_rad -= np.pi
-    
+
     # Rho 计算
     # 公式：x * cos + y * sin = rho
     # 使用中点计算
@@ -86,21 +111,22 @@ def calculate_radon_label(x1, y1, x2, y2, img_w, img_h, resize_h, resize_w):
     # Radon 变换后的 sinogram 高度对应图像对角线长度
     # 但我们统一 Pad 到了 RESIZE_H (2240)
     # 所以要基于 RESIZE_H 进行归一化
-    
+
     # 图像的物理对角线长度
     original_diag = np.sqrt(img_w ** 2 + img_h ** 2)
-    
+
     # rho = 0 对应中心
     rho_pixel_pos = rho + original_diag / 2.0
-    
+
     # 加上 padding 的偏移量
     pad_top = (resize_h - original_diag) / 2.0
     final_rho_idx = rho_pixel_pos + pad_top
-    
+
     label_rho = final_rho_idx / (resize_h - 1)
     label_theta = np.rad2deg(theta_rad) / 180.0
-    
+
     return float(np.clip(label_rho, 0, 1)), float(np.clip(label_theta, 0, 1))
+
 
 def post_process_mask_top_connected(mask_np):
     # 简化的连通域处理
@@ -119,16 +145,18 @@ def post_process_mask_top_connected(mask_np):
     out[(mask_np == 1) & (keep == 0)] = 0
     return out
 
+
 def _load_split_indices(split_dir):
     tr = np.load(os.path.join(split_dir, "train_indices.npy")).astype(np.int64).tolist()
     va = np.load(os.path.join(split_dir, "val_indices.npy")).astype(np.int64).tolist()
     te = np.load(os.path.join(split_dir, "test_indices.npy")).astype(np.int64).tolist()
     return {"train": tr, "val": va, "test": te}
 
+
 def build_cache_for_split(df, indices, out_dir, seg_model, detector, theta_scan):
     ensure_dir(out_dir)
     print(f"Processing {os.path.basename(out_dir)}: {len(indices)}")
-    
+
     for idx in tqdm(indices, ncols=80):
         row = df.iloc[idx]
         img_name = str(row.iloc[0])
@@ -136,11 +164,13 @@ def build_cache_for_split(df, indices, out_dir, seg_model, detector, theta_scan)
             # 原始坐标 (1920x1080)
             x1_org, y1_org = float(row.iloc[1]), float(row.iloc[2])
             x2_org, y2_org = float(row.iloc[3]), float(row.iloc[4])
-        except: continue
+        except:
+            continue
 
-        bgr = _read_image_any_ext(IMG_DIR, img_name)
-        if bgr is None: continue
-        
+        bgr, img_filename = _read_image_any_ext(IMG_DIR, img_name)
+        if bgr is None:
+            continue
+
         h_orig, w_orig = bgr.shape[:2]
         rgb0 = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
 
@@ -150,9 +180,10 @@ def build_cache_for_split(df, indices, out_dir, seg_model, detector, theta_scan)
 
         # 2. UNet 推理 (C2)
         with torch.no_grad():
-            with amp.autocast(device_type="cuda", enabled=(DEVICE=="cuda")):
+            # NOTE: use the actual device type to avoid autocast warnings/errors on CPU.
+            with amp.autocast(device_type=DEVICE_TYPE, enabled=(DEVICE == "cuda")):
                 restored_t, seg_logits, _ = seg_model(inp, None, True, True)
-        
+
         restored_np = (restored_t[0].permute(1, 2, 0).cpu().float().numpy() * 255.0).astype(np.uint8)
         restored_bgr = cv2.cvtColor(restored_np, cv2.COLOR_RGB2BGR)
         mask_np = seg_logits.argmax(dim=1)[0].cpu().numpy().astype(np.uint8)
@@ -163,8 +194,9 @@ def build_cache_for_split(df, indices, out_dir, seg_model, detector, theta_scan)
         # 4. 特征提取 (基于 1024x576 的图像)
         try:
             _, _, _, trad_sinos = detector.detect(restored_bgr)
-        except: trad_sinos = []
-        
+        except:
+            trad_sinos = []
+
         processed_stack = []
         for s in trad_sinos[:3]:
             processed_stack.append(process_sinogram(s, RESIZE_H, RESIZE_W))
@@ -173,7 +205,7 @@ def build_cache_for_split(df, indices, out_dir, seg_model, detector, theta_scan)
 
         edges = cv2.Canny((mask_pp * 255).astype(np.uint8), CANNY_LOW, CANNY_HIGH)
         if EDGE_DILATE > 0:
-            k = np.ones((3,3), np.uint8)
+            k = np.ones((3, 3), np.uint8)
             edges = cv2.dilate(edges, k, iterations=EDGE_DILATE)
         seg_sino = detector._radon_gpu(edges, theta_scan)
         processed_stack.append(process_sinogram(seg_sino, RESIZE_H, RESIZE_W))
@@ -183,20 +215,28 @@ def build_cache_for_split(df, indices, out_dir, seg_model, detector, theta_scan)
         # 5. [核心修正] 计算 Label 时，必须将坐标缩放到 1024x576
         scale_x = UNET_IN_W / w_orig
         scale_y = UNET_IN_H / h_orig
-        
+
         x1_s, y1_s = x1_org * scale_x, y1_org * scale_y
         x2_s, y2_s = x2_org * scale_x, y2_org * scale_y
-        
+
         # 传入 UNet 的尺寸，而不是原图尺寸
         l_rho, l_theta = calculate_radon_label(x1_s, y1_s, x2_s, y2_s, UNET_IN_W, UNET_IN_H, RESIZE_H, RESIZE_W)
         label = np.array([l_rho, l_theta], dtype=np.float32)
 
-        np.save(os.path.join(out_dir, f"{idx}.npy"), {"input": combined_input, "label": label})
+        # IMPORTANT: persist the original image filename so downstream scripts
+        # (e.g., evaluate_full_pipeline.py) can reliably load the corresponding image.
+        # This avoids the brittle fallback "<idx>.jpg".
+        np.save(
+            os.path.join(out_dir, f"{idx}.npy"),
+            {"input": combined_input, "label": label,
+             "img_name": str(img_filename) if img_filename else str(img_name) + ".JPG"},
+        )
+
 
 def main():
     ensure_dir(SAVE_ROOT)
     splits = _load_split_indices(SPLIT_DIR)
-    
+
     print(f"[Load] Model: {RGHNET_CKPT}")
     model = RestorationGuidedHorizonNet(num_classes=2, dce_weights_path=DCE_WEIGHTS).to(DEVICE)
     model.load_state_dict(torch.load(RGHNET_CKPT, map_location=DEVICE), strict=False)
@@ -208,6 +248,7 @@ def main():
 
     for split in ["train", "val", "test"]:
         build_cache_for_split(df, splits[split], os.path.join(SAVE_ROOT, split), model, detector, theta_scan)
+
 
 if __name__ == "__main__":
     main()

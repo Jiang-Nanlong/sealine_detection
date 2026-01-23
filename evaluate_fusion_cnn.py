@@ -237,7 +237,7 @@ def summarize(name: str, arr: np.ndarray) -> str:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--weights", type=str, default=r"splits_musid/best_fusion_cnn_1024x576.pth")
+    ap.add_argument("--weights", type=str, default=r"weights/best_fusion_cnn_1024x576.pth")
     ap.add_argument("--cache_root", type=str, default=r"Hashmani's Dataset/FusionCache_1024x576")
     ap.add_argument("--split", type=str, default="test", choices=["train", "val", "test"])
     ap.add_argument("--batch_size", type=int, default=64)

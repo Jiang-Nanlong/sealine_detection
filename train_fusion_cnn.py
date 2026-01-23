@@ -35,7 +35,7 @@ TEST_CACHE_DIR  = os.path.join(CACHE_ROOT, "test")
 # Fixed split indices (row indices of GroundTruth.csv)
 SPLIT_DIR = r"splits_musid"
 
-SEED = 42
+SEED = 40
 BATCH_SIZE = 16  # CNN 比较轻，Batch Size 可以大一点，比如 16 或 32
 NUM_WORKERS = 4
 

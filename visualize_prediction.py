@@ -58,7 +58,7 @@ def visualize_results():
     # 配置
     CSV_PATH = r"Hashmani's Dataset/GroundTruth.csv"
     IMG_DIR = r"Hashmani's Dataset/MU-SID"
-    MODEL_PATH = "horizon_resnet34_last.pth"
+    MODEL_PATH = "weights/horizon_resnet34_best_1.pth"
 
     RESIZE_H = 2240
     RESIZE_W = 180

@@ -37,7 +37,7 @@ from cnn_model import HorizonResNet
 # User config (PyCharm friendly)
 # =========================
 SPLIT = "test"  # "train" / "val" / "test"
-WEIGHTS_PATH = r"splits_musid/best_fusion_cnn_1024x576.pth"
+WEIGHTS_PATH = r"weights/best_fusion_cnn_1024x576.pth"
 CACHE_ROOT = r"Hashmani's Dataset/FusionCache_1024x576"
 CACHE_DIR = os.path.join(CACHE_ROOT, SPLIT)
 
