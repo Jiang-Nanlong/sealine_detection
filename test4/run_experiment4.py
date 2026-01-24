@@ -28,8 +28,8 @@ TEST4_DIR = PROJECT_ROOT / "test4"
 # ============================
 # PyCharm 配置区 (在这里修改)
 # ============================
-SKIP_PREPARE = True    # True: 跳过数据准备步骤
-SKIP_CACHE = True      # True: 跳过缓存生成步骤（如果已生成）
+SKIP_PREPARE = False    # True: 跳过数据准备步骤
+SKIP_CACHE = False      # True: 跳过缓存生成步骤（如果已生成）
 SKIP_VIS = False        # True: 跳过可视化步骤
 N_VIS_SAMPLES = 20      # 可视化样本数量
 # ============================

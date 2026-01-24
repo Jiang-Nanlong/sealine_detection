@@ -10,7 +10,5 @@ VIS_Onshore	MVI_1451_VIS.avi	No matching *_HorizonGT.mat
 VIS_Onshore	MVI_1452_VIS.avi	No matching *_HorizonGT.mat
 VIS_Onshore	MVI_1470_VIS.avi	Mismatch avi=266 mat=299
 VIS_Onshore	MVI_1486_VIS.avi	Mismatch avi=629 mat=299
-VIS_Onboard	MVI_0794_VIS_OB.avi	Invalid endpoints at frame 291
 VIS_Onboard	MVI_0794_VIS_OB.avi	Invalid endpoints at frame 294
-VIS_Onboard	MVI_0794_VIS_OB.avi	Invalid endpoints at frame 296
 VIS_Onboard	MVI_0794_VIS_OB.avi	Invalid endpoints at frame 298
