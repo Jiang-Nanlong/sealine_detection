@@ -10,7 +10,7 @@ import pandas as pd
 
 # =========================
 # 全局配置（你只改这里）
-# =========================
+# =========================d
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 # 输入：你 prepare_smd_testset.py 生成的 GT 和抽帧图片

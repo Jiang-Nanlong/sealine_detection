@@ -43,12 +43,12 @@ from gradient_radon import TextureSuppressedMuSCoWERT  # noqa: E402
 # ============================
 # Config (SMD)
 # ============================
-CSV_PATH = str(PROJECT_ROOT / "test4" / "SMD_GroundTruth.csv")
-IMG_DIR = str(PROJECT_ROOT / "test4" / "smd_frames")
-SPLIT_DIR = str(PROJECT_ROOT / "test4" / "splits")
-# CSV_PATH = str(PROJECT_ROOT / "test4" / "manual_review"/"SMD_GroundTruth_filtered.csv")
-# IMG_DIR = str(PROJECT_ROOT / "test4" / "manual_review"/"kept_frames")
-# SPLIT_DIR = str(PROJECT_ROOT / "test4" / "manual_review"/"splits_filtered")
+# CSV_PATH = str(PROJECT_ROOT / "test4" / "SMD_GroundTruth.csv")
+# IMG_DIR = str(PROJECT_ROOT / "test4" / "smd_frames")
+# SPLIT_DIR = str(PROJECT_ROOT / "test4" / "splits")
+CSV_PATH = str(PROJECT_ROOT / "test4" / "manual_review"/"SMD_GroundTruth_filtered.csv")
+IMG_DIR = str(PROJECT_ROOT / "test4" / "manual_review"/"kept_frames")
+SPLIT_DIR = str(PROJECT_ROOT / "test4" / "manual_review"/"splits_filtered")
 SAVE_ROOT = str(PROJECT_ROOT / "test4" / "FusionCache_SMD_1024x576")
 
 # MU-SID trained weights (in weights/ directory)
