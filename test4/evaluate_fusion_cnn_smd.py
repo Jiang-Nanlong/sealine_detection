@@ -11,15 +11,9 @@ Assumptions:
       python test4/make_fusion_cache_smd.py
   - Cached .npy contains keys: input, label, img_name
 
-Run (from project root):
-  python test4/evaluate_fusion_cnn_smd.py \
-    --weights splits_musid/best_fusion_cnn_1024x576.pth \
-    --cache_root test4/FusionCache_SMD_1024x576 \
-    --split test \
-    --out_csv test4/eval_smd_test_per_sample.csv
+PyCharm: 直接运行此文件，在下方配置区修改参数
 """
 
-import argparse
 import os
 import sys
 import math
@@ -243,6 +237,9 @@ def pct_le(arr: np.ndarray, thr: float) -> float:
 
 
 def main():
+    """
+    PyCharm: 直接运行此文件，在下方配置区修改参数
+    """
     # -------------------------------------------------------------
     # [FIX] 动态获取路径，解决 FileNotFoundError 问题
     # -------------------------------------------------------------
@@ -251,44 +248,40 @@ def main():
     # 获取项目根目录 (例如 .../sealine_detection)
     project_root = os.path.dirname(script_dir)
 
-    # 构造绝对路径的默认值
-    default_cache_dir = os.path.join(script_dir, "FusionCache_SMD_1024x576")
-    default_weights_path = os.path.join(project_root, "weights", "best_fusion_cnn_1024x576.pth")
-    default_out_csv = os.path.join(script_dir, "eval_smd_test_per_sample.csv")
-
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--weights", type=str, default=default_weights_path)
-    ap.add_argument("--cache_root", type=str, default=default_cache_dir)
-    ap.add_argument("--split", type=str, default="test", choices=["train", "val", "test"])
-    ap.add_argument("--batch_size", type=int, default=64)
-    ap.add_argument("--num_workers", type=int, default=0)
-    ap.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
-    ap.add_argument("--out_csv", type=str, default=default_out_csv)
-
+    # ============================
+    # PyCharm 配置区 (在这里修改)
+    # ============================
+    WEIGHTS = os.path.join(project_root, "weights", "best_fusion_cnn_1024x576.pth")
+    CACHE_ROOT = os.path.join(script_dir, "FusionCache_SMD_1024x576")
+    SPLIT = "test"                  # "train" / "val" / "test"
+    BATCH_SIZE = 64
+    NUM_WORKERS = 0
+    DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+    OUT_CSV = os.path.join(script_dir, "eval_smd_test_per_sample.csv")
+    
     # denorm config
-    ap.add_argument("--unet_w", type=int, default=1024)
-    ap.add_argument("--unet_h", type=int, default=576)
-    ap.add_argument("--resize_h", type=int, default=2240)
-    ap.add_argument("--orig_w", type=int, default=1920)
-    ap.add_argument("--orig_h", type=int, default=1080)
-    ap.add_argument("--line_samples", type=int, default=50)
-
-    args = ap.parse_args()
+    UNET_W = 1024
+    UNET_H = 576
+    RESIZE_H = 2240
+    ORIG_W = 1920
+    ORIG_H = 1080
+    LINE_SAMPLES = 50
+    # ============================
 
     cfg = DenormConfig(
-        unet_w=args.unet_w,
-        unet_h=args.unet_h,
-        resize_h=args.resize_h,
-        orig_w=args.orig_w,
-        orig_h=args.orig_h,
+        unet_w=UNET_W,
+        unet_h=UNET_H,
+        resize_h=RESIZE_H,
+        orig_w=ORIG_W,
+        orig_h=ORIG_H,
     )
     scale = cfg.orig_w / cfg.unet_w
 
-    split_dir = os.path.join(args.cache_root, args.split)
+    split_dir = os.path.join(CACHE_ROOT, SPLIT)
     if not os.path.isdir(split_dir):
         # 如果找不到 split 目录，打印调试信息
         print(f"[Error] Directory not found: {split_dir}")
-        print(f"  - args.cache_root: {args.cache_root}")
+        print(f"  - CACHE_ROOT: {CACHE_ROOT}")
         print(f"  - script_dir: {script_dir}")
         raise FileNotFoundError(f"Split dir not found: {split_dir}")
 
@@ -299,18 +292,18 @@ def main():
 
     dl = DataLoader(
         ds,
-        batch_size=args.batch_size,
+        batch_size=BATCH_SIZE,
         shuffle=False,
-        num_workers=args.num_workers,
-        pin_memory=args.device.startswith("cuda"),
+        num_workers=NUM_WORKERS,
+        pin_memory=DEVICE.startswith("cuda"),
     )
 
     # 检查权重文件是否存在
-    if not os.path.exists(args.weights):
-        raise FileNotFoundError(f"Weights file not found: {args.weights}")
+    if not os.path.exists(WEIGHTS):
+        raise FileNotFoundError(f"Weights file not found: {WEIGHTS}")
 
-    model = HorizonResNet(in_channels=4, img_h=cfg.resize_h, img_w=180).to(args.device)
-    ckpt = torch.load(args.weights, map_location=args.device)
+    model = HorizonResNet(in_channels=4, img_h=cfg.resize_h, img_w=180).to(DEVICE)
+    ckpt = torch.load(WEIGHTS, map_location=DEVICE)
     if isinstance(ckpt, dict) and "state_dict" in ckpt:
         model.load_state_dict(ckpt["state_dict"], strict=True)
     else:
@@ -335,8 +328,8 @@ def main():
 
     with torch.no_grad():
         for xb, yb, idxb, names in dl:
-            xb = xb.to(args.device, non_blocking=True)
-            yb = yb.to(args.device, non_blocking=True)
+            xb = xb.to(DEVICE, non_blocking=True)
+            yb = yb.to(DEVICE, non_blocking=True)
 
             pred = model(xb)
             pred_np = pred.detach().cpu().numpy()
@@ -358,7 +351,7 @@ def main():
                     theta_gt_deg=float(th_g[i]),
                     w=cfg.unet_w,
                     h=cfg.unet_h,
-                    n_samples=args.line_samples,
+                    n_samples=LINE_SAMPLES,
                 )
 
                 dom = domain_from_img_name(names[i])
@@ -376,7 +369,7 @@ def main():
                 per[dom]["theta"].append(float(e_theta[i]))
                 per[dom]["line"].append(float(ld))
 
-                if args.out_csv:
+                if OUT_CSV:
                     rows.append(
                         {
                             "idx": int(idx_np[i]),
@@ -400,8 +393,8 @@ def main():
     g_line_dist = np.asarray(g_line_dist, dtype=np.float64)
 
     print("========== SMD Evaluation (Fusion-CNN) ==========")
-    print(f"Split: {args.split} | N={len(ds)}")
-    print(f"Weights: {args.weights}")
+    print(f"Split: {SPLIT} | N={len(ds)}")
+    print(f"Weights: {WEIGHTS}")
     print(f"Cache:   {split_dir}")
     print("")
 
@@ -432,8 +425,8 @@ def main():
         print(summarize("Mean point->line distance (px, UNet space)", arr_line))
         print(f"theta<=2°: {pct_le(arr_theta, 2):.2f}% | rho_orig<=10px: {pct_le(arr_rho_o, 10):.2f}% | line_dist<=10px: {pct_le(arr_line, 10):.2f}%")
 
-    if args.out_csv and rows:
-        out_path = args.out_csv
+    if OUT_CSV and rows:
+        out_path = OUT_CSV
         os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
         with open(out_path, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))

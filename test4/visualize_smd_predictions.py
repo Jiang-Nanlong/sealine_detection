@@ -14,13 +14,9 @@ Useful for:
   2. Identifying failure cases
   3. Comparing domain performance visually
 
-Run (from project root):
-  python test4/visualize_smd_predictions.py --n_samples 20
-  python test4/visualize_smd_predictions.py --mode worst --n_samples 10
-  python test4/visualize_smd_predictions.py --mode best --n_samples 10
+PyCharm: 直接运行此文件，在下方配置区修改参数
 """
 
-import argparse
 import os
 import sys
 import math
@@ -29,7 +25,6 @@ from pathlib import Path
 import cv2
 import numpy as np
 import pandas as pd
-import torch
 
 # ----------------------------
 # Path setup
@@ -38,7 +33,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from cnn_model import HorizonResNet
+# ============================
+# PyCharm 配置区 (在这里修改)
+# ============================
+N_SAMPLES = 20                  # 可视化样本数量
+MODE = "random"                 # 模式: "random" / "best" / "worst" / "per_domain"
+SEED = 42                       # 随机种子
+# ============================
 
 # ----------------------------
 # Config
@@ -166,21 +167,24 @@ def create_visualization(img_path, rho_pred, theta_pred, rho_gt, theta_gt, metri
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Visualize SMD predictions")
-    parser.add_argument("--n_samples", type=int, default=20, help="Number of samples to visualize")
-    parser.add_argument("--mode", type=str, default="random", choices=["random", "best", "worst", "per_domain"],
-                        help="Sample selection mode")
-    parser.add_argument("--seed", type=int, default=42, help="Random seed")
-    parser.add_argument("--out_dir", type=str, default=str(OUT_DIR), help="Output directory")
-    args = parser.parse_args()
+    """
+    PyCharm: 修改文件顶部的配置区即可:
+        N_SAMPLES = 20       # 可视化样本数量
+        MODE = "random"      # "random" / "best" / "worst" / "per_domain"
+        SEED = 42            # 随机种子
+    """
+    n_samples = N_SAMPLES
+    mode = MODE
+    seed = SEED
+    out_dir = OUT_DIR
     
-    ensure_dir(args.out_dir)
-    np.random.seed(args.seed)
+    ensure_dir(out_dir)
+    np.random.seed(seed)
     
     # Check files exist
     if not EVAL_CSV.exists():
         print(f"[Error] Evaluation CSV not found: {EVAL_CSV}")
-        print("Please run: python test4/evaluate_fusion_cnn_smd.py first")
+        print("Please run evaluate_fusion_cnn_smd.py first")
         sys.exit(1)
     
     if not GT_CSV.exists():
@@ -195,35 +199,35 @@ def main():
     gt_df = pd.read_csv(GT_CSV)
     
     # Select samples based on mode
-    if args.mode == "worst":
+    if mode == "worst":
         # Sort by rho error descending
         eval_df = eval_df.sort_values("rho_err_px_orig", ascending=False)
-        selected = eval_df.head(args.n_samples)
+        selected = eval_df.head(n_samples)
         suffix = "worst"
-    elif args.mode == "best":
+    elif mode == "best":
         # Sort by rho error ascending
         eval_df = eval_df.sort_values("rho_err_px_orig", ascending=True)
-        selected = eval_df.head(args.n_samples)
+        selected = eval_df.head(n_samples)
         suffix = "best"
-    elif args.mode == "per_domain":
+    elif mode == "per_domain":
         # Select n_samples from each domain
         selected_list = []
         for domain in ["NIR", "VIS_Onboard", "VIS_Onshore"]:
             domain_df = eval_df[eval_df["domain"] == domain]
-            n = min(args.n_samples, len(domain_df))
-            selected_list.append(domain_df.sample(n=n, random_state=args.seed))
+            n = min(n_samples, len(domain_df))
+            selected_list.append(domain_df.sample(n=n, random_state=seed))
         selected = pd.concat(selected_list)
         suffix = "per_domain"
     else:
         # Random
-        n = min(args.n_samples, len(eval_df))
-        selected = eval_df.sample(n=n, random_state=args.seed)
+        n = min(n_samples, len(eval_df))
+        selected = eval_df.sample(n=n, random_state=seed)
         suffix = "random"
     
-    print(f"[Select] {len(selected)} samples ({args.mode} mode)")
+    print(f"[Select] {len(selected)} samples ({mode} mode)")
     
     # Generate visualizations
-    out_subdir = Path(args.out_dir) / suffix
+    out_subdir = Path(out_dir) / suffix
     ensure_dir(out_subdir)
     
     success_count = 0
@@ -254,7 +258,7 @@ def main():
     print(f"[Done] Saved {success_count} visualizations to: {out_subdir}")
     
     # Create grid visualization for thesis
-    if success_count > 0 and args.mode in ["worst", "best"]:
+    if success_count > 0 and mode in ["worst", "best"]:
         print(f"[Grid] Creating grid visualization...")
         grid_images = []
         for img_file in sorted(out_subdir.glob("*.jpg"))[:min(9, success_count)]:

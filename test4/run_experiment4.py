@@ -11,12 +11,9 @@ This script orchestrates:
   4. Summary generation: summarize_smd_results.py
   5. Visualization: visualize_smd_predictions.py
 
-Run (from project root):
-  python test4/run_experiment4.py
-  python test4/run_experiment4.py --skip_cache  # Skip cache generation if already done
+PyCharm: 直接运行此文件，在下方配置区修改参数
 """
 
-import argparse
 import os
 import subprocess
 import sys
@@ -27,6 +24,15 @@ from pathlib import Path
 # ----------------------------
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TEST4_DIR = PROJECT_ROOT / "test4"
+
+# ============================
+# PyCharm 配置区 (在这里修改)
+# ============================
+SKIP_PREPARE = False    # True: 跳过数据准备步骤
+SKIP_CACHE = False      # True: 跳过缓存生成步骤（如果已生成）
+SKIP_VIS = False        # True: 跳过可视化步骤
+N_VIS_SAMPLES = 20      # 可视化样本数量
+# ============================
 
 
 def run_script(script_path, description, extra_args=None):
@@ -69,16 +75,14 @@ def check_prerequisites():
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run Experiment 4: Cross-Dataset Generalization")
-    parser.add_argument("--skip_prepare", action="store_true", help="Skip data preparation step")
-    parser.add_argument("--skip_cache", action="store_true", help="Skip cache generation step")
-    parser.add_argument("--skip_vis", action="store_true", help="Skip visualization step")
-    parser.add_argument("--n_vis", type=int, default=20, help="Number of samples to visualize")
-    args = parser.parse_args()
-    
     print("=" * 60)
     print("Experiment 4: Cross-Dataset Generalization on SMD")
     print("=" * 60)
+    print(f"\n[Config]")
+    print(f"  SKIP_PREPARE = {SKIP_PREPARE}")
+    print(f"  SKIP_CACHE   = {SKIP_CACHE}")
+    print(f"  SKIP_VIS     = {SKIP_VIS}")
+    print(f"  N_VIS_SAMPLES = {N_VIS_SAMPLES}")
     
     # Check prerequisites
     issues = check_prerequisites()
@@ -93,8 +97,8 @@ def main():
     gt_csv = TEST4_DIR / "SMD_GroundTruth.csv"
     frames_dir = TEST4_DIR / "smd_frames"
     
-    if args.skip_prepare:
-        print("\n[Skip] Data preparation (--skip_prepare)")
+    if SKIP_PREPARE:
+        print("\n[Skip] Data preparation (SKIP_PREPARE=True)")
     elif gt_csv.exists() and frames_dir.exists():
         print("\n[Skip] Data already prepared (SMD_GroundTruth.csv and smd_frames/ exist)")
     else:
@@ -105,8 +109,8 @@ def main():
     # Step 2: Generate fusion cache
     cache_dir = TEST4_DIR / "FusionCache_SMD_1024x576" / "test"
     
-    if args.skip_cache:
-        print("\n[Skip] Cache generation (--skip_cache)")
+    if SKIP_CACHE:
+        print("\n[Skip] Cache generation (SKIP_CACHE=True)")
     elif cache_dir.exists() and any(cache_dir.glob("*.npy")):
         print(f"\n[Skip] Cache already exists: {cache_dir}")
         n_cached = len(list(cache_dir.glob("*.npy")))
@@ -128,24 +132,24 @@ def main():
         sys.exit(1)
     
     # Step 5: Visualization
-    if args.skip_vis:
-        print("\n[Skip] Visualization (--skip_vis)")
+    if SKIP_VIS:
+        print("\n[Skip] Visualization (SKIP_VIS=True)")
     else:
         script = TEST4_DIR / "visualize_smd_predictions.py"
         
         # Random samples
         if not run_script(script, "Visualize random samples", 
-                         ["--mode", "random", "--n_samples", str(args.n_vis)]):
+                         ["--mode", "random", "--n_samples", str(N_VIS_SAMPLES)]):
             print("[Warning] Visualization failed, continuing...")
         
         # Worst cases
         if not run_script(script, "Visualize worst cases",
-                         ["--mode", "worst", "--n_samples", str(min(10, args.n_vis))]):
+                         ["--mode", "worst", "--n_samples", str(min(10, N_VIS_SAMPLES))]):
             print("[Warning] Visualization failed, continuing...")
         
         # Best cases
         if not run_script(script, "Visualize best cases",
-                         ["--mode", "best", "--n_samples", str(min(10, args.n_vis))]):
+                         ["--mode", "best", "--n_samples", str(min(10, N_VIS_SAMPLES))]):
             print("[Warning] Visualization failed, continuing...")
     
     # Final summary
