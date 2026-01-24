@@ -135,21 +135,11 @@ def main():
     if SKIP_VIS:
         print("\n[Skip] Visualization (SKIP_VIS=True)")
     else:
+        # 直接修改 visualize_smd_predictions.py 的配置变量后运行
+        # 由于已改为配置变量方式，这里只能运行默认配置
         script = TEST4_DIR / "visualize_smd_predictions.py"
-        
-        # Random samples
-        if not run_script(script, "Visualize random samples", 
-                         ["--mode", "random", "--n_samples", str(N_VIS_SAMPLES)]):
-            print("[Warning] Visualization failed, continuing...")
-        
-        # Worst cases
-        if not run_script(script, "Visualize worst cases",
-                         ["--mode", "worst", "--n_samples", str(min(10, N_VIS_SAMPLES))]):
-            print("[Warning] Visualization failed, continuing...")
-        
-        # Best cases
-        if not run_script(script, "Visualize best cases",
-                         ["--mode", "best", "--n_samples", str(min(10, N_VIS_SAMPLES))]):
+        print("\n[Note] 可视化使用默认配置，如需调整请直接编辑 visualize_smd_predictions.py 的配置区")
+        if not run_script(script, "Visualize predictions"):
             print("[Warning] Visualization failed, continuing...")
     
     # Final summary
