@@ -14,11 +14,11 @@ from dataset_loader import HorizonImageDataset
 CURRENT_SUB_STAGE = "B"
 
 # 权重路径
-CKPT_PATH = f"rghnet_best_seg_{CURRENT_SUB_STAGE.lower()}.pth"
+CKPT_PATH = f"weights/rghnet_best_seg_{CURRENT_SUB_STAGE.lower()}.pth"
 
 CSV_PATH = r"Hashmani's Dataset/GroundTruth.csv"
 IMG_DIR = r"Hashmani's Dataset/MU-SID"
-DCE_WEIGHTS = "Epoch99.pth"
+DCE_WEIGHTS = "weights/Epoch99.pth"
 
 # [核心修正] 必须改成 (H, W) 元组，对应 16:9
 IMG_SIZE = (576, 1024) 

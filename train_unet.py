@@ -31,7 +31,7 @@ from dataset_loader import SimpleFolderDataset, HorizonImageDataset
 CSV_PATH = r"Hashmani's Dataset/GroundTruth.csv"
 IMG_DIR = r"Hashmani's Dataset/MU-SID"
 IMG_CLEAR_DIR = r"Hashmani's Dataset/clear"
-DCE_WEIGHTS = "Epoch99.pth"
+DCE_WEIGHTS = "weights/Epoch99.pth"
 
 SPLIT_DIR = r"splits_musid"
 TRAIN_IDX_PATH = os.path.join(SPLIT_DIR, "train_indices.npy")
@@ -143,9 +143,9 @@ def load_checkpoint_smart(model, current_stage: str, device: str):
     
     for prev_stage, kind in priority_map[current_stage]:
         prev = prev_stage.lower()
-        if kind == "best_joint": fname = f"rghnet_best_{prev}.pth"
-        elif kind == "best_seg": fname = f"rghnet_best_seg_{prev}.pth"
-        elif kind == "last": fname = f"rghnet_last_{prev}.pth"
+        if kind == "best_joint": fname = f"weights/rghnet_best_{prev}.pth"
+        elif kind == "best_seg": fname = f"weights/rghnet_best_seg_{prev}.pth"
+        elif kind == "last": fname = f"weights/rghnet_last_{prev}.pth"
         else: continue
 
         if os.path.exists(fname):
@@ -461,11 +461,12 @@ def main():
     best_iou = -1.0; best_mae = 1e9; best_joint = 1e9
     log_path = f"train_log_stage_{STAGE.lower()}.csv"
     ensure_dir("val_vis")
+    ensure_dir("weights")  # 确保权重目录存在
     
     # ✅ 核心改动 6: 独立命名，不覆盖
-    best_joint_name = f"rghnet_best_{STAGE.lower()}.pth"
-    best_seg_name   = f"rghnet_best_seg_{STAGE.lower()}.pth"
-    last_name       = f"rghnet_last_{STAGE.lower()}.pth"
+    best_joint_name = f"weights/rghnet_best_{STAGE.lower()}.pth"
+    best_seg_name   = f"weights/rghnet_best_seg_{STAGE.lower()}.pth"
+    last_name       = f"weights/rghnet_last_{STAGE.lower()}.pth"
 
     for epoch in range(1, epochs + 1):
         model.train()

@@ -370,6 +370,7 @@ def main():
 
     seed_everything(args.seed)
     ensure_dir(args.split_dir)
+    ensure_dir("weights")  # 确保权重目录存在
 
     # resolve channels in ORIGINAL cache order
     if args.mode == "trad3":
@@ -470,7 +471,7 @@ def main():
         optimizer, mode="min", factor=args.plateau_factor, patience=args.plateau_patience, verbose=True
     )
 
-    best_path = os.path.join(args.split_dir, f"best_fusion_cnn_1024x576_{tag}.pth")
+    best_path = f"weights/best_fusion_cnn_1024x576_{tag}.pth"
     out_json = os.path.join(args.split_dir, f"train_fusion_cnn_1024x576_{tag}.json")
 
     best_val = float("inf")

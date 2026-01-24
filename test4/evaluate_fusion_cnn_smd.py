@@ -253,7 +253,7 @@ def main():
 
     # 构造绝对路径的默认值
     default_cache_dir = os.path.join(script_dir, "FusionCache_SMD_1024x576")
-    default_weights_path = os.path.join(project_root, "splits_musid", "best_fusion_cnn_1024x576.pth")
+    default_weights_path = os.path.join(project_root, "weights", "best_fusion_cnn_1024x576.pth")
     default_out_csv = os.path.join(script_dir, "eval_smd_test_per_sample.csv")
 
     ap = argparse.ArgumentParser()

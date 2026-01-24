@@ -18,8 +18,8 @@ SPLIT_DIR = r"splits_musid"
 SAVE_ROOT = r"Hashmani's Dataset/FusionCache_1024x576"
 
 # 权重路径
-RGHNET_CKPT = r"rghnet_best_c2.pth"
-DCE_WEIGHTS = r"Epoch99.pth"
+RGHNET_CKPT = r"weights/rghnet_best_c2.pth"
+DCE_WEIGHTS = r"weights/Epoch99.pth"
 
 # 统一尺寸
 UNET_IN_W = 1024

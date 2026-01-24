@@ -107,7 +107,7 @@ class RestorationGuidedHorizonNet(nn.Module):
     def __init__(
         self,
         num_classes=2,
-        dce_weights_path="Epoch99.pth",
+        dce_weights_path="weights/Epoch99.pth",
         dce_scale_factor=1,
         require_dce=True,
     ):

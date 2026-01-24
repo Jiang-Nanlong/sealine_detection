@@ -51,9 +51,9 @@ SPLIT_DIR = str(PROJECT_ROOT / "test4" / "splits")
 # SPLIT_DIR = str(PROJECT_ROOT / "test4" / "manual_review"/"splits_filtered")
 SAVE_ROOT = str(PROJECT_ROOT / "test4" / "FusionCache_SMD_1024x576")
 
-# MU-SID trained weights (edit to your actual paths)
-RGHNET_CKPT = str(PROJECT_ROOT / "rghnet_best_c2.pth")
-DCE_WEIGHTS = str(PROJECT_ROOT / "Epoch99.pth")
+# MU-SID trained weights (in weights/ directory)
+RGHNET_CKPT = str(PROJECT_ROOT / "weights" / "rghnet_best_c2.pth")
+DCE_WEIGHTS = str(PROJECT_ROOT / "weights" / "Epoch99.pth")
 
 # Unified UNet input size
 UNET_IN_W = 1024

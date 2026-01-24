@@ -54,7 +54,7 @@ PLATEAU_FACTOR = 0.5       # 每次减半
 EARLY_STOP_PATIENCE = 100  # 设为 100，实际上就是禁用了早停，保证跑满
 
 # Model / log outputs
-BEST_PATH = os.path.join(SPLIT_DIR, "best_fusion_cnn_1024x576.pth")
+BEST_PATH = "weights/best_fusion_cnn_1024x576.pth"
 OUT_JSON  = os.path.join(SPLIT_DIR, "train_fusion_cnn_1024x576.json")
 
 # Dataset fallback shape (should match cache input shape)
@@ -294,6 +294,7 @@ def train_one_epoch(model, loader, optimizer, scaler, criterion):
 def main():
     seed_everything(SEED)
     ensure_dir(SPLIT_DIR)
+    ensure_dir("weights")  # 确保权重目录存在
 
     # sanity check dirs
     for d in [TRAIN_CACHE_DIR, VAL_CACHE_DIR]:

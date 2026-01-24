@@ -39,8 +39,8 @@ CSV_PATH = r"Hashmani's Dataset/GroundTruth.csv"
 IMG_DIR  = r"Hashmani's Dataset/MU-SID"
 
 # Key weights (same defaults as make_fusion_cache.py)
-RGHNET_CKPT = r"rghnet_best_c2.pth"
-DCE_WEIGHTS = r"Epoch99.pth"
+RGHNET_CKPT = r"weights/rghnet_best_c2.pth"
+DCE_WEIGHTS = r"weights/Epoch99.pth"
 
 # UNet input geometry (same as make_fusion_cache.py)
 UNET_IN_W = 1024

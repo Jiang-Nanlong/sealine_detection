@@ -188,6 +188,7 @@ def train_one_epoch(model, loader, optimizer, scaler, criterion):
 def main():
     seed_everything(SEED)
     ensure_dir(SPLIT_DIR)
+    ensure_dir("weights")  # 确保权重目录存在
 
     if not os.path.exists(CACHE_DIR):
         raise FileNotFoundError(f"找不到 CACHE_DIR: {CACHE_DIR}")
@@ -234,7 +235,7 @@ def main():
     scaler = torch.cuda.amp.GradScaler(enabled=(USE_AMP and DEVICE.startswith("cuda")))
 
     best = float("inf")
-    best_path = os.path.join(SPLIT_DIR, "best_offline_cnn.pth")
+    best_path = "weights/best_offline_cnn.pth"
 
     print(f"[INFO] total_len={total_len} | train={len(train_set)} test={len(test_set)} | in_ch={in_ch}")
     print(f"[INFO] split saved at: {os.path.join(SPLIT_DIR, 'train_idx.npy')} / test_idx.npy")

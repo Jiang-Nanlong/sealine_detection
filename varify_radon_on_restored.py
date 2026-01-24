@@ -13,7 +13,7 @@ from gradient_radon import TextureSuppressedMuSCoWERT
 # ================= 配置 =================
 IMG_DIR = r"Hashmani's Dataset/clear"
 CKPT_PATH = "weights/rghnet_best_a.pth"
-DCE_WEIGHTS = "Epoch99.pth"
+DCE_WEIGHTS = "weights/Epoch99.pth"
 
 IMG_SIZE = 1024
 NUM_SAMPLES = 4

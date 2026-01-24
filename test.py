@@ -18,8 +18,8 @@ SPLIT_DIR = r"test4/splits"                           # test_indices.npy 所在�
 OUT_DIR = r"paper_figures_4panels"                    # 输出文件夹（建议新建，避免覆盖）
 
 # 2) 权重路径
-UNET_CKPT = r"rghnet_best_c2.pth"
-DCE_WEIGHTS = r"Epoch99.pth"  # 你说的 Epoth99.pth/ Epoch99.pth 两种写法都可能，下面会自动兜底
+UNET_CKPT = r"weights/rghnet_best_c2.pth"
+DCE_WEIGHTS = r"weights/Epoch99.pth"  # 你说的 Epoth99.pth/ Epoch99.pth 两种写法都可能，下面会自动兜底
 
 # 3) 输入设置
 ENABLE_DEGRADATION = True   # True: 清晰图合成雨雾/低照度（作为“原图/输入图”）；False: 直接用清晰图
@@ -124,7 +124,7 @@ def main():
     # -------- 1) 处理 DCE 权重路径的“Epoch/Epoth”兜底 --------
     dce_path = DCE_WEIGHTS
     if not os.path.exists(dce_path):
-        alt = "Epoth99.pth"
+        alt = "weights/Epoth99.pth"
         if os.path.exists(alt):
             dce_path = alt
         else:
@@ -134,7 +134,7 @@ def main():
                 dce_path = cand
 
     if not os.path.exists(dce_path):
-        raise FileNotFoundError(f"找不到 Zero-DCE++ 权重：{DCE_WEIGHTS}（也未找到 Epoth99.pth）")
+        raise FileNotFoundError(f"找不到 Zero-DCE++ 权重：{DCE_WEIGHTS}（也未找到 weights/Epoth99.pth）")
 
     # -------- 2) 加载 Zero-DCE++（独立调用，用于输出第2张图）--------
     print("Loading Zero-DCE++ model...")

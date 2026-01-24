@@ -16,7 +16,7 @@ from dataset_loader import SimpleFolderDataset
 # =========================
 IMG_CLEAR_DIR = r"Hashmani's Dataset/clear"   # Stage A 用的 clear 图目录
 CKPT_PATH = r"weights/rghnet_best_a.pth"  # 训练好的 Stage A 权重（可空字符串表示不加载）
-DCE_WEIGHTS = r"Epoch99.pth"                  # 你的 DCE 权重路径（和训练一致）
+DCE_WEIGHTS = r"weights/Epoch99.pth"          # 你的 DCE 权重路径（和训练一致）
 
 OUT_PATH = r"vis/stageA_debug_grid.png"
 N_SAMPLES = 8
