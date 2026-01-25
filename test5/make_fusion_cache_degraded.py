@@ -156,6 +156,7 @@ def build_cache_for_degradation(df, deg_folder, out_dir, model, detector, theta_
     
     processed = 0
     skipped = 0
+    skip_reasons = {"coord_error": 0, "file_not_found": 0, "read_error": 0}
     
     for _, row in tqdm(df.iterrows(), total=len(df), desc=deg_name, ncols=80):
         img_stem = str(row["img_stem"])
@@ -166,18 +167,27 @@ def build_cache_for_degradation(df, deg_folder, out_dir, model, detector, theta_
             x2_org, y2_org = float(row["x2"]), float(row["y2"])
         except:
             skipped += 1
+            skip_reasons["coord_error"] += 1
             continue
         
-        # 读取退化图像 (MU-SID 使用大写 .JPG)
-        img_path = deg_folder / f"{img_stem}.JPG"
-        if not img_path.exists():
-            img_path = deg_folder / f"{img_stem}.jpg"
-        if not img_path.exists():
+        # 读取退化图像 (尝试多种扩展名)
+        img_path = None
+        for ext in [".JPG", ".jpg", ".jpeg", ".png"]:
+            candidate = deg_folder / f"{img_stem}{ext}"
+            if candidate.exists():
+                img_path = candidate
+                break
+        
+        if img_path is None:
             skipped += 1
+            skip_reasons["file_not_found"] += 1
             continue
         
         bgr = cv2.imread(str(img_path))
         if bgr is None:
+            skipped += 1
+            skip_reasons["read_error"] += 1
+            continue
             skipped += 1
             continue
         
@@ -243,6 +253,10 @@ def build_cache_for_degradation(df, deg_folder, out_dir, model, detector, theta_
             },
         )
         processed += 1
+    
+    # 打印跳过原因统计
+    if skipped > 0:
+        print(f"    Skip reasons: {skip_reasons}")
     
     return processed, skipped
 

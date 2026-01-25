@@ -52,7 +52,8 @@ GLOBAL_SEED = 42  # 全局种子基数
 # Config
 # ----------------------------
 TEST5_DIR = PROJECT_ROOT / "test5"
-MUSID_IMG_DIR = PROJECT_ROOT / "Hashmani's Dataset" / "clear"
+# 注意：测试图片在 MU-SID 目录，不是 clear 目录
+MUSID_IMG_DIR = PROJECT_ROOT / "Hashmani's Dataset" / "MU-SID"
 MUSID_GT_CSV = PROJECT_ROOT / "Hashmani's Dataset" / "GroundTruth.csv"
 SPLITS_DIR = PROJECT_ROOT / "splits_musid"
 
