@@ -168,10 +168,10 @@ def build_cache_for_degradation(df, deg_folder, out_dir, model, detector, theta_
             skipped += 1
             continue
         
-        # 读取退化图像
-        img_path = deg_folder / f"{img_stem}.jpg"
+        # 读取退化图像 (MU-SID 使用大写 .JPG)
+        img_path = deg_folder / f"{img_stem}.JPG"
         if not img_path.exists():
-            img_path = deg_folder / f"{img_stem}.JPG"
+            img_path = deg_folder / f"{img_stem}.jpg"
         if not img_path.exists():
             skipped += 1
             continue

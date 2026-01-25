@@ -356,7 +356,8 @@ def load_test_split():
             if line.strip():
                 # First column is image name (without extension)
                 name = line.strip().split(",")[0]
-                image_names.append(f"{name}.jpg")
+                # MU-SID 原始图片使用大写 .JPG 扩展名
+                image_names.append(f"{name}.JPG")
     return image_names
 
 
