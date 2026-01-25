@@ -119,9 +119,11 @@ def backup_and_modify_paths():
         'RGHNET_CKPT = r"weights_new/rghnet_best_c2.pth"',
         cache_content
     )
+    # 使用 re.escape 避免路径中的反斜杠问题
+    new_cache_path_escaped = str(NEW_CACHE_DIR).replace("\\", "/")
     cache_content = re.sub(
         r'SAVE_ROOT\s*=\s*r?["\'].*FusionCache[^"\']*["\']',
-        f'SAVE_ROOT = r"{NEW_CACHE_DIR}"',
+        f'SAVE_ROOT = r"{new_cache_path_escaped}"',
         cache_content
     )
     
@@ -134,7 +136,7 @@ def backup_and_modify_paths():
     
     cnn_content = re.sub(
         r'CACHE_ROOT\s*=\s*r?["\'].*FusionCache[^"\']*["\']',
-        f'CACHE_ROOT = r"{NEW_CACHE_DIR}"',
+        f'CACHE_ROOT = r"{new_cache_path_escaped}"',
         cnn_content
     )
     cnn_content = re.sub(
