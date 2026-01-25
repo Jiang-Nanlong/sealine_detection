@@ -36,9 +36,9 @@ if str(PROJECT_ROOT) not in sys.path:
 # ============================
 # PyCharm 配置区 (在这里修改)
 # ============================
-N_SAMPLES = 20                  # 可视化样本数量
-MODE = "worst"                 # 模式: "random" / "best" / "worst" / "per_domain"
-SEED = 42                       # 随机种子
+N_SAMPLES = 50                  # 可视化样本数量
+MODE = "best"                 # 模式: "random" / "best" / "worst" / "per_domain"
+SEED = 38                       # 随机种子
 # ============================
 
 # ----------------------------
