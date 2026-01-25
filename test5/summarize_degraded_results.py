@@ -38,40 +38,74 @@ def ensure_dir(p):
     os.makedirs(p, exist_ok=True)
 
 
-# Degradation type grouping
+# Degradation type grouping - 海洋场景分组
 DEGRADATION_GROUPS = {
     "clean": "Baseline",
-    "gaussian_noise_10": "Gaussian Noise",
-    "gaussian_noise_25": "Gaussian Noise",
-    "gaussian_noise_50": "Gaussian Noise",
+    # 基础退化
+    "gaussian_noise_15": "Sensor Noise",
+    "gaussian_noise_30": "Sensor Noise",
     "motion_blur_15": "Motion Blur",
     "motion_blur_25": "Motion Blur",
-    "gaussian_blur_2": "Gaussian Blur",
-    "gaussian_blur_5": "Gaussian Blur",
     "low_light_2.0": "Low Light",
-    "low_light_3.0": "Low Light",
+    "low_light_2.5": "Low Light",
     "fog_0.3": "Fog/Haze",
     "fog_0.5": "Fog/Haze",
-    "sp_noise_0.01": "Salt & Pepper",
-    "sp_noise_0.05": "Salt & Pepper",
+    # 海洋特有退化
+    "rain_light": "Rain",
+    "rain_medium": "Rain",
+    "rain_heavy": "Rain",
+    "glare_light": "Sun Glare",
+    "glare_heavy": "Sun Glare",
+    "jpeg_q20": "Compression",
+    "jpeg_q10": "Compression",
+    "lowres_0.5x": "Low Resolution",
+    "lowres_0.25x": "Low Resolution",
 }
 
-# Display names
+# Display names - 中英文对照
 DISPLAY_NAMES = {
+    "clean": "Clean (基准)",
+    # 基础退化
+    "gaussian_noise_15": "噪声 σ=15",
+    "gaussian_noise_30": "噪声 σ=30",
+    "motion_blur_15": "运动模糊 k=15",
+    "motion_blur_25": "运动模糊 k=25",
+    "low_light_2.0": "低光照 γ=2.0",
+    "low_light_2.5": "低光照 γ=2.5",
+    "fog_0.3": "海雾 30%",
+    "fog_0.5": "海雾 50%",
+    # 海洋特有退化
+    "rain_light": "小雨",
+    "rain_medium": "中雨",
+    "rain_heavy": "大雨",
+    "glare_light": "轻度反光",
+    "glare_heavy": "强反光",
+    "jpeg_q20": "压缩 Q=20",
+    "jpeg_q10": "压缩 Q=10",
+    "lowres_0.5x": "低清 0.5x",
+    "lowres_0.25x": "低清 0.25x",
+}
+
+# English display names for LaTeX
+DISPLAY_NAMES_EN = {
     "clean": "Clean (Baseline)",
-    "gaussian_noise_10": "Gaussian σ=10",
-    "gaussian_noise_25": "Gaussian σ=25",
-    "gaussian_noise_50": "Gaussian σ=50",
-    "motion_blur_15": "Motion k=15",
-    "motion_blur_25": "Motion k=25",
-    "gaussian_blur_2": "Blur σ=2",
-    "gaussian_blur_5": "Blur σ=5",
-    "low_light_2.0": "Low Light γ=2.0",
-    "low_light_3.0": "Low Light γ=3.0",
-    "fog_0.3": "Fog 30%",
-    "fog_0.5": "Fog 50%",
-    "sp_noise_0.01": "S&P 1%",
-    "sp_noise_0.05": "S&P 5%",
+    "gaussian_noise_15": "Noise $\\sigma$=15",
+    "gaussian_noise_30": "Noise $\\sigma$=30",
+    "motion_blur_15": "Motion Blur k=15",
+    "motion_blur_25": "Motion Blur k=25",
+    "low_light_2.0": "Low Light $\\gamma$=2.0",
+    "low_light_2.5": "Low Light $\\gamma$=2.5",
+    "fog_0.3": "Fog 30\\%",
+    "fog_0.5": "Fog 50\\%",
+    "rain_light": "Rain (Light)",
+    "rain_medium": "Rain (Medium)",
+    "rain_heavy": "Rain (Heavy)",
+    "glare_light": "Sun Glare (Light)",
+    "glare_heavy": "Sun Glare (Heavy)",
+    "jpeg_q20": "JPEG Q=20",
+    "jpeg_q10": "JPEG Q=10",
+    "lowres_0.5x": "Low-Res 0.5x",
+    "lowres_0.25x": "Low-Res 0.25x",
 }
 
 

@@ -32,10 +32,11 @@ if str(PROJECT_ROOT) not in sys.path:
 # PyCharm 配置区 (在这里修改)
 # ============================
 N_SAMPLES = 5                   # 每种退化可视化样本数
-SELECTED_DEGRADATIONS = [       # 选择要可视化的退化类型
-    "gaussian_noise_25",
-    "motion_blur_25",
-    "low_light_2.0",
+SELECTED_DEGRADATIONS = [       # 选择要可视化的退化类型（海洋特有）
+    "rain_medium",
+    "glare_heavy",
+    "jpeg_q10",
+    "lowres_0.25x",
     "fog_0.5",
 ]
 SEED = 42
