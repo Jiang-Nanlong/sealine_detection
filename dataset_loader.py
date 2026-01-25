@@ -558,11 +558,9 @@ class HorizonImageDataset(Dataset):
         clean_np = rgb.copy()
         target_clean = torch.from_numpy(clean_np.astype(np.float32) / 255.0).permute(2, 0, 1)
 
-        if self.mode == "segmentation":
-            return target_clean, mask_tensor
-
         # -------------------------
         # Degradation: train random / val fixed
+        # 注意：分割模式也应用退化，让分割分支具备鲁棒性
         # -------------------------
         if not self.augment:
             state_random = random.getstate()
@@ -580,6 +578,12 @@ class HorizonImageDataset(Dataset):
             degraded_np = synthesize_rain_fog(clean_np, p_clean=self.p_clean)
 
         input_tensor = torch.from_numpy(degraded_np).permute(2, 0, 1)
+
+        if self.mode == "segmentation":
+            # 分割模式：输入是退化图，标签是基于干净图生成的 mask
+            return input_tensor, mask_tensor
+
+        # joint 模式：返回 (退化输入, 干净目标, mask)
         return input_tensor, target_clean, mask_tensor
 
 
