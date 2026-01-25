@@ -124,8 +124,7 @@ def main():
     print(f"\n[Device] {DEVICE}")
     print("[Load] UNet (RestorationGuidedHorizonNet)...")
     unet = RestorationGuidedHorizonNet(
-        dce_pretrained=DCE_WEIGHTS,
-        encoder_name="timm-mobilenetv3_small_100",
+        dce_weights_path=DCE_WEIGHTS,
     ).to(DEVICE)
     
     ckpt = torch.load(RGHNET_CKPT, map_location=DEVICE, weights_only=False)

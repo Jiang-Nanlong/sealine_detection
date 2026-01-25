@@ -345,13 +345,19 @@ def apply_degradation(img, config, img_name: str, deg_name: str):
 
 
 def load_test_split():
-    """Load test split image names."""
-    test_split_file = SPLITS_DIR / "test.txt"
-    if not test_split_file.exists():
-        raise FileNotFoundError(f"Test split file not found: {test_split_file}")
+    """Load test split image names from GroundTruth_test.csv."""
+    test_csv = SPLITS_DIR / "GroundTruth_test.csv"
+    if not test_csv.exists():
+        raise FileNotFoundError(f"Test split file not found: {test_csv}")
     
-    with open(test_split_file, "r") as f:
-        return [line.strip() for line in f if line.strip()]
+    image_names = []
+    with open(test_csv, "r") as f:
+        for line in f:
+            if line.strip():
+                # First column is image name (without extension)
+                name = line.strip().split(",")[0]
+                image_names.append(f"{name}.jpg")
+    return image_names
 
 
 def main():
