@@ -345,7 +345,7 @@ def synthesize_degradation(image_rgb_u8: np.ndarray, p_clean: float = 0.30):
             img = _add_rain(img, severity)
         
         elif deg_type == "sun_glare":
-            intensity = random.uniform(0.2, 0.5)
+            intensity = random.uniform(0.2, 0.6)  # 扩展到0.6，覆盖测试时的heavy
             img = _add_sun_glare(img, intensity)
         
         elif deg_type == "jpeg":
