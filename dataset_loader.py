@@ -300,6 +300,7 @@ def synthesize_degradation(image_rgb_u8: np.ndarray, p_clean: float = 0.30):
 
     # ---- 随机选择 1~2 种退化类型 ----
     # 定义退化及其参数范围
+    # 2026-01-25 更新: 提高 JPEG 概率 (15%→30%)，改善压缩鲁棒性
     degradation_pool = [
         ("gaussian_noise", 0.25),  # 25% 概率
         ("motion_blur", 0.20),     # 20%
@@ -307,7 +308,7 @@ def synthesize_degradation(image_rgb_u8: np.ndarray, p_clean: float = 0.30):
         ("fog", 0.30),             # 30%
         ("rain", 0.25),            # 25%
         ("sun_glare", 0.15),       # 15%
-        ("jpeg", 0.15),            # 15%
+        ("jpeg", 0.30),            # 30% (原15%，提高以改善压缩鲁棒性)
         ("lowres", 0.10),          # 10%
     ]
     
@@ -349,7 +350,8 @@ def synthesize_degradation(image_rgb_u8: np.ndarray, p_clean: float = 0.30):
             img = _add_sun_glare(img, intensity)
         
         elif deg_type == "jpeg":
-            quality = random.randint(10, 30)  # Q = 10~30
+            # Q=5~50: 覆盖极端压缩(Q=5~10)到中等压缩(Q=40~50)
+            quality = random.randint(5, 50)
             img = _add_jpeg_artifacts(img, quality)
         
         elif deg_type == "lowres":
