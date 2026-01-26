@@ -439,6 +439,15 @@ class HorizonImageDataset(Dataset):
     def _read_rgb(self, img_name):
         path = os.path.join(self.img_dir, img_name)
         bgr = cv2.imread(path)
+        
+        # 如果读取失败，尝试添加常见扩展名
+        if bgr is None:
+            for ext in ['.JPG', '.jpg', '.jpeg', '.JPEG', '.png', '.PNG']:
+                path_with_ext = os.path.join(self.img_dir, img_name + ext)
+                bgr = cv2.imread(path_with_ext)
+                if bgr is not None:
+                    break
+        
         if bgr is None:
             rgb = np.zeros((self.out_h, self.out_w, 3), dtype=np.uint8)
             meta = dict(
