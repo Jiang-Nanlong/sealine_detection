@@ -437,29 +437,28 @@ class HorizonImageDataset(Dataset):
         return len(self.data)
 
     def _read_rgb(self, img_name):
-        path = os.path.join(self.img_dir, img_name)
-        bgr = cv2.imread(path)
-        
-        # 如果读取失败，尝试添加常见扩展名
-        if bgr is None:
-            for ext in ['.JPG', '.jpg', '.jpeg', '.JPEG', '.png', '.PNG']:
-                path_with_ext = os.path.join(self.img_dir, img_name + ext)
-                bgr = cv2.imread(path_with_ext)
+        """读取图片，自动处理扩展名问题，避免 cv2 warning"""
+        name = str(img_name).strip()  # 防 trailing 空格
+        lower = name.lower()
+
+        # 先组织候选文件名（避免对不存在路径 imread 产生 warning）
+        candidates = []
+        if lower.endswith((".jpg", ".jpeg", ".png")):
+            candidates.append(name)
+        else:
+            candidates += [name + ".JPG", name + ".jpg", name + ".jpeg", name + ".JPEG", name + ".png", name + ".PNG"]
+
+        bgr = None
+        for fn in candidates:
+            p = os.path.join(self.img_dir, fn)
+            if os.path.exists(p):
+                bgr = cv2.imread(p, cv2.IMREAD_COLOR)
                 if bgr is not None:
                     break
-        
+
+        # 如果依然读不到，抛出异常（由 __getitem__ 处理重采样）
         if bgr is None:
-            rgb = np.zeros((self.out_h, self.out_w, 3), dtype=np.uint8)
-            meta = dict(
-                mode="resize",
-                scale_x=1.0,
-                scale_y=1.0,
-                orig_w=self.out_w,
-                orig_h=self.out_h,
-                out_w=self.out_w,
-                out_h=self.out_h,
-            )
-            return rgb, meta
+            raise FileNotFoundError(f"[Dataset] image not found for '{name}' in {self.img_dir}")
 
         rgb0 = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
 
@@ -471,14 +470,23 @@ class HorizonImageDataset(Dataset):
         return rgb, meta
 
     def __getitem__(self, idx):
-        row = self.data.iloc[idx]
-        img_name = str(row.iloc[0])
-        try:
-            x1, y1, x2, y2 = float(row.iloc[1]), float(row.iloc[2]), float(row.iloc[3]), float(row.iloc[4])
-        except Exception:
-            x1, y1, x2, y2 = 0.0, 0.0, 0.0, 0.0
+        # 带重采样的健壮读取：如果图片缺失，随机换一张
+        for _ in range(10):
+            try:
+                row = self.data.iloc[idx]
+                img_name = str(row.iloc[0])
+                try:
+                    x1, y1, x2, y2 = float(row.iloc[1]), float(row.iloc[2]), float(row.iloc[3]), float(row.iloc[4])
+                except Exception:
+                    x1, y1, x2, y2 = 0.0, 0.0, 0.0, 0.0
 
-        rgb, meta = self._read_rgb(img_name)
+                rgb, meta = self._read_rgb(img_name)
+                break
+            except FileNotFoundError:
+                idx = random.randint(0, len(self.data) - 1)
+        else:
+            raise FileNotFoundError("Too many missing images, please check GroundTruth.csv and MU-SID folder.")
+        
         H, W = self.out_h, self.out_w
 
         # Map endpoints to current resolution
