@@ -298,64 +298,62 @@ def synthesize_degradation(image_rgb_u8: np.ndarray, p_clean: float = 0.30):
         img = np.clip(img + noise, 0, 1)
         return img.astype(np.float32)
 
-    # ---- 随机选择 1~2 种退化类型 ----
-    # 定义退化及其参数范围
-    # 2026-01-25 更新: 提高 JPEG 概率 (15%→30%)，改善压缩鲁棒性
+    # ---- 随机选择 1~3 种退化类型 ----
+    # 调整退化比例和参数范围
     degradation_pool = [
-        ("gaussian_noise", 0.25),  # 25% 概率
-        ("motion_blur", 0.20),     # 20%
-        ("low_light", 0.25),       # 25%
-        ("fog", 0.30),             # 30%
-        ("rain", 0.25),            # 25%
-        ("sun_glare", 0.15),       # 15%
-        ("jpeg", 0.30),            # 30% (原15%，提高以改善压缩鲁棒性)
-        ("lowres", 0.10),          # 10%
+        ("gaussian_noise", 0.20),  # 降低噪声概率
+        ("motion_blur", 0.25),     # 增加模糊概率
+        ("low_light", 0.30),       # 增加低光照概率
+        ("fog", 0.35),             # 增加海雾概率
+        ("rain", 0.30),            # 增加降雨概率
+        ("sun_glare", 0.20),       # 增加阳光反射概率
+        ("jpeg", 0.35),            # 增加 JPEG 概率
+        ("lowres", 0.15),          # 增加低分辨率概率
     ]
-    
+
     # 独立概率采样
     selected = [name for name, prob in degradation_pool if random.random() < prob]
-    
+
     # 至少应用一种退化
     if not selected:
         selected = [random.choice([name for name, _ in degradation_pool])]
-    
-    # 限制最多 2 种（避免过度退化）
-    if len(selected) > 2:
-        selected = random.sample(selected, 2)
-    
+
+    # 限制最多 3 种（增加组合多样性）
+    if len(selected) > 3:
+        selected = random.sample(selected, 3)
+
     # ---- 应用选中的退化 ----
     for deg_type in selected:
         if deg_type == "gaussian_noise":
-            sigma = random.uniform(10, 35)  # σ = 10~35
+            sigma = random.uniform(5, 50)  # 扩展噪声范围
             img = _add_gaussian_noise(img, sigma)
-        
+
         elif deg_type == "motion_blur":
-            kernel_size = random.choice([9, 13, 17, 21, 25])
+            kernel_size = random.choice([7, 11, 15, 19, 23, 27])  # 增加模糊强度
             img = _add_motion_blur(img, kernel_size)
-        
+
         elif deg_type == "low_light":
-            gamma = random.uniform(1.5, 2.5)
+            gamma = random.uniform(1.2, 3.0)  # 扩展低光照范围
             img = _add_low_light(img, gamma)
-        
+
         elif deg_type == "fog":
-            severity = random.uniform(0.2, 0.6)
+            severity = random.uniform(0.1, 0.7)  # 扩展海雾范围
             img = _add_fog(img, severity)
-        
+
         elif deg_type == "rain":
-            severity = random.uniform(0.3, 0.9)
+            severity = random.uniform(0.2, 1.0)  # 扩展降雨范围
             img = _add_rain(img, severity)
-        
+
         elif deg_type == "sun_glare":
-            intensity = random.uniform(0.2, 0.6)  # 扩展到0.6，覆盖测试时的heavy
+            intensity = random.uniform(0.1, 0.7)  # 扩展阳光反射范围
             img = _add_sun_glare(img, intensity)
-        
+
         elif deg_type == "jpeg":
-            # Q=5~50: 覆盖极端压缩(Q=5~10)到中等压缩(Q=40~50)
-            quality = random.randint(5, 50)
+            quality = random.randint(1, 50)  # 扩展 JPEG 范围
             img = _add_jpeg_artifacts(img, quality)
-        
+
         elif deg_type == "lowres":
-            scale = random.uniform(0.25, 0.6)  # 0.25x ~ 0.6x
+            scale = random.uniform(0.2, 0.7)  # 扩展低分辨率范围
             img = _add_resolution_downscale(img, scale)
 
     # 总是加一点传感器噪声
