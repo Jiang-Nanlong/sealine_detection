@@ -46,7 +46,7 @@ IMG_SIZE = (576, 1024)
 BATCH_SIZE = 4
 
 # ✅ 核心改动 2: 让网络学会“不乱改”清晰图
-P_CLEAN = 0.35
+P_CLEAN = 0.55
 
 SEED = 42
 PRINT_EVERY = 1

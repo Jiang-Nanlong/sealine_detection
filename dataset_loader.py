@@ -249,124 +249,153 @@ def _add_sun_glare(img: np.ndarray, intensity: float) -> np.ndarray:
 
 
 def _add_jpeg_artifacts(img: np.ndarray, quality: int) -> np.ndarray:
-    """Add JPEG compression artifacts. img: float32 [0,1]"""
-    img_u8 = (img * 255).astype(np.uint8)
-    encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), quality]
-    _, encoded = cv2.imencode('.jpg', img_u8, encode_param)
-    decoded = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
-    # Note: cv2 uses BGR, but our img is RGB. For artifacts this doesn't matter much
-    return decoded.astype(np.float32) / 255.0
+    """Add JPEG compression artifacts. img: float32 [0,1] (RGB)."""
+    # IMPORTANT: cv2.imencode expects BGR ordering for color images.
+    # Convert RGB->BGR before encode, and BGR->RGB after decode.
+    img_u8_rgb = (img * 255).astype(np.uint8)
+    img_u8_bgr = cv2.cvtColor(img_u8_rgb, cv2.COLOR_RGB2BGR)
+
+    encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)]
+    ok, encoded = cv2.imencode(".jpg", img_u8_bgr, encode_param)
+    if not ok:
+        return img.astype(np.float32)
+
+    decoded_bgr = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+    if decoded_bgr is None:
+        return img.astype(np.float32)
+
+    decoded_rgb = cv2.cvtColor(decoded_bgr, cv2.COLOR_BGR2RGB)
+    return decoded_rgb.astype(np.float32) / 255.0
 
 
 def _add_resolution_downscale(img: np.ndarray, scale: float) -> np.ndarray:
     """Simulate low resolution by down-then-up scaling. img: float32 [0,1]"""
     h, w = img.shape[:2]
     img_u8 = (img * 255).astype(np.uint8)
-    
-    small_h, small_w = int(h * scale), int(w * scale)
+
+    small_h = max(1, int(round(h * float(scale))))
+    small_w = max(1, int(round(w * float(scale))))
+
     small = cv2.resize(img_u8, (small_w, small_h), interpolation=cv2.INTER_AREA)
     restored = cv2.resize(small, (w, h), interpolation=cv2.INTER_LINEAR)
-    
+
     return restored.astype(np.float32) / 255.0
 
 
-def synthesize_degradation(image_rgb_u8: np.ndarray, p_clean: float = 0.30):
+def synthesize_degradation(image_rgb_u8: np.ndarray, p_clean: float = 0.55):
     """
-    海洋场景退化合成函数（扩展版）
-    
-    与 test5/generate_degraded_images.py 对齐的退化类型：
+    海洋场景退化合成函数（推荐配置版）
+
+    设计目标（贴合实验5：退化鲁棒性压力测试）：
+      1) 总体退化比例适中：p_clean≈0.55（约45%样本进入退化分支）
+      2) 退化样本的分布更贴合“单退化评估”：
+         - 70%：只施加 1 种“主退化”
+         - 30%：在主退化基础上叠加第 2 种“轻退化”
+      3) 最多叠加 2 种退化，避免训练分布过度偏离评估分布
+
+    退化类型（与 test5/generate_degraded_images.py 对齐）：
       - gaussian_noise: 传感器噪声
       - motion_blur: 船体晃动（随机角度）
       - low_light: 黄昏/阴天
-      - fog: 海雾
-      - rain: 海上降雨
-      - sun_glare: 阳光海面反射
+      - fog: 海雾/雾霾
+      - rain: 海上降雨（雨丝+薄雾）
+      - sun_glare: 阳光海面反射/眩光
       - jpeg: 压缩伪影
-      - lowres: 低分辨率
-    
+      - lowres: 低分辨率（降采样+上采样）
+
     输入:  uint8 RGB
     输出:  float32 RGB in [0,1]
-    
-    p_clean: 直接返回原图的概率（教会模型"干净图不要过度处理"）
     """
     img = image_rgb_u8.astype(np.float32) / 255.0
     h, w, _ = img.shape
 
     # ---- clean pass-through ----
     if random.random() < float(p_clean):
-        noise = np.random.randn(h, w, 3).astype(np.float32) * 0.005
-        img = np.clip(img + noise, 0, 1)
+        # 可选：极轻底噪（避免过拟合到“完全无噪声”的理想图）
+        if random.random() < 0.5:
+            noise = np.random.randn(h, w, 3).astype(np.float32) * 0.002
+            img = np.clip(img + noise, 0, 1)
         return img.astype(np.float32)
 
-    # ---- 随机选择 1~2 种退化类型 ----
-    # 定义退化及其参数范围
-    # 2026-01-25 更新: 提高 JPEG 概率 (15%→30%)，改善压缩鲁棒性
-    degradation_pool = [
-        ("gaussian_noise", 0.25),  # 25% 概率
-        ("motion_blur", 0.20),     # 20%
-        ("low_light", 0.25),       # 25%
-        ("fog", 0.30),             # 30%
-        ("rain", 0.25),            # 25%
-        ("sun_glare", 0.15),       # 15%
-        ("jpeg", 0.30),            # 30% (原15%，提高以改善压缩鲁棒性)
-        ("lowres", 0.10),          # 10%
+    # ---- 主退化：必选（天气/压缩相关略提高权重，更贴海上）----
+    primary_pool = [
+        ("fog", 1.2),
+        ("rain", 1.2),
+        ("jpeg", 1.2),
+        ("sun_glare", 1.0),
+        ("low_light", 1.0),
+        ("motion_blur", 1.0),
+        ("gaussian_noise", 1.0),
+        ("lowres", 0.8),
     ]
-    
-    # 独立概率采样
-    selected = [name for name, prob in degradation_pool if random.random() < prob]
-    
-    # 至少应用一种退化
-    if not selected:
-        selected = [random.choice([name for name, _ in degradation_pool])]
-    
-    # 限制最多 2 种（避免过度退化）
-    if len(selected) > 2:
-        selected = random.sample(selected, 2)
-    
-    # ---- 应用选中的退化 ----
-    for deg_type in selected:
+    names_p, weights_p = zip(*primary_pool)
+    primary = random.choices(list(names_p), weights=list(weights_p), k=1)[0]
+    selected = [primary]
+
+    # ---- 轻退化：30%概率叠加第二种（范围偏轻，避免过度破坏）----
+    if random.random() < 0.30:
+        secondary_pool = [
+            ("fog", 1.0),
+            ("rain", 1.0),
+            ("sun_glare", 1.0),
+            ("low_light", 1.0),
+            ("motion_blur", 1.0),
+            ("gaussian_noise", 1.0),
+            ("jpeg", 0.8),
+            ("lowres", 0.8),
+        ]
+        names_s = [n for n, _w in secondary_pool if n != primary]
+        weights_s = [w for n, w in secondary_pool if n != primary]
+        if names_s:
+            secondary = random.choices(names_s, weights=weights_s, k=1)[0]
+            selected.append(secondary)
+
+    # ---- 应用退化（主：全强度；次：偏轻）----
+    for i, deg_type in enumerate(selected):
+        is_secondary = (i == 1)
+
         if deg_type == "gaussian_noise":
-            sigma = random.uniform(10, 35)  # σ = 10~35
+            sigma = random.uniform(10, 35) if not is_secondary else random.uniform(8, 18)
             img = _add_gaussian_noise(img, sigma)
-        
+
         elif deg_type == "motion_blur":
-            kernel_size = random.choice([9, 13, 17, 21, 25])
+            kernel_size = random.choice([9, 13, 17, 21, 25]) if not is_secondary else random.choice([7, 9, 13])
             img = _add_motion_blur(img, kernel_size)
-        
+
         elif deg_type == "low_light":
-            gamma = random.uniform(1.5, 2.5)
+            gamma = random.uniform(1.5, 2.5) if not is_secondary else random.uniform(1.4, 2.0)
             img = _add_low_light(img, gamma)
-        
+
         elif deg_type == "fog":
-            severity = random.uniform(0.2, 0.6)
+            severity = random.uniform(0.2, 0.6) if not is_secondary else random.uniform(0.15, 0.35)
             img = _add_fog(img, severity)
-        
+
         elif deg_type == "rain":
-            severity = random.uniform(0.3, 0.9)
+            severity = random.uniform(0.35, 0.95) if not is_secondary else random.uniform(0.25, 0.55)
             img = _add_rain(img, severity)
-        
+
         elif deg_type == "sun_glare":
-            intensity = random.uniform(0.2, 0.6)  # 扩展到0.6，覆盖测试时的heavy
+            intensity = random.uniform(0.2, 0.6) if not is_secondary else random.uniform(0.15, 0.35)
             img = _add_sun_glare(img, intensity)
-        
+
         elif deg_type == "jpeg":
-            # Q=5~50: 覆盖极端压缩(Q=5~10)到中等压缩(Q=40~50)
-            quality = random.randint(5, 50)
+            # 不建议训练时用极端 q<10（会把模型带偏）；覆盖 q10/q20 也足够
+            quality = random.randint(10, 50) if not is_secondary else random.randint(20, 70)
             img = _add_jpeg_artifacts(img, quality)
-        
+
         elif deg_type == "lowres":
-            scale = random.uniform(0.25, 0.6)  # 0.25x ~ 0.6x
+            # scale 越小越糊：主退化更重，次退化更轻
+            scale = random.uniform(0.25, 0.60) if not is_secondary else random.uniform(0.45, 0.80)
             img = _add_resolution_downscale(img, scale)
 
-    # 总是加一点传感器噪声
-    noise = np.random.randn(h, w, 3).astype(np.float32) * 0.008
+    # 总是加一点传感器底噪（增强泛化）
+    noise = np.random.randn(h, w, 3).astype(np.float32) * 0.006
     img = np.clip(img + noise, 0, 1)
-
     return img.astype(np.float32)
 
 
 # 保留旧函数名作为别名，兼容现有代码
-def synthesize_rain_fog(image_rgb_u8: np.ndarray, p_clean: float = 0.30):
+def synthesize_rain_fog(image_rgb_u8: np.ndarray, p_clean: float = 0.55):
     """Alias for synthesize_degradation (backward compatibility)."""
     return synthesize_degradation(image_rgb_u8, p_clean=p_clean)
 
@@ -407,7 +436,7 @@ class HorizonImageDataset(Dataset):
         rotate_prob=0.5,
         max_rotate_deg=45.0,
         val_seed_offset=100000,
-        p_clean=0.35,            # NEW: clean pass-through prob
+        p_clean=0.55,            # NEW: clean pass-through prob
         pad_value=114,           # only used for legacy square letterbox
     ):
         """
@@ -618,7 +647,7 @@ class SimpleFolderDataset(Dataset):
         rotate_prob=0.5,
         max_rotate_deg=45.0,
         val_seed_offset=200000,
-        p_clean=0.35,            # NEW
+        p_clean=0.55,            # NEW
         pad_value=114,           # only used for legacy square letterbox
     ):
         self.img_dir = img_dir
