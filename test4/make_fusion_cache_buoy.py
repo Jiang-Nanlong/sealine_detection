@@ -251,7 +251,13 @@ def build_cache_for_split(df: pd.DataFrame, indices, out_dir: str, seg_model, de
 
         np.save(
             os.path.join(out_dir, f"{idx}.npy"),
-            {"input": combined_input, "label": label, "img_name": img_name},
+            {
+                "input": combined_input,
+                "label": label,
+                "img_name": img_name,
+                "orig_w": w_orig,
+                "orig_h": h_orig,
+            },
         )
 
 

@@ -64,7 +64,10 @@ class SplitCacheDataset(Dataset):
         x = torch.from_numpy(data["input"]).float()
         y = torch.from_numpy(data["label"]).float()
         img_name = str(data.get("img_name", ""))
-        return x, y, idx, img_name
+        # 读取原始图像尺寸（如果存在）
+        orig_w = int(data.get("orig_w", 800))
+        orig_h = int(data.get("orig_h", 600))
+        return x, y, idx, img_name, orig_w, orig_h
 
 
 # -------------------------
@@ -263,7 +266,7 @@ def main():
         orig_w=ORIG_W,
         orig_h=ORIG_H,
     )
-    scale = cfg.orig_w / cfg.unet_w
+    # scale 现在在循环中按每张图计算，这里不再使用全局scale
 
     split_dir = os.path.join(CACHE_ROOT, SPLIT)
     if not os.path.isdir(split_dir):
@@ -317,7 +320,7 @@ def main():
     print("")
 
     with torch.no_grad():
-        for xb, yb, idxb, names in dl:
+        for xb, yb, idxb, names, orig_ws, orig_hs in dl:
             xb = xb.to(DEVICE, non_blocking=True)
             yb = yb.to(DEVICE, non_blocking=True)
 
@@ -326,6 +329,8 @@ def main():
             gt_np = yb.detach().cpu().numpy()
             idx_np = idxb.detach().cpu().numpy()
             names = list(names)
+            orig_ws = orig_ws.numpy()
+            orig_hs = orig_hs.numpy()
 
             rho_p, th_p = denorm_rho_theta(pred_np[:, 0], pred_np[:, 1], cfg)
             rho_g, th_g = denorm_rho_theta(gt_np[:, 0], gt_np[:, 1], cfg)
@@ -334,6 +339,11 @@ def main():
             e_theta = angular_diff_deg(th_p, th_g, period=180.0)
 
             for i in range(len(idx_np)):
+                # 使用每张图实际的原始尺寸计算scale
+                img_orig_w = int(orig_ws[i])
+                img_orig_h = int(orig_hs[i])
+                img_scale = img_orig_w / cfg.unet_w
+
                 ld = mean_point_to_line_distance(
                     rho_pred=float(rho_p[i]),
                     theta_pred_deg=float(th_p[i]),
@@ -346,9 +356,9 @@ def main():
 
                 video = video_from_img_name(names[i])
 
-                # Global
+                # Global (使用每张图实际的scale)
                 g_rho_err.append(float(e_rho[i]))
-                g_rho_err_orig.append(float(e_rho[i] * scale))
+                g_rho_err_orig.append(float(e_rho[i] * img_scale))
                 g_theta_err.append(float(e_theta[i]))
                 g_line_dist.append(float(ld))
 
@@ -356,7 +366,7 @@ def main():
                 if video not in per_video:
                     per_video[video] = {"rho": [], "rho_o": [], "theta": [], "line": []}
                 per_video[video]["rho"].append(float(e_rho[i]))
-                per_video[video]["rho_o"].append(float(e_rho[i] * scale))
+                per_video[video]["rho_o"].append(float(e_rho[i] * img_scale))
                 per_video[video]["theta"].append(float(e_theta[i]))
                 per_video[video]["line"].append(float(ld))
 
@@ -365,12 +375,14 @@ def main():
                         "idx": int(idx_np[i]),
                         "img_name": names[i],
                         "video": video,
+                        "orig_w": img_orig_w,
+                        "orig_h": img_orig_h,
                         "rho_gt_norm": float(gt_np[i, 0]),
                         "theta_gt_norm": float(gt_np[i, 1]),
                         "rho_pred_norm": float(pred_np[i, 0]),
                         "theta_pred_norm": float(pred_np[i, 1]),
                         "rho_err_px_unet": float(e_rho[i]),
-                        "rho_err_px_orig": float(e_rho[i] * scale),
+                        "rho_err_px_orig": float(e_rho[i] * img_scale),
                         "theta_err_deg": float(e_theta[i]),
                         "line_dist_px_unet": float(ld),
                     })
@@ -381,18 +393,19 @@ def main():
     g_theta_err = np.asarray(g_theta_err, dtype=np.float64)
     g_line_dist = np.asarray(g_line_dist, dtype=np.float64)
 
-    print("[Overall]")
-    print(summarize("Rho abs error (px, UNet space)", g_rho_err))
-    print(summarize(f"Rho abs error (px, original ~{cfg.orig_w}x{cfg.orig_h})", g_rho_err_orig))
-    print(summarize("Theta error (deg, wrap-aware)", g_theta_err))
-    print(summarize("Mean point->line distance (px, UNet space)", g_line_dist))
-    print("---- Overall thresholds ----")
-    print(f"theta <= 1°:  {pct_le(g_theta_err, 1):.2f}% | <=2°: {pct_le(g_theta_err, 2):.2f}% | <=5°: {pct_le(g_theta_err, 5):.2f}%")
-    print(f"rho_orig <= 5px: {pct_le(g_rho_err_orig, 5):.2f}% | <=10px: {pct_le(g_rho_err_orig, 10):.2f}% | <=20px: {pct_le(g_rho_err_orig, 20):.2f}%")
-    print(f"line_dist <= 5px: {pct_le(g_line_dist, 5):.2f}% | <=10px: {pct_le(g_line_dist, 10):.2f}% | <=20px: {pct_le(g_line_dist, 20):.2f}%")
+    print("[Overall - 原图尺寸]")
+    print(summarize("Rho abs error (px, 原图尺寸)", g_rho_err_orig))
+    print(summarize("Theta error (deg)", g_theta_err))
+    print("---- 阈值统计 (原图尺寸) ----")
+    print(f"rho <= 5px: {pct_le(g_rho_err_orig, 5):.2f}% | <=10px: {pct_le(g_rho_err_orig, 10):.2f}% | <=20px: {pct_le(g_rho_err_orig, 20):.2f}%")
+    print(f"theta <= 1°: {pct_le(g_theta_err, 1):.2f}% | <=2°: {pct_le(g_theta_err, 2):.2f}% | <=5°: {pct_le(g_theta_err, 5):.2f}%")
+
+    print("\n[Overall - UNet空间 (仅供参考)]")
+    print(summarize("Rho abs error (px, 1024x576)", g_rho_err))
+    print(summarize("Line distance (px, 1024x576)", g_line_dist))
 
     # Per-video report
-    print("\n[Per-video breakdown]")
+    print("\n[Per-video breakdown - 原图尺寸]")
     for video in sorted(per_video.keys()):
         arr_rho = np.asarray(per_video[video]["rho"], dtype=np.float64)
         arr_rho_o = np.asarray(per_video[video]["rho_o"], dtype=np.float64)
@@ -402,9 +415,9 @@ def main():
         if arr_rho.size == 0:
             continue
         print(f"\n--- {video} | N={arr_rho.size} ---")
-        print(summarize("Rho abs error (px, UNet space)", arr_rho))
+        print(summarize("Rho error (px, 原图)", arr_rho_o))
         print(summarize("Theta error (deg)", arr_theta))
-        print(f"theta<=2°: {pct_le(arr_theta, 2):.2f}% | rho_orig<=10px: {pct_le(arr_rho_o, 10):.2f}% | line_dist<=10px: {pct_le(arr_line, 10):.2f}%")
+        print(f"rho<=10px: {pct_le(arr_rho_o, 10):.2f}% | theta<=2°: {pct_le(arr_theta, 2):.2f}%")
 
     if OUT_CSV and rows:
         out_path = OUT_CSV
