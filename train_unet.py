@@ -45,8 +45,11 @@ STAGE = "A"
 IMG_SIZE = (576, 1024) 
 BATCH_SIZE = 4
 
-# ✅ 核心改动 2: 让网络学会“不乱改”清晰图
-P_CLEAN = 0.55
+# ✅ 核心改动 2: 退化增强仅用于 Stage A（复原分支）
+# Stage A: p_clean=P_CLEAN，复原分支学习"退化→干净"映射
+# Stage B/C: p_clean=1.0，分割分支只在干净图上训练
+# 这样才能证明：复原分支帮助退化图恢复后，分割性能提升
+P_CLEAN = 0.55  # 仅 Stage A 生效
 
 SEED = 42
 PRINT_EVERY = 1
@@ -117,9 +120,24 @@ def build_musid_datasets(stage: str):
         mode = "joint"
         eval_mode = "joint"
 
-    # 分别实例化，控制 augment 和 p_clean
-    full_ds_train = HorizonImageDataset(CSV_PATH, IMG_DIR, img_size=IMG_SIZE, mode=mode, augment=True, p_clean=P_CLEAN)
-    full_ds_val   = HorizonImageDataset(CSV_PATH, IMG_DIR, img_size=IMG_SIZE, mode=mode, augment=False, p_clean=P_CLEAN)
+    # ====================================================================
+    # 关键设计：只有 Stage A 使用退化增强训练复原分支
+    # Stage B/C 分割分支只在干净图上训练（p_clean=1.0）
+    # 这样才能证明：复原分支帮助退化图恢复后，分割性能提升
+    # ====================================================================
+    if stage == "A":
+        # Stage A: 复原分支需要见退化数据
+        p_clean_train = P_CLEAN
+        p_clean_val = P_CLEAN
+        print(f"[Stage A] 复原分支训练: p_clean={p_clean_train} (使用退化增强)")
+    else:
+        # Stage B/C: 分割分支只在干净数据上训练
+        p_clean_train = 1.0
+        p_clean_val = 1.0
+        print(f"[Stage {stage}] 分割分支训练: p_clean=1.0 (不使用退化，只用干净图)")
+
+    full_ds_train = HorizonImageDataset(CSV_PATH, IMG_DIR, img_size=IMG_SIZE, mode=mode, augment=True, p_clean=p_clean_train)
+    full_ds_val   = HorizonImageDataset(CSV_PATH, IMG_DIR, img_size=IMG_SIZE, mode=mode, augment=False, p_clean=p_clean_val)
 
     train_ds = Subset(full_ds_train, train_idx.tolist())
     val_ds   = Subset(full_ds_val,   val_idx.tolist())
