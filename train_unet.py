@@ -121,20 +121,25 @@ def build_musid_datasets(stage: str):
         eval_mode = "joint"
 
     # ====================================================================
-    # 关键设计：只有 Stage A 使用退化增强训练复原分支
-    # Stage B/C 分割分支只在干净图上训练（p_clean=1.0）
-    # 这样才能证明：复原分支帮助退化图恢复后，分割性能提升
+    # 训练策略设计：
+    # 主攻：准确度（干净图上的检测性能）
+    # 加分：鲁棒性（恶劣天气下不崩）
+    # 
+    # Stage A: 复原分支需要学会两件事：
+    #   1. 退化图 → 恢复干净（55%退化样本）
+    #   2. 干净图 → 保持不变（45%干净样本，避免"过度修复"）
+    # Stage B/C: 分割分支只在干净图训练，专注准确度
     # ====================================================================
     if stage == "A":
-        # Stage A: 复原分支需要见退化数据
-        p_clean_train = P_CLEAN
-        p_clean_val = P_CLEAN
-        print(f"[Stage A] 复原分支训练: p_clean={p_clean_train} (使用退化增强)")
+        # p_clean=0.45: 45%干净+55%退化，平衡恢复能力和保持能力
+        p_clean_train = 0.45
+        p_clean_val = 0.45
+        print(f"[Stage A] 复原分支训练: p_clean={p_clean_train} (45%干净+55%退化)")
     else:
         # Stage B/C: 分割分支只在干净数据上训练
         p_clean_train = 1.0
         p_clean_val = 1.0
-        print(f"[Stage {stage}] 分割分支训练: p_clean=1.0 (不使用退化，只用干净图)")
+        print(f"[Stage {stage}] 分割分支训练: p_clean=1.0 (100%干净图，专注准确度)")
 
     full_ds_train = HorizonImageDataset(CSV_PATH, IMG_DIR, img_size=IMG_SIZE, mode=mode, augment=True, p_clean=p_clean_train)
     full_ds_val   = HorizonImageDataset(CSV_PATH, IMG_DIR, img_size=IMG_SIZE, mode=mode, augment=False, p_clean=p_clean_val)

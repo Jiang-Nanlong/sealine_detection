@@ -8,11 +8,11 @@ import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader, Subset
 
 from unet_model import RestorationGuidedHorizonNet
-from dataset_loader import SimpleFolderDataset
+from dataset_loader import SimpleFolderDataset, synthesize_degradation
 
 
 # =========================
-# 你只需要改这里
+# 配置区
 # =========================
 IMG_CLEAR_DIR = r"Hashmani's Dataset/clear"   # Stage A 用的 clear 图目录
 CKPT_PATH = r"weights/rghnet_best_a.pth"  # 训练好的 Stage A 权重（可空字符串表示不加载）
@@ -20,10 +20,19 @@ DCE_WEIGHTS = r"weights/Epoch99.pth"          # 你的 DCE 权重路径（和训
 
 OUT_PATH = r"vis/stageA_debug_grid.png"
 N_SAMPLES = 8
-IMG_SIZE = 1024
 
-# 想看“训练时的数据分布”就 True；想看“验证风格（更稳定）”就 False
+# ✅ 更新为 16:9 无黑边尺寸
+IMG_SIZE = (576, 1024)  # (H, W)
+
+# 想看"训练时的数据分布"就 True；想看"验证风格（更稳定）"就 False
 AUGMENT = False
+
+# 退化配置
+# 当前 synthesize_degradation 支持 8 种退化：
+#   fog, rain, jpeg, sun_glare, low_light, motion_blur, gaussian_noise, lowres
+# ✅ 测试复原效果时设为 0.0，强制所有输入都是退化图
+# 训练时 p_clean=0.55，但测试时要看复原能力，需要 100% 退化输入
+P_CLEAN = 0.0
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 SEED = 42
@@ -50,8 +59,9 @@ def main():
     device = torch.device(DEVICE)
     device_type = "cuda" if device.type == "cuda" else "cpu"
 
-    # 1) Dataset: Stage A 的 SimpleFolderDataset 应该返回 (img_degraded, target_clean)
-    ds = SimpleFolderDataset(IMG_CLEAR_DIR, img_size=IMG_SIZE, augment=AUGMENT)
+    # 1) Dataset: Stage A 的 SimpleFolderDataset 返回 (img_degraded, target_clean)
+    #    使用 8 种退化类型：fog, rain, jpeg, sun_glare, low_light, motion_blur, gaussian_noise, lowres
+    ds = SimpleFolderDataset(IMG_CLEAR_DIR, img_size=IMG_SIZE, augment=AUGMENT, p_clean=P_CLEAN)
     if len(ds) == 0:
         raise RuntimeError(f"No images found in: {IMG_CLEAR_DIR}")
 
