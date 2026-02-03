@@ -14,31 +14,50 @@ from torchvision.transforms import functional as TF
 
 
 # ==========================================
-# 0. Letterbox (keep aspect ratio + padding)
+# 0. 图像缩放（支持正方形或 16:9 等任意尺寸）
 # ==========================================
-def letterbox_rgb_u8(image_rgb_u8: np.ndarray, dst_size: int, pad_value: int = 0):
+def _parse_img_size(img_size):
+    """解析 img_size，支持 int 或 (H, W) 元组"""
+    if isinstance(img_size, (list, tuple)):
+        return int(img_size[0]), int(img_size[1])  # (H, W)
+    else:
+        s = int(img_size)
+        return s, s  # 正方形
+
+def resize_rgb_u8(image_rgb_u8: np.ndarray, dst_size, pad_value: int = 0):
+    """
+    直接 resize 到目标尺寸（无 letterbox padding）
+    
+    Args:
+        image_rgb_u8: 输入图像 (H, W, 3) uint8 RGB
+        dst_size: 目标尺寸，int (正方形) 或 (H, W) 元组
+        pad_value: 未使用，保留兼容性
+    
+    Returns:
+        resized: 缩放后图像 (dst_H, dst_W, 3)
+        meta: 元信息字典
+    """
+    dst_h, dst_w = _parse_img_size(dst_size)
     h, w = image_rgb_u8.shape[:2]
+    
     if h <= 0 or w <= 0:
-        canvas = np.zeros((dst_size, dst_size, 3), dtype=np.uint8)
-        meta = dict(scale=1.0, pad_left=0, pad_top=0, new_w=dst_size, new_h=dst_size, orig_w=w, orig_h=h)
+        canvas = np.zeros((dst_h, dst_w, 3), dtype=np.uint8)
+        meta = dict(scale_x=1.0, scale_y=1.0, pad_left=0, pad_top=0, 
+                    new_w=dst_w, new_h=dst_h, orig_w=w, orig_h=h)
         return canvas, meta
+    
+    scale_x = dst_w / float(w)
+    scale_y = dst_h / float(h)
+    
+    interp = cv2.INTER_AREA if (scale_x < 1.0 or scale_y < 1.0) else cv2.INTER_LINEAR
+    resized = cv2.resize(image_rgb_u8, (dst_w, dst_h), interpolation=interp)
+    
+    meta = dict(scale_x=scale_x, scale_y=scale_y, scale=scale_x,  # scale 保留兼容性
+                pad_left=0, pad_top=0, new_w=dst_w, new_h=dst_h, orig_w=w, orig_h=h)
+    return resized, meta
 
-    scale = min(dst_size / float(w), dst_size / float(h))
-    new_w = int(round(w * scale))
-    new_h = int(round(h * scale))
-    new_w = max(1, min(dst_size, new_w))
-    new_h = max(1, min(dst_size, new_h))
-
-    interp = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR
-    resized = cv2.resize(image_rgb_u8, (new_w, new_h), interpolation=interp)
-
-    canvas = np.full((dst_size, dst_size, 3), pad_value, dtype=np.uint8)
-    pad_left = (dst_size - new_w) // 2
-    pad_top = (dst_size - new_h) // 2
-    canvas[pad_top:pad_top + new_h, pad_left:pad_left + new_w] = resized
-
-    meta = dict(scale=scale, pad_left=pad_left, pad_top=pad_top, new_w=new_w, new_h=new_h, orig_w=w, orig_h=h)
-    return canvas, meta
+# 兼容旧代码的别名
+letterbox_rgb_u8 = resize_rgb_u8
 
 
 # ==========================================
@@ -138,7 +157,7 @@ class HorizonImageDataset(Dataset):
     def __init__(self, csv_file, img_dir, img_size=384, mode='joint', ignore_band=10, augment=True, p_clean=0.45):
         self.data = pd.read_csv(csv_file, header=None)
         self.img_dir = img_dir
-        self.img_size = int(img_size)
+        self.img_h, self.img_w = _parse_img_size(img_size)  # 支持 (H, W) 元组
         self.mode = mode
         self.ignore_band = int(ignore_band)
         self.augment = augment
@@ -163,35 +182,34 @@ class HorizonImageDataset(Dataset):
                 bgr = cv2.imread(path + ext)
                 break
 
+        H, W = self.img_h, self.img_w
         if bgr is None:
-            rgb = np.zeros((self.img_size, self.img_size, 3), dtype=np.uint8)
-            meta = dict(scale=1.0, pad_left=0, pad_top=0, orig_w=self.img_size, orig_h=self.img_size)
+            rgb = np.zeros((H, W, 3), dtype=np.uint8)
+            meta = dict(scale_x=1.0, scale_y=1.0, pad_left=0, pad_top=0, orig_w=W, orig_h=H)
         else:
             rgb0 = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-            rgb, meta = letterbox_rgb_u8(rgb0, self.img_size, pad_value=0)
+            rgb, meta = resize_rgb_u8(rgb0, (H, W))
 
-        S = self.img_size
-        scale = float(meta["scale"])
-        pl = int(meta["pad_left"]); pt = int(meta["pad_top"])
-        nw = int(meta["new_w"]); nh = int(meta["new_h"])
+        scale_x = float(meta["scale_x"])
+        scale_y = float(meta["scale_y"])
         
-        p1 = (_clamp_int(x1 * scale + pl, 0, S - 1), _clamp_int(y1 * scale + pt, 0, S - 1))
-        p2 = (_clamp_int(x2 * scale + pl, 0, S - 1), _clamp_int(y2 * scale + pt, 0, S - 1))
+        p1 = (_clamp_int(x1 * scale_x, 0, W - 1), _clamp_int(y1 * scale_y, 0, H - 1))
+        p2 = (_clamp_int(x2 * scale_x, 0, W - 1), _clamp_int(y2 * scale_y, 0, H - 1))
 
         # Mask 初始化 (全 255)
-        mask = np.full((S, S), 255, dtype=np.uint8)
-        if nw > 0 and nh > 0:
-            mask[pt : pt + nh, pl : pl + nw] = 0 # 图像区域为海(0)
+        mask = np.full((H, W), 255, dtype=np.uint8)
+        mask[:, :] = 0  # 图像区域为海(0)
 
         y_left = _y_on_line_at_x(p1, p2, 0.0)
-        y_right = _y_on_line_at_x(p1, p2, float(S - 1))
-        y_left = _clamp_int(y_left, 0, S - 1)
-        y_right = _clamp_int(y_right, 0, S - 1)
+        y_right = _y_on_line_at_x(p1, p2, float(W - 1))
+        y_left = _clamp_int(y_left, 0, H - 1)
+        y_right = _clamp_int(y_right, 0, H - 1)
 
-        pts = np.array([[0, 0], [S - 1, 0], [S - 1, y_right], [0, y_left]], np.int32)
+        pts = np.array([[0, 0], [W - 1, 0], [W - 1, y_right], [0, y_left]], np.int32)
         cv2.fillPoly(mask, [pts], 1) # 天空(1)
 
-        thick = _scaled_ignore_band(self.ignore_band, S)
+        # ignore_band 按高度缩放
+        thick = _scaled_ignore_band(self.ignore_band, H)
         if thick > 0:
             cv2.line(mask, p1, p2, 255, thick)
 
@@ -239,7 +257,7 @@ class HorizonImageDataset(Dataset):
 class SimpleFolderDataset(Dataset):
     def __init__(self, img_dir, img_size=384, augment=True, p_clean=0.45):
         self.img_dir = img_dir
-        self.img_size = int(img_size)
+        self.img_h, self.img_w = _parse_img_size(img_size)  # 支持 (H, W) 元组
         self.augment = augment
         self.p_clean = float(p_clean)
         raw_paths = glob.glob(os.path.join(img_dir, "*.[jJ][pP]*[gG]")) + \
@@ -254,11 +272,12 @@ class SimpleFolderDataset(Dataset):
     def __getitem__(self, idx):
         path = self.img_paths[idx]
         bgr = cv2.imread(path)
+        H, W = self.img_h, self.img_w
         if bgr is None:
-            rgb = np.zeros((self.img_size, self.img_size, 3), dtype=np.uint8)
+            rgb = np.zeros((H, W, 3), dtype=np.uint8)
         else:
             rgb0 = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-            rgb, _meta = letterbox_rgb_u8(rgb0, self.img_size, pad_value=0)
+            rgb, _meta = resize_rgb_u8(rgb0, (H, W))
 
         if self.augment and random.random() > 0.5:
             angle = random.uniform(-45, 45)
