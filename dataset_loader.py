@@ -1,3 +1,5 @@
+# --- START OF FILE dataset_loader.py (FIXED INPUT LOGIC) ---
+
 import os
 import cv2
 import numpy as np
@@ -11,69 +13,14 @@ from torchvision import transforms
 from torchvision.transforms import functional as TF
 
 
-# =========================================================
-# 0) Utils: parse size / resize (no padding) / letterbox
-# =========================================================
-def _parse_hw(img_size):
-    """
-    img_size:
-      - int -> (S, S)  (legacy)
-      - (H, W) / [H, W] -> (H, W)  (recommended for 16:9: (576,1024))
-    """
-    if isinstance(img_size, (tuple, list)) and len(img_size) == 2:
-        h, w = int(img_size[0]), int(img_size[1])
-        return max(1, h), max(1, w)
-    s = int(img_size)
-    return max(1, s), max(1, s)
-
-
-def resize_rgb_u8(image_rgb_u8: np.ndarray, out_h: int, out_w: int):
-    """Direct resize (no padding). Return resized + meta for coordinate scaling."""
-    h, w = image_rgb_u8.shape[:2]
-    if h <= 0 or w <= 0:
-        canvas = np.zeros((out_h, out_w, 3), dtype=np.uint8)
-        meta = dict(
-            mode="resize",
-            scale_x=1.0,
-            scale_y=1.0,
-            orig_w=w,
-            orig_h=h,
-            out_w=out_w,
-            out_h=out_h,
-        )
-        return canvas, meta
-
-    sx = out_w / float(w)
-    sy = out_h / float(h)
-    interp = cv2.INTER_AREA if (out_w < w or out_h < h) else cv2.INTER_LINEAR
-    resized = cv2.resize(image_rgb_u8, (out_w, out_h), interpolation=interp)
-    meta = dict(
-        mode="resize",
-        scale_x=sx,
-        scale_y=sy,
-        orig_w=w,
-        orig_h=h,
-        out_w=out_w,
-        out_h=out_h,
-    )
-    return resized, meta
-
-
+# ==========================================
+# 0. Letterbox (keep aspect ratio + padding)
+# ==========================================
 def letterbox_rgb_u8(image_rgb_u8: np.ndarray, dst_size: int, pad_value: int = 0):
-    """Legacy: keep aspect ratio resize to fit in dst_size x dst_size and pad."""
     h, w = image_rgb_u8.shape[:2]
     if h <= 0 or w <= 0:
         canvas = np.zeros((dst_size, dst_size, 3), dtype=np.uint8)
-        meta = dict(
-            mode="letterbox",
-            scale=1.0,
-            pad_left=0,
-            pad_top=0,
-            new_w=dst_size,
-            new_h=dst_size,
-            orig_w=w,
-            orig_h=h,
-        )
+        meta = dict(scale=1.0, pad_left=0, pad_top=0, new_w=dst_size, new_h=dst_size, orig_w=w, orig_h=h)
         return canvas, meta
 
     scale = min(dst_size / float(w), dst_size / float(h))
@@ -90,627 +37,244 @@ def letterbox_rgb_u8(image_rgb_u8: np.ndarray, dst_size: int, pad_value: int = 0
     pad_top = (dst_size - new_h) // 2
     canvas[pad_top:pad_top + new_h, pad_left:pad_left + new_w] = resized
 
-    meta = dict(
-        mode="letterbox",
-        scale=scale,
-        pad_left=pad_left,
-        pad_top=pad_top,
-        new_w=new_w,
-        new_h=new_h,
-        orig_w=w,
-        orig_h=h,
-    )
+    meta = dict(scale=scale, pad_left=pad_left, pad_top=pad_top, new_w=new_w, new_h=new_h, orig_w=w, orig_h=h)
     return canvas, meta
 
 
-# =========================================================
-# 1) Physical-ish degradation synthesis (with clean pass-through)
-#    与 test5/generate_degraded_images.py 对齐的退化类型
-# =========================================================
-
-def _add_gaussian_noise(img: np.ndarray, sigma: float) -> np.ndarray:
-    """Add Gaussian noise. img: float32 [0,1]"""
-    noise = np.random.randn(*img.shape).astype(np.float32) * (sigma / 255.0)
-    return np.clip(img + noise, 0, 1)
-
-
-def _add_motion_blur(img: np.ndarray, kernel_size: int) -> np.ndarray:
-    """Add motion blur with random angle. img: float32 [0,1]"""
-    # 随机角度：0-180度（模拟船体多方向晃动）
-    angle = random.uniform(0, 180)
-    
-    kernel = np.zeros((kernel_size, kernel_size), dtype=np.float32)
-    center = kernel_size // 2
-    
-    angle_rad = np.radians(angle)
-    dx = np.cos(angle_rad) * center
-    dy = np.sin(angle_rad) * center
-    
-    x1, y1 = int(center - dx), int(center - dy)
-    x2, y2 = int(center + dx), int(center + dy)
-    cv2.line(kernel, (x1, y1), (x2, y2), 1.0, thickness=1)
-    
-    kernel = kernel / (kernel.sum() + 1e-8)
-    
-    # Convert to uint8 for cv2.filter2D, then back
-    img_u8 = (img * 255).astype(np.uint8)
-    blurred = cv2.filter2D(img_u8, -1, kernel)
-    return blurred.astype(np.float32) / 255.0
-
-
-def _add_rain(img: np.ndarray, severity: float) -> np.ndarray:
+# ==========================================
+# 1. 简单退化合成（rain + fog + dark，效果经验证更好）
+# ==========================================
+def synthesize_rain_fog(image_rgb_u8, p_clean: float = 0.45):
     """
-    Add rain effect with streaks and haze.
-    severity: 0.3 (light) ~ 0.9 (heavy)
-    img: float32 [0,1]
-    """
-    h, w = img.shape[:2]
-    result = img.copy()
+    简化版退化合成函数（只有 3 种退化类型）
     
-    # Rain parameters based on severity
-    n_lines = int(1500 + 4500 * severity)  # 1500~6000
-    line_len = int(15 + 20 * severity)      # 15~35
-    thickness = 1 if severity < 0.6 else 2
-    haze_intensity = 0.1 + 0.25 * severity  # 0.1~0.35
+    退化类型：
+      - rain: 雨丝效果
+      - fog: 雾霾效果  
+      - dark: 低光照/黄昏
     
-    # Create rain streak layer
-    streak = np.zeros((h, w, 3), dtype=np.float32)
-    angle = random.uniform(-15, 15)  # Wind effect
-    tan_a = np.tan(np.deg2rad(angle))
+    经测试，简单退化类型训练出的模型效果更好。
     
-    for _ in range(n_lines):
-        x0 = random.randint(0, w - 1)
-        y0 = random.randint(0, h - 1)
-        x1 = int(x0 + line_len * tan_a)
-        y1 = int(y0 + line_len)
-        cv2.line(streak, (x0, y0), (x1, y1), (0.8, 0.8, 0.8), thickness)
-    
-    streak = cv2.GaussianBlur(streak, (0, 0), sigmaX=0.5)
-    result = np.clip(result + 0.4 * streak, 0, 1)
-    
-    # Add atmospheric haze
-    haze = np.ones_like(result) * 0.78  # ~200/255
-    result = result * (1 - haze_intensity) + haze * haze_intensity
-    
-    return np.clip(result, 0, 1).astype(np.float32)
-
-
-def _add_fog(img: np.ndarray, severity: float) -> np.ndarray:
-    """
-    Add fog/haze with depth-aware gradient.
-    severity: 0.2 ~ 0.9
-    img: float32 [0,1]
-    """
-    h, w = img.shape[:2]
-    result = img.copy()
-    
-    airlight = random.uniform(0.6, 0.95)
-    
-    # Vertical gradient (fog thicker at distance = top)
-    ys = np.linspace(0, 1, h, dtype=np.float32)[:, None]
-    if random.random() > 0.5:
-        base_map = np.tile(ys, (1, w))
-    else:
-        base_map = np.tile(1 - ys, (1, w))
-    
-    # Add Perlin-like noise for natural variation
-    noise = np.random.randn(h, w).astype(np.float32)
-    noise = cv2.GaussianBlur(noise, (0, 0), sigmaX=10)
-    noise = (noise - noise.min()) / (noise.max() - noise.min() + 1e-6)
-    
-    fog_map = 0.6 * base_map + 0.4 * noise
-    fog_map = fog_map * severity
-    fog_map = fog_map[..., None]
-    
-    result = result * (1 - fog_map) + airlight * fog_map
-    return np.clip(result, 0, 1).astype(np.float32)
-
-
-def _add_low_light(img: np.ndarray, gamma: float) -> np.ndarray:
-    """Simulate low light / dusk / overcast. img: float32 [0,1]"""
-    return np.clip(np.power(img, gamma), 0, 1).astype(np.float32)
-
-
-def _add_sun_glare(img: np.ndarray, intensity: float) -> np.ndarray:
-    """
-    Add sun glare / strong reflection on water.
-    intensity: 0.3 (light) ~ 0.6 (heavy)
-    img: float32 [0,1]
-    """
-    h, w = img.shape[:2]
-    result = img.copy()
-    
-    # Glare gradient (stronger at top, where horizon is)
-    y_coords = np.linspace(0, 1, h).reshape(-1, 1)
-    glare_mask = np.clip(1.0 - y_coords * 2.5, 0, 1) ** 2
-    glare_mask = np.tile(glare_mask, (1, w))
-    
-    # Wave-like horizontal variation
-    x_variation = np.sin(np.linspace(0, 8 * np.pi, w)) * 0.3 + 0.7
-    glare_mask = glare_mask * x_variation.reshape(1, -1)
-    
-    # Random bright spots (sun sparkles)
-    n_spots = int(50 * intensity)
-    for _ in range(n_spots):
-        cx = random.randint(0, w - 1)
-        cy = random.randint(0, int(h * 0.6))
-        radius = random.randint(20, 80)
-        y, x = np.ogrid[:h, :w]
-        spot_mask = np.exp(-((x - cx) ** 2 + (y - cy) ** 2) / (2 * radius ** 2))
-        glare_mask = np.maximum(glare_mask, spot_mask * random.uniform(0.5, 1.0))
-    
-    glare_mask = glare_mask[:, :, np.newaxis].astype(np.float32) * intensity
-    result = result * (1 - glare_mask) + 1.0 * glare_mask
-    
-    # Reduce contrast (overexposure)
-    result = result * (1 - intensity * 0.3) + 0.5 * intensity * 0.3
-    
-    return np.clip(result, 0, 1).astype(np.float32)
-
-
-def _add_jpeg_artifacts(img: np.ndarray, quality: int) -> np.ndarray:
-    """Add JPEG compression artifacts. img: float32 [0,1] (RGB)."""
-    # IMPORTANT: cv2.imencode expects BGR ordering for color images.
-    # Convert RGB->BGR before encode, and BGR->RGB after decode.
-    img_u8_rgb = (img * 255).astype(np.uint8)
-    img_u8_bgr = cv2.cvtColor(img_u8_rgb, cv2.COLOR_RGB2BGR)
-
-    encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)]
-    ok, encoded = cv2.imencode(".jpg", img_u8_bgr, encode_param)
-    if not ok:
-        return img.astype(np.float32)
-
-    decoded_bgr = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
-    if decoded_bgr is None:
-        return img.astype(np.float32)
-
-    decoded_rgb = cv2.cvtColor(decoded_bgr, cv2.COLOR_BGR2RGB)
-    return decoded_rgb.astype(np.float32) / 255.0
-
-
-def _add_resolution_downscale(img: np.ndarray, scale: float) -> np.ndarray:
-    """Simulate low resolution by down-then-up scaling. img: float32 [0,1]"""
-    h, w = img.shape[:2]
-    img_u8 = (img * 255).astype(np.uint8)
-
-    small_h = max(1, int(round(h * float(scale))))
-    small_w = max(1, int(round(w * float(scale))))
-
-    small = cv2.resize(img_u8, (small_w, small_h), interpolation=cv2.INTER_AREA)
-    restored = cv2.resize(small, (w, h), interpolation=cv2.INTER_LINEAR)
-
-    return restored.astype(np.float32) / 255.0
-
-
-def synthesize_degradation(image_rgb_u8: np.ndarray, p_clean: float = 0.55):
-    """
-    海洋场景退化合成函数（推荐配置版）
-
-    设计目标（贴合实验5：退化鲁棒性压力测试）：
-      1) 总体退化比例适中：p_clean≈0.55（约45%样本进入退化分支）
-      2) 退化样本的分布更贴合“单退化评估”：
-         - 70%：只施加 1 种“主退化”
-         - 30%：在主退化基础上叠加第 2 种“轻退化”
-      3) 最多叠加 2 种退化，避免训练分布过度偏离评估分布
-
-    退化类型（与 test5/generate_degraded_images.py 对齐）：
-      - gaussian_noise: 传感器噪声
-      - motion_blur: 船体晃动（随机角度）
-      - low_light: 黄昏/阴天
-      - fog: 海雾/雾霾
-      - rain: 海上降雨（雨丝+薄雾）
-      - sun_glare: 阳光海面反射/眩光
-      - jpeg: 压缩伪影
-      - lowres: 低分辨率（降采样+上采样）
-
     输入:  uint8 RGB
     输出:  float32 RGB in [0,1]
+    
+    p_clean: 直接返回干净图的概率
     """
     img = image_rgb_u8.astype(np.float32) / 255.0
     h, w, _ = img.shape
 
     # ---- clean pass-through ----
     if random.random() < float(p_clean):
-        # 可选：极轻底噪（避免过拟合到“完全无噪声”的理想图）
-        if random.random() < 0.5:
-            noise = np.random.randn(h, w, 3).astype(np.float32) * 0.002
-            img = np.clip(img + noise, 0, 1)
+        noise = np.random.randn(h, w, 3).astype(np.float32) * 0.005
+        img = np.clip(img + noise, 0, 1)
         return img.astype(np.float32)
 
-    # ---- 主退化：必选（天气/压缩相关略提高权重，更贴海上）----
-    primary_pool = [
-        ("fog", 1.2),
-        ("rain", 1.2),
-        ("jpeg", 1.2),
-        ("sun_glare", 1.0),
-        ("low_light", 1.0),
-        ("motion_blur", 1.0),
-        ("gaussian_noise", 1.0),
-        ("lowres", 0.8),
-    ]
-    names_p, weights_p = zip(*primary_pool)
-    primary = random.choices(list(names_p), weights=list(weights_p), k=1)[0]
-    selected = [primary]
+    # ---- 随机选择退化类型 ----
+    is_rain = random.random() < 0.4
+    is_fog = random.random() < 0.4
+    is_dark = random.random() < 0.3
 
-    # ---- 轻退化：30%概率叠加第二种（范围偏轻，避免过度破坏）----
-    if random.random() < 0.30:
-        secondary_pool = [
-            ("fog", 1.0),
-            ("rain", 1.0),
-            ("sun_glare", 1.0),
-            ("low_light", 1.0),
-            ("motion_blur", 1.0),
-            ("gaussian_noise", 1.0),
-            ("jpeg", 0.8),
-            ("lowres", 0.8),
-        ]
-        names_s = [n for n, _w in secondary_pool if n != primary]
-        weights_s = [w for n, w in secondary_pool if n != primary]
-        if names_s:
-            secondary = random.choices(names_s, weights=weights_s, k=1)[0]
-            selected.append(secondary)
+    if not (is_rain or is_fog or is_dark) and random.random() < 0.8:
+        is_fog = True
 
-    # ---- 应用退化（主：全强度；次：偏轻）----
-    for i, deg_type in enumerate(selected):
-        is_secondary = (i == 1)
+    if is_rain:
+        severity = random.uniform(0.3, 0.9)
+        streak = np.zeros((h, w, 3), dtype=np.float32)
+        n_lines = int(800 * severity)
+        angle = random.uniform(-15, 15)
+        tan_a = np.tan(np.deg2rad(angle))
+        for _ in range(n_lines):
+            x0 = random.randint(0, w - 1)
+            y0 = random.randint(0, h - 1)
+            length = random.randint(15, 45)
+            x1 = int(x0 + length * tan_a)
+            y1 = int(y0 + length)
+            cv2.line(streak, (x0, y0), (int(x1), int(y1)), (0.8, 0.8, 0.8), 1)
+        streak = cv2.GaussianBlur(streak, (0, 0), sigmaX=0.5, sigmaY=0.5)
+        img = np.clip(img + 0.4 * streak, 0, 1)
 
-        if deg_type == "gaussian_noise":
-            sigma = random.uniform(10, 35) if not is_secondary else random.uniform(8, 18)
-            img = _add_gaussian_noise(img, sigma)
+    if is_fog:
+        severity = random.uniform(0.2, 0.9)
+        airlight = random.uniform(0.6, 0.95)
+        ys = np.linspace(0, 1, h)[:, None]
+        if random.random() > 0.5: base_map = np.tile(ys, (1, w))
+        else: base_map = np.tile(1 - ys, (1, w))
+        noise_map = np.random.rand(h, w)
+        noise_map = cv2.GaussianBlur(noise_map, (0, 0), sigmaX=30, sigmaY=30)
+        fog_map = base_map * 0.7 + noise_map * 0.3
+        fog_map = fog_map * severity * random.uniform(0.8, 1.2)
+        fog_map = np.clip(fog_map[:, :, None], 0, 1)
+        img = img * (1 - fog_map) + airlight * fog_map
 
-        elif deg_type == "motion_blur":
-            kernel_size = random.choice([9, 13, 17, 21, 25]) if not is_secondary else random.choice([7, 9, 13])
-            img = _add_motion_blur(img, kernel_size)
+    if is_dark:
+        factor = random.uniform(0.25, 0.6)
+        img = img * factor
 
-        elif deg_type == "low_light":
-            gamma = random.uniform(1.5, 2.5) if not is_secondary else random.uniform(1.4, 2.0)
-            img = _add_low_light(img, gamma)
-
-        elif deg_type == "fog":
-            severity = random.uniform(0.2, 0.6) if not is_secondary else random.uniform(0.15, 0.35)
-            img = _add_fog(img, severity)
-
-        elif deg_type == "rain":
-            severity = random.uniform(0.35, 0.95) if not is_secondary else random.uniform(0.25, 0.55)
-            img = _add_rain(img, severity)
-
-        elif deg_type == "sun_glare":
-            intensity = random.uniform(0.2, 0.6) if not is_secondary else random.uniform(0.15, 0.35)
-            img = _add_sun_glare(img, intensity)
-
-        elif deg_type == "jpeg":
-            # 不建议训练时用极端 q<10（会把模型带偏）；覆盖 q10/q20 也足够
-            quality = random.randint(10, 50) if not is_secondary else random.randint(20, 70)
-            img = _add_jpeg_artifacts(img, quality)
-
-        elif deg_type == "lowres":
-            # scale 越小越糊：主退化更重，次退化更轻
-            scale = random.uniform(0.25, 0.60) if not is_secondary else random.uniform(0.45, 0.80)
-            img = _add_resolution_downscale(img, scale)
-
-    # 总是加一点传感器底噪（增强泛化）
-    noise = np.random.randn(h, w, 3).astype(np.float32) * 0.006
+    noise = np.random.randn(h, w, 3) * 0.01
     img = np.clip(img + noise, 0, 1)
     return img.astype(np.float32)
 
 
-# 保留旧函数名作为别名，兼容现有代码
-def synthesize_rain_fog(image_rgb_u8: np.ndarray, p_clean: float = 0.55):
-    """Alias for synthesize_degradation (backward compatibility)."""
-    return synthesize_degradation(image_rgb_u8, p_clean=p_clean)
-
-
-def _scaled_ignore_band(ignore_band_at_384: int, img_h: int) -> int:
-    """ignore_band 原来按 384 设计，这里按高度线性放大。"""
-    if ignore_band_at_384 <= 0:
-        return 0
-    return max(1, int(round(ignore_band_at_384 * (img_h / 384.0))))
-
+def _scaled_ignore_band(ignore_band_at_384: int, img_size: int) -> int:
+    if ignore_band_at_384 <= 0: return 0
+    return max(1, int(round(ignore_band_at_384 * (img_size / 384.0))))
 
 def _clamp_int(v: float, lo: int, hi: int) -> int:
     return int(max(lo, min(hi, int(round(v)))))
-
 
 def _y_on_line_at_x(p1, p2, x: float) -> float:
     x1, y1 = float(p1[0]), float(p1[1])
     x2, y2 = float(p2[0]), float(p2[1])
     dx = x2 - x1
-    if abs(dx) < 1e-6:
-        return y1
+    if abs(dx) < 1e-6: return y1
     t = (x - x1) / dx
     return y1 + t * (y2 - y1)
 
 
-# =========================================================
-# 2) Stage B/C: CSV label loader (restoration + segmentation)
-# =========================================================
+# ===========================================
+# 2. Stage B/C 专用: 带 CSV 标签加载器
+# ===========================================
 class HorizonImageDataset(Dataset):
-    def __init__(
-        self,
-        csv_file,
-        img_dir,
-        img_size=384,            # int or (H,W)
-        mode="joint",            # "joint" or "segmentation"
-        ignore_band=10,
-        augment=True,
-        rotate_prob=0.5,
-        max_rotate_deg=45.0,
-        val_seed_offset=100000,
-        p_clean=0.55,            # NEW: clean pass-through prob
-        pad_value=114,           # only used for legacy square letterbox
-    ):
-        """
-        mask 标注:
-          - sea=0, sky=1, ignore=255
-          - 旋转空洞全部标为 255（ignore），配合 ignore_index=255
-        """
+    def __init__(self, csv_file, img_dir, img_size=384, mode='joint', ignore_band=10, augment=True, p_clean=0.45):
         self.data = pd.read_csv(csv_file, header=None)
         self.img_dir = img_dir
-
-        self.out_h, self.out_w = _parse_hw(img_size)
+        self.img_size = int(img_size)
         self.mode = mode
         self.ignore_band = int(ignore_band)
-
-        self.augment = bool(augment)
-        self.rotate_prob = float(rotate_prob)
-        self.max_rotate_deg = float(max_rotate_deg)
-        self.val_seed_offset = int(val_seed_offset)
-
+        self.augment = augment
         self.p_clean = float(p_clean)
-        self.pad_value = int(pad_value)
-
-        # legacy flag: square -> keep old letterbox behavior
-        self.use_letterbox = (self.out_h == self.out_w)
 
     def __len__(self):
         return len(self.data)
 
-    def _read_rgb(self, img_name):
-        """读取图片，自动处理扩展名问题，避免 cv2 warning"""
-        name = str(img_name).strip()  # 防 trailing 空格
-        lower = name.lower()
-
-        # 先组织候选文件名（避免对不存在路径 imread 产生 warning）
-        candidates = []
-        if lower.endswith((".jpg", ".jpeg", ".png")):
-            candidates.append(name)
-        else:
-            candidates += [name + ".JPG", name + ".jpg", name + ".jpeg", name + ".JPEG", name + ".png", name + ".PNG"]
-
-        bgr = None
-        for fn in candidates:
-            p = os.path.join(self.img_dir, fn)
-            if os.path.exists(p):
-                bgr = cv2.imread(p, cv2.IMREAD_COLOR)
-                if bgr is not None:
-                    break
-
-        # 如果依然读不到，抛出异常（由 __getitem__ 处理重采样）
-        if bgr is None:
-            raise FileNotFoundError(f"[Dataset] image not found for '{name}' in {self.img_dir}")
-
-        rgb0 = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-
-        if self.use_letterbox:
-            rgb, meta = letterbox_rgb_u8(rgb0, self.out_h, pad_value=self.pad_value)
-            return rgb, meta
-
-        rgb, meta = resize_rgb_u8(rgb0, self.out_h, self.out_w)
-        return rgb, meta
-
     def __getitem__(self, idx):
-        # 带重采样的健壮读取：如果图片缺失，随机换一张
-        for _ in range(10):
-            try:
-                row = self.data.iloc[idx]
-                img_name = str(row.iloc[0])
-                try:
-                    x1, y1, x2, y2 = float(row.iloc[1]), float(row.iloc[2]), float(row.iloc[3]), float(row.iloc[4])
-                except Exception:
-                    x1, y1, x2, y2 = 0.0, 0.0, 0.0, 0.0
+        row = self.data.iloc[idx]
+        img_name = str(row.iloc[0])
+        try:
+            x1, y1, x2, y2 = float(row.iloc[1]), float(row.iloc[2]), float(row.iloc[3]), float(row.iloc[4])
+        except Exception:
+            x1, y1, x2, y2 = 0.0, 0.0, 0.0, 0.0
 
-                rgb, meta = self._read_rgb(img_name)
+        path = os.path.join(self.img_dir, img_name)
+        possible_exts = ['', '.JPG', '.jpg', '.png', '.jpeg']
+        bgr = None
+        for ext in possible_exts:
+            if os.path.exists(path + ext):
+                bgr = cv2.imread(path + ext)
                 break
-            except FileNotFoundError:
-                idx = random.randint(0, len(self.data) - 1)
+
+        if bgr is None:
+            rgb = np.zeros((self.img_size, self.img_size, 3), dtype=np.uint8)
+            meta = dict(scale=1.0, pad_left=0, pad_top=0, orig_w=self.img_size, orig_h=self.img_size)
         else:
-            raise FileNotFoundError("Too many missing images, please check GroundTruth.csv and MU-SID folder.")
+            rgb0 = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+            rgb, meta = letterbox_rgb_u8(rgb0, self.img_size, pad_value=0)
+
+        S = self.img_size
+        scale = float(meta["scale"])
+        pl = int(meta["pad_left"]); pt = int(meta["pad_top"])
+        nw = int(meta["new_w"]); nh = int(meta["new_h"])
         
-        H, W = self.out_h, self.out_w
+        p1 = (_clamp_int(x1 * scale + pl, 0, S - 1), _clamp_int(y1 * scale + pt, 0, S - 1))
+        p2 = (_clamp_int(x2 * scale + pl, 0, S - 1), _clamp_int(y2 * scale + pt, 0, S - 1))
 
-        # Map endpoints to current resolution
-        if meta.get("mode") == "letterbox":
-            scale = float(meta["scale"])
-            pl = int(meta["pad_left"])
-            pt = int(meta["pad_top"])
-            p1 = (_clamp_int(x1 * scale + pl, 0, W - 1), _clamp_int(y1 * scale + pt, 0, H - 1))
-            p2 = (_clamp_int(x2 * scale + pl, 0, W - 1), _clamp_int(y2 * scale + pt, 0, H - 1))
+        # Mask 初始化 (全 255)
+        mask = np.full((S, S), 255, dtype=np.uint8)
+        if nw > 0 and nh > 0:
+            mask[pt : pt + nh, pl : pl + nw] = 0 # 图像区域为海(0)
 
-            # valid ROI where the resized image lies
-            nw = int(meta["new_w"])
-            nh = int(meta["new_h"])
-            roi_left = pl
-            roi_top = pt
-            roi_right = pl + nw - 1
-            roi_bottom = pt + nh - 1
-        else:
-            sx = float(meta["scale_x"])
-            sy = float(meta["scale_y"])
-            p1 = (_clamp_int(x1 * sx, 0, W - 1), _clamp_int(y1 * sy, 0, H - 1))
-            p2 = (_clamp_int(x2 * sx, 0, W - 1), _clamp_int(y2 * sy, 0, H - 1))
+        y_left = _y_on_line_at_x(p1, p2, 0.0)
+        y_right = _y_on_line_at_x(p1, p2, float(S - 1))
+        y_left = _clamp_int(y_left, 0, S - 1)
+        y_right = _clamp_int(y_right, 0, S - 1)
 
-            roi_left, roi_top = 0, 0
-            roi_right, roi_bottom = W - 1, H - 1
+        pts = np.array([[0, 0], [S - 1, 0], [S - 1, y_right], [0, y_left]], np.int32)
+        cv2.fillPoly(mask, [pts], 1) # 天空(1)
 
-        # Build mask: sea=0, sky=1, ignore=255
-        mask = np.zeros((H, W), dtype=np.uint8)
-
-        # If legacy letterbox, set padding to ignore to avoid learning artifacts
-        if meta.get("mode") == "letterbox":
-            mask[:, :] = 255  # default ignore
-            # set ROI to sea first
-            mask[roi_top:roi_bottom + 1, roi_left:roi_right + 1] = 0
-
-        # Fill sky polygon above the line within ROI
-        xL = float(roi_left)
-        xR = float(roi_right)
-        yL = _y_on_line_at_x(p1, p2, xL)
-        yR = _y_on_line_at_x(p1, p2, xR)
-        yL = _clamp_int(yL, roi_top, roi_bottom)
-        yR = _clamp_int(yR, roi_top, roi_bottom)
-
-        pts = np.array(
-            [
-                [roi_left, roi_top],
-                [roi_right, roi_top],
-                [roi_right, yR],
-                [roi_left, yL],
-            ],
-            np.int32,
-        )
-        cv2.fillPoly(mask, [pts], 1)
-
-        # Draw ignore band around horizon line
-        thick = _scaled_ignore_band(self.ignore_band, H)
+        thick = _scaled_ignore_band(self.ignore_band, S)
         if thick > 0:
             cv2.line(mask, p1, p2, 255, thick)
 
-        # -------------------------
-        # Rotation augmentation (train only)
-        # IMPORTANT: image fill must NOT be 0 (avoid black corners)
-        # -------------------------
-        if self.augment and (random.random() < self.rotate_prob):
-            angle = random.uniform(-self.max_rotate_deg, self.max_rotate_deg)
-
+        # 旋转增强
+        if self.augment and random.random() > 0.5:
+            angle = random.uniform(-45, 45)
             img_pil = Image.fromarray(rgb)
             mask_pil = Image.fromarray(mask)
-
-            img_pil = TF.rotate(
-                img_pil,
-                angle,
-                interpolation=transforms.InterpolationMode.BILINEAR,
-                fill=114,  # IMPORTANT: avoid black corners
-            )
-            mask_pil = TF.rotate(
-                mask_pil,
-                angle,
-                interpolation=transforms.InterpolationMode.NEAREST,
-                fill=255,  # holes are ignore
-            )
-
+            img_pil = TF.rotate(img_pil, angle, interpolation=transforms.InterpolationMode.BILINEAR, fill=0)
+            mask_pil = TF.rotate(mask_pil, angle, interpolation=transforms.InterpolationMode.NEAREST, fill=255)
             rgb = np.array(img_pil)
             mask = np.array(mask_pil)
 
-        # tensors
-        mask_tensor = torch.from_numpy(mask).long()
         clean_np = rgb.copy()
-        target_clean = torch.from_numpy(clean_np.astype(np.float32) / 255.0).permute(2, 0, 1)
-
-        # -------------------------
-        # Degradation: train random / val fixed
-        # 注意：分割模式也应用退化，让分割分支具备鲁棒性
-        # -------------------------
+        
+        # [核心修正] 无论什么模式，先做退化！
+        # 验证集 (augment=False) 固定随机种子
         if not self.augment:
             state_random = random.getstate()
             state_numpy = np.random.get_state()
-
-            seed = int(idx) + self.val_seed_offset
+            seed = idx + 100000
             random.seed(seed)
             np.random.seed(seed)
-
             degraded_np = synthesize_rain_fog(clean_np, p_clean=self.p_clean)
-
             random.setstate(state_random)
             np.random.set_state(state_numpy)
         else:
             degraded_np = synthesize_rain_fog(clean_np, p_clean=self.p_clean)
 
-        input_tensor = torch.from_numpy(degraded_np).permute(2, 0, 1)
+        # 准备 Tensor
+        input_tensor = torch.from_numpy(degraded_np).permute(2, 0, 1) # Degraded
+        target_clean = torch.from_numpy(clean_np.astype(np.float32) / 255.0).permute(2, 0, 1) # Clean
+        mask_tensor = torch.from_numpy(mask).long() # Mask
 
-        if self.mode == "segmentation":
-            # 分割模式：输入是退化图，标签是基于干净图生成的 mask
-            return input_tensor, mask_tensor
+        # [关键改动] 分割模式返回 input(退化), mask
+        if self.mode == 'segmentation':
+            return input_tensor, mask_tensor  # <--- 改为返回退化图！
 
-        # joint 模式：返回 (退化输入, 干净目标, mask)
         return input_tensor, target_clean, mask_tensor
 
 
-# =========================================================
-# 3) Stage A: folder loader (restoration only)
-# =========================================================
+# ===========================================
+# 3. Stage A 专用
+# ===========================================
 class SimpleFolderDataset(Dataset):
-    def __init__(
-        self,
-        img_dir,
-        img_size=384,            # int or (H,W)
-        augment=True,
-        rotate_prob=0.5,
-        max_rotate_deg=45.0,
-        val_seed_offset=200000,
-        p_clean=0.55,            # NEW
-        pad_value=114,           # only used for legacy square letterbox
-    ):
+    def __init__(self, img_dir, img_size=384, augment=True, p_clean=0.45):
         self.img_dir = img_dir
-        self.out_h, self.out_w = _parse_hw(img_size)
-        self.augment = bool(augment)
-        self.rotate_prob = float(rotate_prob)
-        self.max_rotate_deg = float(max_rotate_deg)
-        self.val_seed_offset = int(val_seed_offset)
-
+        self.img_size = int(img_size)
+        self.augment = augment
         self.p_clean = float(p_clean)
-        self.pad_value = int(pad_value)
-        self.use_letterbox = (self.out_h == self.out_w)
-
-        raw_paths = []
-        raw_paths += glob.glob(os.path.join(img_dir, "*.[jJ][pP][gG]"))
-        raw_paths += glob.glob(os.path.join(img_dir, "*.[jJ][pP][eE][gG]"))
-        raw_paths += glob.glob(os.path.join(img_dir, "*.[pP][nN][gG]"))
-
-        # de-dup + stable sort
-        self.img_paths = sorted(set(raw_paths))
+        raw_paths = glob.glob(os.path.join(img_dir, "*.[jJ][pP]*[gG]")) + \
+                    glob.glob(os.path.join(img_dir, "*.png")) + \
+                    glob.glob(os.path.join(img_dir, "*.jpeg")) + \
+                    glob.glob(os.path.join(img_dir, "*.jpg"))
+        self.img_paths = sorted(list(set(raw_paths)))
 
     def __len__(self):
         return len(self.img_paths)
 
     def __getitem__(self, idx):
-        H, W = self.out_h, self.out_w
         path = self.img_paths[idx]
-
         bgr = cv2.imread(path)
         if bgr is None:
-            rgb = np.zeros((H, W, 3), dtype=np.uint8)
+            rgb = np.zeros((self.img_size, self.img_size, 3), dtype=np.uint8)
         else:
             rgb0 = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-            if self.use_letterbox:
-                rgb, _meta = letterbox_rgb_u8(rgb0, H, pad_value=self.pad_value)
-            else:
-                rgb, _meta = resize_rgb_u8(rgb0, H, W)
+            rgb, _meta = letterbox_rgb_u8(rgb0, self.img_size, pad_value=0)
 
-        # rotation augmentation (image only)
-        if self.augment and (random.random() < self.rotate_prob):
-            angle = random.uniform(-self.max_rotate_deg, self.max_rotate_deg)
+        if self.augment and random.random() > 0.5:
+            angle = random.uniform(-45, 45)
             img_pil = Image.fromarray(rgb)
-            img_pil = TF.rotate(
-                img_pil,
-                angle,
-                interpolation=transforms.InterpolationMode.BILINEAR,
-                fill=114,  # IMPORTANT: avoid black corners
-            )
+            img_pil = TF.rotate(img_pil, angle, interpolation=transforms.InterpolationMode.BILINEAR, fill=0)
             rgb = np.array(img_pil)
 
         target_clean = torch.from_numpy(rgb.astype(np.float32) / 255.0).permute(2, 0, 1)
-
-        # degradation: train random / val fixed
+        
         if not self.augment:
             state_random = random.getstate()
             state_numpy = np.random.get_state()
-
-            seed = int(idx) + self.val_seed_offset
+            seed = idx + 200000
             random.seed(seed)
             np.random.seed(seed)
-
             degraded_np = synthesize_rain_fog(rgb, p_clean=self.p_clean)
-
             random.setstate(state_random)
             np.random.set_state(state_numpy)
         else:
