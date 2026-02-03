@@ -361,6 +361,69 @@ def edge_y_error(
     return float(0.5 * (abs(ypl - ygl) + abs(ypr - ygr)))
 
 
+# =========================
+# ===== VE/AE 标准指标 =====
+# =========================
+# 与吴迪论文对齐的评价指标
+
+def compute_VE(rho_pred: float, theta_pred_deg: float,
+               rho_gt: float, theta_gt_deg: float,
+               w: int, h: int) -> float:
+    """
+    Vertical Error (VE): 在图像中心列 xc = (W-1)/2 处，预测线与GT线的y值差
+    返回带符号的 Δy（用于计算 std），取 abs 得到 VE
+    """
+    xc = (w - 1.0) / 2.0
+    y_pred = edge_y_at_x(rho_pred, theta_pred_deg, xc, w, h)
+    y_gt = edge_y_at_x(rho_gt, theta_gt_deg, xc, w, h)
+    return float(y_pred - y_gt)  # 带符号
+
+
+def compute_AE(rho_pred: float, theta_pred_deg: float,
+               rho_gt: float, theta_gt_deg: float,
+               w: int, h: int) -> float:
+    """
+    Angular Error (AE): 预测线与GT线的角度差
+    使用端点计算角度: α = arctan2(y2-y1, x2-x1) * 180/π
+    返回带符号的 Δα（用于计算 std），取 abs + wrap 得到 AE
+    """
+    # 计算预测线端点
+    ypl = edge_y_at_x(rho_pred, theta_pred_deg, 0.0, w, h)
+    ypr = edge_y_at_x(rho_pred, theta_pred_deg, w - 1.0, w, h)
+    alpha_pred = math.degrees(math.atan2(ypr - ypl, (w - 1.0)))
+
+    # 计算GT线端点
+    ygl = edge_y_at_x(rho_gt, theta_gt_deg, 0.0, w, h)
+    ygr = edge_y_at_x(rho_gt, theta_gt_deg, w - 1.0, w, h)
+    alpha_gt = math.degrees(math.atan2(ygr - ygl, (w - 1.0)))
+
+    return float(alpha_pred - alpha_gt)  # 带符号
+
+
+def wrap_abs_angle_diff(da: float) -> float:
+    """角度环绕处理: |Δα| = min(|Δα|, 180 - |Δα|)"""
+    d = abs(da)
+    return min(d, 180.0 - d)
+
+
+def wrap_signed_angle_diff(da: np.ndarray, period: float = 180.0) -> np.ndarray:
+    """
+    将角度差 wrap 到 (-period/2, period/2] 区间（带符号）
+    用于计算 std 时保持符号一致性
+    """
+    return (da + period / 2.0) % period - period / 2.0
+
+
+def compute_line_endpoints(rho: float, theta_deg: float, w: int, h: int) -> Tuple[float, float, float, float]:
+    """
+    从 (rho, theta) 计算直线在图像左右边界的端点
+    返回 (x1, y1, x2, y2)，其中 x1=0, x2=w-1
+    """
+    y1 = edge_y_at_x(rho, theta_deg, 0.0, w, h)
+    y2 = edge_y_at_x(rho, theta_deg, w - 1.0, w, h)
+    return (0.0, y1, float(w - 1), y2)
+
+
 def boundary_rmse_y_from_polar(rho: float, theta_deg: float, pts: np.ndarray, w: int, h: int) -> float:
     """RMSE of vertical residuals y - y_line(x) for a polar line, evaluated on boundary points."""
     if pts is None or pts.size == 0:
@@ -960,12 +1023,13 @@ def main():
     print(f"Out:          {OUT_DIR}")
     print("")
 
-    # original-scale factor (approx)
-    sx = CFG.orig_w / float(CFG.unet_w)
-    sy = CFG.orig_h / float(CFG.unet_h)
-    scale_orig = float(0.5 * (sx + sy))
+    # original-scale factors
+    scale_x = CFG.orig_w / float(CFG.unet_w)
+    scale_y = CFG.orig_h / float(CFG.unet_h)
+    scale_diag = float(0.5 * (scale_x + scale_y))  # 用于 lineDist/rho 等非纯方向量
+    # 垂直误差 (VE/EdgeY) 用 scale_y；其他用 scale_diag
 
-    # record arrays
+    # record arrays - 原有指标
     rho_err_cnn = []
     theta_err_cnn = []
     line_dist_cnn = []
@@ -975,6 +1039,12 @@ def main():
     theta_err_final = []
     line_dist_final = []
     edgey_final = []
+
+    # record arrays - 新增 VE/AE 指标（与吴迪论文对齐）
+    ve_signed_cnn = []    # 带符号，用于计算 std
+    ae_signed_cnn = []    # 带符号，用于计算 std
+    ve_signed_final = []
+    ae_signed_final = []
 
     gate_rows = []
     rows = []
@@ -1020,16 +1090,26 @@ def main():
             rho_gt, theta_gt = denorm_rho_theta(gt_norm[0], gt_norm[1], CFG)
             rho_c, theta_c = denorm_rho_theta(pred_norm[0], pred_norm[1], CFG)
 
-            # baseline metrics (CNN)
+            # baseline metrics (CNN) - 原有指标
             rho_abs = float(abs(rho_c - rho_gt))
             th_abs = float(wrap_angle_deg(theta_c - theta_gt, period=180.0))
             ld = mean_point_to_line_distance(rho_c, theta_c, rho_gt, theta_gt, CFG.unet_w, CFG.unet_h)
             ey = edge_y_error(rho_c, theta_c, rho_gt, theta_gt, CFG.unet_w, CFG.unet_h)
 
+            # 新增 VE/AE 指标（与吴迪论文对齐）
+            ve_c = compute_VE(rho_c, theta_c, rho_gt, theta_gt, CFG.unet_w, CFG.unet_h)  # 带符号 Δy
+            ae_c = compute_AE(rho_c, theta_c, rho_gt, theta_gt, CFG.unet_w, CFG.unet_h)  # 带符号 Δα
+            # wrap+abs 版本用于 CSV
+            ae_c_wrapped = float((ae_c + 90.0) % 180.0 - 90.0)  # wrap to (-90, 90]
+            VE_c = abs(ve_c)
+            AE_c = abs(ae_c_wrapped)
+
             rho_err_cnn.append(rho_abs)
             theta_err_cnn.append(th_abs)
             line_dist_cnn.append(ld)
             edgey_cnn.append(ey)
+            ve_signed_cnn.append(ve_c)
+            ae_signed_cnn.append(ae_c)
 
             # default: final = cnn
             used_ref = False
@@ -1089,16 +1169,26 @@ def main():
                 rho_f, theta_f = rho_ref, theta_ref
                 used_ref = True
 
-            # final metrics
+            # final metrics - 原有指标
             rho_abs_f = float(abs(rho_f - rho_gt))
             th_abs_f = float(wrap_angle_deg(theta_f - theta_gt, period=180.0))
             ld_f = mean_point_to_line_distance(rho_f, theta_f, rho_gt, theta_gt, CFG.unet_w, CFG.unet_h)
             ey_f = edge_y_error(rho_f, theta_f, rho_gt, theta_gt, CFG.unet_w, CFG.unet_h)
 
+            # final metrics - 新增 VE/AE
+            ve_f = compute_VE(rho_f, theta_f, rho_gt, theta_gt, CFG.unet_w, CFG.unet_h)  # 带符号 Δy
+            ae_f = compute_AE(rho_f, theta_f, rho_gt, theta_gt, CFG.unet_w, CFG.unet_h)  # 带符号 Δα
+            # wrap+abs 版本用于 CSV
+            ae_f_wrapped = float((ae_f + 90.0) % 180.0 - 90.0)  # wrap to (-90, 90]
+            VE_f = abs(ve_f)
+            AE_f = abs(ae_f_wrapped)
+
             rho_err_final.append(rho_abs_f)
             theta_err_final.append(th_abs_f)
             line_dist_final.append(ld_f)
             edgey_final.append(ey_f)
+            ve_signed_final.append(ve_f)
+            ae_signed_final.append(ae_f)
 
             # save row
             row = {
@@ -1119,16 +1209,27 @@ def main():
                 "theta_abs_deg_cnn": th_abs,
                 "line_dist_px_unet_cnn": ld,
                 "edgey_px_unet_cnn": ey,
+                # VE/AE: signed 原始值 + abs 最终指标
+                "dy_center_px_unet_cnn": ve_c,      # signed Δy (中心列)
+                "dalpha_deg_unet_cnn": ae_c_wrapped, # signed Δα (wrapped)
+                "VE_px_unet_cnn": VE_c,             # |Δy|
+                "AE_deg_unet_cnn": AE_c,            # |wrapped Δα|
                 "rho_abs_px_unet_final": rho_abs_f,
                 "theta_abs_deg_final": th_abs_f,
                 "line_dist_px_unet_final": ld_f,
                 "edgey_px_unet_final": ey_f,
-                "rho_abs_px_orig_cnn": rho_abs * scale_orig,
-                "line_dist_px_orig_cnn": ld * scale_orig,
-                "edgey_px_orig_cnn": ey * scale_orig,
-                "rho_abs_px_orig_final": rho_abs_f * scale_orig,
-                "line_dist_px_orig_final": ld_f * scale_orig,
-                "edgey_px_orig_final": ey_f * scale_orig,
+                "dy_center_px_unet_final": ve_f,    # signed Δy
+                "dalpha_deg_unet_final": ae_f_wrapped, # signed Δα (wrapped)
+                "VE_px_unet_final": VE_f,           # |Δy|
+                "AE_deg_unet_final": AE_f,          # |wrapped Δα|
+                "rho_abs_px_orig_cnn": rho_abs * scale_diag,
+                "line_dist_px_orig_cnn": ld * scale_diag,
+                "edgey_px_orig_cnn": ey * scale_y,
+                "VE_px_orig_cnn": VE_c * scale_y,
+                "rho_abs_px_orig_final": rho_abs_f * scale_diag,
+                "line_dist_px_orig_final": ld_f * scale_diag,
+                "edgey_px_orig_final": ey_f * scale_y,
+                "VE_px_orig_final": VE_f * scale_y,
                 "rho_gt": float(rho_gt),
                 "theta_gt": float(theta_gt),
                 "rho_cnn": float(rho_c),
@@ -1161,9 +1262,9 @@ def main():
                 "img_name": str(img_name[0]),
                 "cache_file": str(cache_file[0]),
                 "theta_err_deg": th_abs_f,
-                "rho_err_orig": rho_abs_f * scale_orig,
-                "edgey_err_orig": ey_f * scale_orig,
-                "line_dist_orig": ld_f * scale_orig,
+                "rho_err_orig": rho_abs_f * scale_diag,
+                "edgey_err_orig": ey_f * scale_y,
+                "line_dist_orig": ld_f * scale_diag,
                 "conf": conf_val,
                 "used_ref": int(used_ref),
                 "rho_gt": float(rho_gt),
@@ -1183,20 +1284,37 @@ def main():
     theta_err_cnn = np.array(theta_err_cnn, dtype=np.float64)
     line_dist_cnn = np.array(line_dist_cnn, dtype=np.float64)
     edgey_cnn = np.array(edgey_cnn, dtype=np.float64)
+    ve_signed_cnn = np.array(ve_signed_cnn, dtype=np.float64)
+    ae_signed_cnn = np.array(ae_signed_cnn, dtype=np.float64)
 
     rho_err_final = np.array(rho_err_final, dtype=np.float64)
     theta_err_final = np.array(theta_err_final, dtype=np.float64)
     line_dist_final = np.array(line_dist_final, dtype=np.float64)
     edgey_final = np.array(edgey_final, dtype=np.float64)
+    ve_signed_final = np.array(ve_signed_final, dtype=np.float64)
+    ae_signed_final = np.array(ae_signed_final, dtype=np.float64)
+
+    # AE wrap 到 (-90, 90] 用于正确计算 std 和 abs
+    ae_signed_cnn_w = wrap_signed_angle_diff(ae_signed_cnn, 180.0)
+    ae_signed_final_w = wrap_signed_angle_diff(ae_signed_final, 180.0)
+
+    # VE/AE 使用绝对值统计（AE 用 wrapped 版本）
+    ve_abs_cnn = np.abs(ve_signed_cnn)
+    ae_abs_cnn = np.abs(ae_signed_cnn_w)
+    ve_abs_final = np.abs(ve_signed_final)
+    ae_abs_final = np.abs(ae_signed_final_w)
 
     print("---- CNN only ----")
     print(summarize("Rho abs error (px, UNet)", rho_err_cnn))
     print(summarize("Theta error (deg)", theta_err_cnn))
     print(summarize("Mean point->line dist (px, UNet)", line_dist_cnn))
     print(summarize("Edge-Y error (px, UNet)", edgey_cnn))
-    print(summarize("Rho abs error (px, original-scale approx)", rho_err_cnn * scale_orig))
-    print(summarize("Line dist (px, original-scale approx)", line_dist_cnn * scale_orig))
-    print(summarize("EdgeY (px, original-scale approx)", edgey_cnn * scale_orig))
+    print(summarize("Rho abs error (px, orig)", rho_err_cnn * scale_diag))
+    print(summarize("Line dist (px, orig)", line_dist_cnn * scale_diag))
+    print(summarize("EdgeY (px, orig)", edgey_cnn * scale_y))
+    print(summarize("VE (px, UNet)", ve_abs_cnn))
+    print(summarize("VE (px, orig)", ve_abs_cnn * scale_y))
+    print(summarize("AE (deg, wrapped)", ae_abs_cnn))
     print("")
 
     print("---- Final (conf-gated RANSAC refine) ----")
@@ -1204,9 +1322,25 @@ def main():
     print(summarize("Theta error (deg)", theta_err_final))
     print(summarize("Mean point->line dist (px, UNet)", line_dist_final))
     print(summarize("Edge-Y error (px, UNet)", edgey_final))
-    print(summarize("Rho abs error (px, original-scale approx)", rho_err_final * scale_orig))
-    print(summarize("Line dist (px, original-scale approx)", line_dist_final * scale_orig))
-    print(summarize("EdgeY (px, original-scale approx)", edgey_final * scale_orig))
+    print(summarize("Rho abs error (px, orig)", rho_err_final * scale_diag))
+    print(summarize("Line dist (px, orig)", line_dist_final * scale_diag))
+    print(summarize("EdgeY (px, orig)", edgey_final * scale_y))
+    print(summarize("VE (px, UNet)", ve_abs_final))
+    print(summarize("VE (px, orig)", ve_abs_final * scale_y))
+    print(summarize("AE (deg, wrapped)", ae_abs_final))
+    print("")
+
+    # ========== 论文表格用汇总 (mean ± std) ==========
+    print("=" * 60)
+    print("论文表格汇总 (Final, orig-scale, mean ± std)")
+    print("=" * 60)
+    ve_orig_f = ve_abs_final * scale_y
+    ve_signed_orig_f = ve_signed_final * scale_y
+    print(f"VE (px):  {np.mean(ve_orig_f):.2f} ± {np.std(ve_signed_orig_f, ddof=1):.2f}")
+    print(f"AE (deg): {np.mean(ae_abs_final):.2f} ± {np.std(ae_signed_final_w, ddof=1):.2f}")
+    print(f"EdgeY (px): {np.mean(edgey_final * scale_y):.2f}")
+    print(f"LineDist (px): {np.mean(line_dist_final * scale_diag):.2f}")
+    print("=" * 60)
     print("")
 
     # threshold stats (final)
@@ -1217,11 +1351,18 @@ def main():
     print(
         f"Theta <=1°: {pct_le(theta_err_final, 1.0):.2f}% | <=2°: {pct_le(theta_err_final, 2.0):.2f}% | <=5°: {pct_le(theta_err_final, 5.0):.2f}%")
     print(
-        f"Rho(orig) <=5px: {pct_le(rho_err_final * scale_orig, 5.0):.2f}% | <=10px: {pct_le(rho_err_final * scale_orig, 10.0):.2f}% | <=20px: {pct_le(rho_err_final * scale_orig, 20.0):.2f}%")
+        f"Rho(orig) <=5px: {pct_le(rho_err_final * scale_diag, 5.0):.2f}% | <=10px: {pct_le(rho_err_final * scale_diag, 10.0):.2f}% | <=20px: {pct_le(rho_err_final * scale_diag, 20.0):.2f}%")
     print(
-        f"LineDist(orig) <=5px: {pct_le(line_dist_final * scale_orig, 5.0):.2f}% | <=10px: {pct_le(line_dist_final * scale_orig, 10.0):.2f}% | <=20px: {pct_le(line_dist_final * scale_orig, 20.0):.2f}%")
+        f"LineDist(orig) <=5px: {pct_le(line_dist_final * scale_diag, 5.0):.2f}% | <=10px: {pct_le(line_dist_final * scale_diag, 10.0):.2f}% | <=20px: {pct_le(line_dist_final * scale_diag, 20.0):.2f}%")
     print(
-        f"EdgeY(orig) <=5px: {pct_le(edgey_final * scale_orig, 5.0):.2f}% | <=10px: {pct_le(edgey_final * scale_orig, 10.0):.2f}% | <=20px: {pct_le(edgey_final * scale_orig, 20.0):.2f}%")
+        f"EdgeY(orig) <=5px: {pct_le(edgey_final * scale_y, 5.0):.2f}% | <=10px: {pct_le(edgey_final * scale_y, 10.0):.2f}% | <=20px: {pct_le(edgey_final * scale_y, 20.0):.2f}%")
+    print("")
+
+    # VE/AE hit-rate (常用于论文对比)
+    print("---- VE / AE Hit-Rate (FINAL, original-scale) ----")
+    ve_orig_final = ve_abs_final * scale_y
+    print(f"VE <=5px: {pct_le(ve_orig_final, 5.0):.2f}% | <=10px: {pct_le(ve_orig_final, 10.0):.2f}% | <=20px: {pct_le(ve_orig_final, 20.0):.2f}%")
+    print(f"AE <=1°: {pct_le(ae_abs_final, 1.0):.2f}% | <=2°: {pct_le(ae_abs_final, 2.0):.2f}% | <=5°: {pct_le(ae_abs_final, 5.0):.2f}%")
     print("")
 
     # ---- Top-K subset summary (if enabled) ----
@@ -1234,8 +1375,12 @@ def main():
             # metrics on subset
             print(summarize("Rho abs error (px, UNet) [CNN]", rho_err_cnn[in_topk_mask]))
             print(summarize("Rho abs error (px, UNet) [Final]", rho_err_final[in_topk_mask]))
-            print(summarize("EdgeY (px, orig) [CNN]", (edgey_cnn * scale_orig)[in_topk_mask]))
-            print(summarize("EdgeY (px, orig) [Final]", (edgey_final * scale_orig)[in_topk_mask]))
+            print(summarize("EdgeY (px, orig) [CNN]", (edgey_cnn * scale_y)[in_topk_mask]))
+            print(summarize("EdgeY (px, orig) [Final]", (edgey_final * scale_y)[in_topk_mask]))
+            print(summarize("VE (px, orig) [CNN]", (ve_abs_cnn * scale_y)[in_topk_mask]))
+            print(summarize("VE (px, orig) [Final]", (ve_abs_final * scale_y)[in_topk_mask]))
+            print(summarize("AE (deg, wrapped) [CNN]", ae_abs_cnn[in_topk_mask]))
+            print(summarize("AE (deg, wrapped) [Final]", ae_abs_final[in_topk_mask]))
             used_ref_topk = int(np.array([r['used_ref'] for r in rows], dtype=np.int32)[in_topk_mask].sum())
             print(f"TopK used_ref: {used_ref_topk} / {n_topk}")
         else:
