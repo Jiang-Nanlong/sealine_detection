@@ -142,9 +142,9 @@ def load_checkpoint_smart(model, current_stage: str, device: str):
     
     for prev_stage, kind in priority_map[current_stage]:
         prev = prev_stage.lower()
-        if kind == "best_joint": fname = f"rghnet_best_{prev}.pth"
-        elif kind == "best_seg": fname = f"rghnet_best_seg_{prev}.pth"
-        elif kind == "last": fname = f"rghnet_last_{prev}.pth"
+        if kind == "best_joint": fname = f"weights_new/rghnet_best_{prev}.pth"
+        elif kind == "best_seg": fname = f"weights_new/rghnet_best_seg_{prev}.pth"
+        elif kind == "last": fname = f"weights_new/rghnet_last_{prev}.pth"
         else: continue
 
         if os.path.exists(fname):
@@ -460,11 +460,12 @@ def main():
     best_iou = -1.0; best_mae = 1e9; best_joint = 1e9
     log_path = f"train_log_stage_{STAGE.lower()}.csv"
     ensure_dir("val_vis")
+    ensure_dir("weights_new")  # 确保目录存在
     
-    # ✅ 核心改动 6: 独立命名，不覆盖
-    best_joint_name = f"rghnet_best_{STAGE.lower()}.pth"
-    best_seg_name   = f"rghnet_best_seg_{STAGE.lower()}.pth"
-    last_name       = f"rghnet_last_{STAGE.lower()}.pth"
+    # ✅ 核心改动 6: 独立命名，不覆盖，保存到 weights_new/
+    best_joint_name = f"weights_new/rghnet_best_{STAGE.lower()}.pth"
+    best_seg_name   = f"weights_new/rghnet_best_seg_{STAGE.lower()}.pth"
+    last_name       = f"weights_new/rghnet_last_{STAGE.lower()}.pth"
 
     for epoch in range(1, epochs + 1):
         model.train()
