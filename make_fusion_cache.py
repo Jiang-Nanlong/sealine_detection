@@ -15,11 +15,11 @@ from gradient_radon import TextureSuppressedMuSCoWERT
 CSV_PATH = r"Hashmani's Dataset/GroundTruth.csv"
 IMG_DIR = r"Hashmani's Dataset/MU-SID"
 SPLIT_DIR = r"splits_musid"
-SAVE_ROOT = r"Hashmani's Dataset/FusionCache_1024x576"
+SAVE_ROOT = r"Hashmani's Dataset/FusionCache_new_1024x576"
 
 # 权重路径
-RGHNET_CKPT = r"weights/rghnet_best_c2.pth"
-DCE_WEIGHTS = r"weights/Epoch99.pth"
+RGHNET_CKPT = r"weights_new/rghnet_best_c2.pth"
+DCE_WEIGHTS = r"weights_new/Epoch99.pth"
 
 # 统一尺寸
 UNET_IN_W = 1024

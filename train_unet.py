@@ -31,7 +31,7 @@ from dataset_loader import SimpleFolderDataset, HorizonImageDataset
 CSV_PATH = r"Hashmani's Dataset/GroundTruth.csv"
 IMG_DIR = r"Hashmani's Dataset/MU-SID"
 IMG_CLEAR_DIR = r"Hashmani's Dataset/clear"
-DCE_WEIGHTS = "Epoch99.pth"
+DCE_WEIGHTS = r"weights/Epoch99.pth"
 
 SPLIT_DIR = r"splits_musid"
 TRAIN_IDX_PATH = os.path.join(SPLIT_DIR, "train_indices.npy")
