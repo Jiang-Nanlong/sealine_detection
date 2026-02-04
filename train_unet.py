@@ -57,13 +57,14 @@ VIS_MAX = 8
 STAGE_CFG = {
     "A":  dict(lr=2e-4, epochs=50),
     "B":  dict(lr=1e-4, epochs=20),
-    "C1": dict(lr=5e-5, epochs=1),
+    "C1": dict(lr=5e-5, epochs=10),
     "B2": dict(lr=5e-5, epochs=5),
-    "C2": dict(lr=2e-5, epochs=49),
+    "C2": dict(lr=2e-5, epochs=40),
 }
 
 JOINT_SEG_W = 0.5
-# C2 阶段固定使用 seg_w = 1.0
+C2_SEG_W_WARMUP = 1.0
+C2_WARMUP_EPOCHS = 5
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 DEVICE_TYPE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -484,7 +485,7 @@ def main():
                 if m is not None: m.eval()
 
         curr_seg_w = JOINT_SEG_W
-        if STAGE == "C2": curr_seg_w = 1.0  # 全程保持 1.0，强调分割性能
+        if STAGE == "C2": curr_seg_w = C2_SEG_W_WARMUP if epoch <= C2_WARMUP_EPOCHS else JOINT_SEG_W
 
         loop = tqdm(train_loader, desc=f"Ep {epoch}/{epochs}")
         loss_sum = 0.0

@@ -19,7 +19,7 @@ SAVE_ROOT = r"Hashmani's Dataset/FusionCache_new_1024x576"
 
 # 权重路径
 RGHNET_CKPT = r"weights_new/rghnet_best_c2.pth"
-DCE_WEIGHTS = r"weights_new/Epoch99.pth"
+DCE_WEIGHTS = r"weights/Epoch99.pth"  # Zero-DCE++ 权重在原 weights 目录
 
 # 统一尺寸
 UNET_IN_W = 1024
