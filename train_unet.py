@@ -31,7 +31,7 @@ from dataset_loader import SimpleFolderDataset, HorizonImageDataset
 CSV_PATH = r"Hashmani's Dataset/GroundTruth.csv"
 IMG_DIR = r"Hashmani's Dataset/MU-SID"
 IMG_CLEAR_DIR = r"Hashmani's Dataset/clear"
-DCE_WEIGHTS = "weights/Epoch99.pth"
+DCE_WEIGHTS = "Epoch99.pth"
 
 SPLIT_DIR = r"splits_musid"
 TRAIN_IDX_PATH = os.path.join(SPLIT_DIR, "train_indices.npy")
@@ -45,11 +45,8 @@ STAGE = "A"
 IMG_SIZE = (576, 1024) 
 BATCH_SIZE = 4
 
-# ✅ 核心改动 2: 退化增强仅用于 Stage A（复原分支）
-# Stage A: p_clean=P_CLEAN，复原分支学习"退化→干净"映射
-# Stage B/C: p_clean=1.0，分割分支只在干净图上训练
-# 这样才能证明：复原分支帮助退化图恢复后，分割性能提升
-P_CLEAN = 0.55  # 仅 Stage A 生效
+# ✅ 核心改动 2: 让网络学会“不乱改”清晰图
+P_CLEAN = 0.35
 
 SEED = 42
 PRINT_EVERY = 1
@@ -120,29 +117,9 @@ def build_musid_datasets(stage: str):
         mode = "joint"
         eval_mode = "joint"
 
-    # ====================================================================
-    # 训练策略设计：
-    # 主攻：准确度（干净图上的检测性能）
-    # 加分：鲁棒性（恶劣天气下不崩）
-    # 
-    # Stage A: 复原分支需要学会两件事：
-    #   1. 干净图 → 保持不变（65%干净样本，主攻准确度）
-    #   2. 退化图 → 恢复干净（35%退化样本，保底鲁棒性）
-    # Stage B/C: 分割分支只在干净图训练，专注准确度
-    # ====================================================================
-    if stage == "A":
-        # p_clean=0.65: 65%干净+35%退化，侧重保持能力，兼顾恢复能力
-        p_clean_train = 0.65
-        p_clean_val = 0.65
-        print(f"[Stage A] 复原分支训练: p_clean={p_clean_train} (65%干净+35%退化)")
-    else:
-        # Stage B/C: 分割分支只在干净数据上训练
-        p_clean_train = 1.0
-        p_clean_val = 1.0
-        print(f"[Stage {stage}] 分割分支训练: p_clean=1.0 (100%干净图，专注准确度)")
-
-    full_ds_train = HorizonImageDataset(CSV_PATH, IMG_DIR, img_size=IMG_SIZE, mode=mode, augment=True, p_clean=p_clean_train)
-    full_ds_val   = HorizonImageDataset(CSV_PATH, IMG_DIR, img_size=IMG_SIZE, mode=mode, augment=False, p_clean=p_clean_val)
+    # 分别实例化，控制 augment 和 p_clean
+    full_ds_train = HorizonImageDataset(CSV_PATH, IMG_DIR, img_size=IMG_SIZE, mode=mode, augment=True, p_clean=P_CLEAN)
+    full_ds_val   = HorizonImageDataset(CSV_PATH, IMG_DIR, img_size=IMG_SIZE, mode=mode, augment=False, p_clean=P_CLEAN)
 
     train_ds = Subset(full_ds_train, train_idx.tolist())
     val_ds   = Subset(full_ds_val,   val_idx.tolist())
@@ -166,9 +143,9 @@ def load_checkpoint_smart(model, current_stage: str, device: str):
     
     for prev_stage, kind in priority_map[current_stage]:
         prev = prev_stage.lower()
-        if kind == "best_joint": fname = f"weights/rghnet_best_{prev}.pth"
-        elif kind == "best_seg": fname = f"weights/rghnet_best_seg_{prev}.pth"
-        elif kind == "last": fname = f"weights/rghnet_last_{prev}.pth"
+        if kind == "best_joint": fname = f"rghnet_best_{prev}.pth"
+        elif kind == "best_seg": fname = f"rghnet_best_seg_{prev}.pth"
+        elif kind == "last": fname = f"rghnet_last_{prev}.pth"
         else: continue
 
         if os.path.exists(fname):
@@ -484,12 +461,11 @@ def main():
     best_iou = -1.0; best_mae = 1e9; best_joint = 1e9
     log_path = f"train_log_stage_{STAGE.lower()}.csv"
     ensure_dir("val_vis")
-    ensure_dir("weights")  # 确保权重目录存在
     
     # ✅ 核心改动 6: 独立命名，不覆盖
-    best_joint_name = f"weights/rghnet_best_{STAGE.lower()}.pth"
-    best_seg_name   = f"weights/rghnet_best_seg_{STAGE.lower()}.pth"
-    last_name       = f"weights/rghnet_last_{STAGE.lower()}.pth"
+    best_joint_name = f"rghnet_best_{STAGE.lower()}.pth"
+    best_seg_name   = f"rghnet_best_seg_{STAGE.lower()}.pth"
+    last_name       = f"rghnet_last_{STAGE.lower()}.pth"
 
     for epoch in range(1, epochs + 1):
         model.train()
