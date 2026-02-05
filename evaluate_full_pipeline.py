@@ -364,19 +364,44 @@ def edge_y_error(
 # =========================
 # ===== VE/AE 标准指标 =====
 # =========================
-# 与吴迪论文对齐的评价指标
+# 海天线通用评价指标: VE (Vertical Error), SVE (Std of VE), AE (Angular Error), SA (Std of AE)
+#
+# 定义（必须按此实现）：
+# 1) 预测线与GT线都用两点表示，端点为 x=0 和 x=W-1
+# 2) VE:
+#    - 取图像中心列 xc = (W-1)/2
+#    - 计算 y(x) = k*x + b, 其中 k=(y2-y1)/(x2-x1), b=y1-k*x1
+#    - dy = yp(xc) - yg(xc) (带符号)
+#    - VE_mean = mean(abs(dy))
+#    - SVE = std(dy, ddof=1)
+# 3) AE:
+#    - alpha = atan2(y2-y1, x2-x1) * 180/pi
+#    - da = alpha_pred - alpha_gt (带符号)
+#    - wrap 到 [-90, 90]: da_w = ((da + 90) % 180) - 90
+#    - AE_mean = mean(abs(da_w))
+#    - SA = std(da_w, ddof=1)
+
+# 控制是否打印原有 rho/theta/EdgeY/LineDist 调试指标
+DEBUG_LEGACY_METRICS = False
+
 
 def compute_VE(rho_pred: float, theta_pred_deg: float,
                rho_gt: float, theta_gt_deg: float,
                w: int, h: int) -> float:
     """
     Vertical Error (VE): 在图像中心列 xc = (W-1)/2 处，预测线与GT线的y值差
-    返回带符号的 Δy（用于计算 std），取 abs 得到 VE
+    
+    使用两点形式: y(x) = k*x + b
+    - x1=0, y1=edge_y_at_x(..., 0)
+    - x2=W-1, y2=edge_y_at_x(..., W-1)
+    - k = (y2-y1)/(x2-x1), b = y1 - k*x1
+    
+    返回带符号的 Δy（用于计算 SVE），取 abs 得到 VE
     """
     xc = (w - 1.0) / 2.0
     y_pred = edge_y_at_x(rho_pred, theta_pred_deg, xc, w, h)
     y_gt = edge_y_at_x(rho_gt, theta_gt_deg, xc, w, h)
-    return float(y_pred - y_gt)  # 带符号
+    return float(y_pred - y_gt)  # 带符号 dy
 
 
 def compute_AE(rho_pred: float, theta_pred_deg: float,
@@ -384,20 +409,38 @@ def compute_AE(rho_pred: float, theta_pred_deg: float,
                w: int, h: int) -> float:
     """
     Angular Error (AE): 预测线与GT线的角度差
-    使用端点计算角度: α = arctan2(y2-y1, x2-x1) * 180/π
-    返回带符号的 Δα（用于计算 std），取 abs + wrap 得到 AE
+    
+    使用端点计算角度: α = atan2(y2-y1, x2-x1) * 180/π
+    - (x1, y1) = (0, y_left)
+    - (x2, y2) = (W-1, y_right)
+    
+    返回带符号的 Δα（用于计算 SA），需 wrap 后取 abs 得到 AE
     """
-    # 计算预测线端点
+    # 预测线端点
     ypl = edge_y_at_x(rho_pred, theta_pred_deg, 0.0, w, h)
     ypr = edge_y_at_x(rho_pred, theta_pred_deg, w - 1.0, w, h)
     alpha_pred = math.degrees(math.atan2(ypr - ypl, (w - 1.0)))
 
-    # 计算GT线端点
+    # GT线端点
     ygl = edge_y_at_x(rho_gt, theta_gt_deg, 0.0, w, h)
     ygr = edge_y_at_x(rho_gt, theta_gt_deg, w - 1.0, w, h)
     alpha_gt = math.degrees(math.atan2(ygr - ygl, (w - 1.0)))
 
-    return float(alpha_pred - alpha_gt)  # 带符号
+    return float(alpha_pred - alpha_gt)  # 带符号 da
+
+
+def wrap_ae_to_signed(da: float) -> float:
+    """将角度差 wrap 到 [-90, 90] 区间: da_w = ((da + 90) % 180) - 90"""
+    return ((da + 90.0) % 180.0) - 90.0
+
+
+def safe_std(arr: np.ndarray, ddof: int = 1) -> float:
+    """安全计算标准差，样本数<=1时返回0.0"""
+    arr = np.asarray(arr, dtype=np.float64)
+    valid = arr[np.isfinite(arr)]
+    if len(valid) <= 1:
+        return 0.0
+    return float(np.std(valid, ddof=ddof))
 
 
 def wrap_abs_angle_diff(da: float) -> float:
@@ -1304,63 +1347,65 @@ def main():
     ve_abs_final = np.abs(ve_signed_final)
     ae_abs_final = np.abs(ae_signed_final_w)
 
-    print("---- CNN only ----")
-    print(summarize("Rho abs error (px, UNet)", rho_err_cnn))
-    print(summarize("Theta error (deg)", theta_err_cnn))
-    print(summarize("Mean point->line dist (px, UNet)", line_dist_cnn))
-    print(summarize("Edge-Y error (px, UNet)", edgey_cnn))
-    print(summarize("Rho abs error (px, orig)", rho_err_cnn * scale_diag))
-    print(summarize("Line dist (px, orig)", line_dist_cnn * scale_diag))
-    print(summarize("EdgeY (px, orig)", edgey_cnn * scale_y))
-    print(summarize("VE (px, UNet)", ve_abs_cnn))
-    print(summarize("VE (px, orig)", ve_abs_cnn * scale_y))
-    print(summarize("AE (deg, wrapped)", ae_abs_cnn))
+    # ========== 海天线统一评价指标: VE/SVE/AE/SA ==========
+    # CNN only
+    ve_orig_cnn = ve_abs_cnn * scale_y
+    VE_mean_cnn = float(np.mean(ve_orig_cnn))
+    SVE_cnn = safe_std(ve_signed_cnn * scale_y)
+    AE_mean_cnn = float(np.mean(ae_abs_cnn))
+    SA_cnn = safe_std(ae_signed_cnn_w)
+    VE_p95_cnn = float(np.percentile(ve_orig_cnn, 95)) if len(ve_orig_cnn) > 0 else 0.0
+    AE_p95_cnn = float(np.percentile(ae_abs_cnn, 95)) if len(ae_abs_cnn) > 0 else 0.0
+
+    # Final
+    ve_orig_final = ve_abs_final * scale_y
+    VE_mean_final = float(np.mean(ve_orig_final))
+    SVE_final = safe_std(ve_signed_final * scale_y)
+    AE_mean_final = float(np.mean(ae_abs_final))
+    SA_final = safe_std(ae_signed_final_w)
+    VE_p95_final = float(np.percentile(ve_orig_final, 95)) if len(ve_orig_final) > 0 else 0.0
+    AE_p95_final = float(np.percentile(ae_abs_final, 95)) if len(ae_abs_final) > 0 else 0.0
+
+    print("\n" + "=" * 60)
+    print("海天线统一评价指标 (orig-scale, N={:d})".format(len(ve_orig_final)))
+    print("=" * 60)
+
+    print("\n---- CNN only ----")
+    print(f"VE  (px):  {VE_mean_cnn:.2f}    SVE: {SVE_cnn:.2f}    P95: {VE_p95_cnn:.2f}")
+    print(f"AE (deg):  {AE_mean_cnn:.2f}    SA:  {SA_cnn:.2f}    P95: {AE_p95_cnn:.2f}")
+
+    print("\n---- Final (conf-gated RANSAC refine) ----")
+    print(f"VE  (px):  {VE_mean_final:.2f}    SVE: {SVE_final:.2f}    P95: {VE_p95_final:.2f}")
+    print(f"AE (deg):  {AE_mean_final:.2f}    SA:  {SA_final:.2f}    P95: {AE_p95_final:.2f}")
+
+    print("\n" + "=" * 60)
+    print("论文表格汇总 (Final, mean ± std)")
+    print("=" * 60)
+    print(f"VE (px):  {VE_mean_final:.2f} ± {SVE_final:.2f}")
+    print(f"AE (deg): {AE_mean_final:.2f} ± {SA_final:.2f}")
+    print("=" * 60)
     print("")
 
-    print("---- Final (conf-gated RANSAC refine) ----")
-    print(summarize("Rho abs error (px, UNet)", rho_err_final))
-    print(summarize("Theta error (deg)", theta_err_final))
-    print(summarize("Mean point->line dist (px, UNet)", line_dist_final))
-    print(summarize("Edge-Y error (px, UNet)", edgey_final))
-    print(summarize("Rho abs error (px, orig)", rho_err_final * scale_diag))
-    print(summarize("Line dist (px, orig)", line_dist_final * scale_diag))
-    print(summarize("EdgeY (px, orig)", edgey_final * scale_y))
-    print(summarize("VE (px, UNet)", ve_abs_final))
-    print(summarize("VE (px, orig)", ve_abs_final * scale_y))
-    print(summarize("AE (deg, wrapped)", ae_abs_final))
-    print("")
-
-    # ========== 论文表格用汇总 (mean ± std) ==========
-    print("=" * 60)
-    print("论文表格汇总 (Final, orig-scale, mean ± std)")
-    print("=" * 60)
-    ve_orig_f = ve_abs_final * scale_y
-    ve_signed_orig_f = ve_signed_final * scale_y
-    print(f"VE (px):  {np.mean(ve_orig_f):.2f} ± {np.std(ve_signed_orig_f, ddof=1):.2f}")
-    print(f"AE (deg): {np.mean(ae_abs_final):.2f} ± {np.std(ae_signed_final_w, ddof=1):.2f}")
-    print(f"EdgeY (px): {np.mean(edgey_final * scale_y):.2f}")
-    print(f"LineDist (px): {np.mean(line_dist_final * scale_diag):.2f}")
-    print("=" * 60)
-    print("")
+    # 调试用原有指标（可通过 DEBUG_LEGACY_METRICS 开关控制）
+    if DEBUG_LEGACY_METRICS:
+        print("---- [DEBUG] Legacy metrics (CNN only) ----")
+        print(summarize("Rho abs error (px, orig)", rho_err_cnn * scale_diag))
+        print(summarize("Theta error (deg)", theta_err_cnn))
+        print(summarize("Line dist (px, orig)", line_dist_cnn * scale_diag))
+        print(summarize("EdgeY (px, orig)", edgey_cnn * scale_y))
+        print("")
+        print("---- [DEBUG] Legacy metrics (Final) ----")
+        print(summarize("Rho abs error (px, orig)", rho_err_final * scale_diag))
+        print(summarize("Theta error (deg)", theta_err_final))
+        print(summarize("Line dist (px, orig)", line_dist_final * scale_diag))
+        print(summarize("EdgeY (px, orig)", edgey_final * scale_y))
+        print("")
 
     # threshold stats (final)
     def pct_le(arr, t):
         return 100.0 * float(np.mean(arr <= t))
 
-    print("---- Threshold stats (FINAL) ----")
-    print(
-        f"Theta <=1°: {pct_le(theta_err_final, 1.0):.2f}% | <=2°: {pct_le(theta_err_final, 2.0):.2f}% | <=5°: {pct_le(theta_err_final, 5.0):.2f}%")
-    print(
-        f"Rho(orig) <=5px: {pct_le(rho_err_final * scale_diag, 5.0):.2f}% | <=10px: {pct_le(rho_err_final * scale_diag, 10.0):.2f}% | <=20px: {pct_le(rho_err_final * scale_diag, 20.0):.2f}%")
-    print(
-        f"LineDist(orig) <=5px: {pct_le(line_dist_final * scale_diag, 5.0):.2f}% | <=10px: {pct_le(line_dist_final * scale_diag, 10.0):.2f}% | <=20px: {pct_le(line_dist_final * scale_diag, 20.0):.2f}%")
-    print(
-        f"EdgeY(orig) <=5px: {pct_le(edgey_final * scale_y, 5.0):.2f}% | <=10px: {pct_le(edgey_final * scale_y, 10.0):.2f}% | <=20px: {pct_le(edgey_final * scale_y, 20.0):.2f}%")
-    print("")
-
-    # VE/AE hit-rate (常用于论文对比)
-    print("---- VE / AE Hit-Rate (FINAL, original-scale) ----")
-    ve_orig_final = ve_abs_final * scale_y
+    print("---- Hit-Rate (FINAL, orig-scale) ----")
     print(f"VE <=5px: {pct_le(ve_orig_final, 5.0):.2f}% | <=10px: {pct_le(ve_orig_final, 10.0):.2f}% | <=20px: {pct_le(ve_orig_final, 20.0):.2f}%")
     print(f"AE <=1°: {pct_le(ae_abs_final, 1.0):.2f}% | <=2°: {pct_le(ae_abs_final, 2.0):.2f}% | <=5°: {pct_le(ae_abs_final, 5.0):.2f}%")
     print("")

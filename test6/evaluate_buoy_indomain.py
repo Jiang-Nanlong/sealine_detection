@@ -2,10 +2,11 @@
 """
 Evaluate Fusion-CNN on Buoy test set (Experiment 6: In-Domain).
 
-与主评估代码对齐的指标：
-  - rho error (UNet空间 + 原图尺寸)
-  - theta error (度数)
-  - 阈值统计 (参考 evaluate_full_pipeline.py)
+海天线统一评价指标:
+  - VE (Vertical Error): 中心列垂直误差 mean(abs(dy))
+  - SVE: std(dy, ddof=1)
+  - AE (Angular Error): 角度误差 mean(abs(da_w))
+  - SA: std(da_w, ddof=1)
 
 Inputs:
   - test6/FusionCache_Buoy/test/
@@ -94,7 +95,7 @@ def load_split_indices(split_dir):
 
 
 # ============================
-# Metrics (与主评估代码对齐)
+# Metrics (海天线统一评价指标)
 # ============================
 def denorm_rho_theta(rho_norm, theta_norm):
     """将归一化的 (rho, theta) 转换为实际值"""
@@ -108,10 +109,61 @@ def denorm_rho_theta(rho_norm, theta_norm):
     return rho_real, theta_deg
 
 
-def angular_diff_deg(a, b, period=180.0):
-    """计算周期性角度差（wrap-aware）"""
-    d = np.abs(a - b) % period
-    return np.minimum(d, period - d)
+def edge_y_at_x(rho: float, theta_deg: float, x: float, w: int, h: int) -> float:
+    """计算直线在给定x处的y坐标"""
+    theta = math.radians(theta_deg)
+    cos_t, sin_t = math.cos(theta), math.sin(theta)
+    cx, cy = w / 2.0, h / 2.0
+    if abs(sin_t) < 1e-8:
+        return float(cy)
+    y = cy + (rho - ((x - cx) * cos_t)) / sin_t
+    return float(np.clip(y, 0.0, h - 1.0))
+
+
+def compute_VE(rho_pred: float, theta_pred_deg: float,
+               rho_gt: float, theta_gt_deg: float,
+               w: int, h: int) -> float:
+    """
+    Vertical Error (VE): 在图像中心列 xc = (W-1)/2 处的y值差
+    返回带符号的 Δy
+    """
+    xc = (w - 1.0) / 2.0
+    y_pred = edge_y_at_x(rho_pred, theta_pred_deg, xc, w, h)
+    y_gt = edge_y_at_x(rho_gt, theta_gt_deg, xc, w, h)
+    return float(y_pred - y_gt)
+
+
+def compute_AE(rho_pred: float, theta_pred_deg: float,
+               rho_gt: float, theta_gt_deg: float,
+               w: int, h: int) -> float:
+    """
+    Angular Error (AE): 预测线与GT线的角度差
+    使用端点计算角度: α = atan2(y2-y1, x2-x1) * 180/π
+    返回带符号的 Δα
+    """
+    ypl = edge_y_at_x(rho_pred, theta_pred_deg, 0.0, w, h)
+    ypr = edge_y_at_x(rho_pred, theta_pred_deg, w - 1.0, w, h)
+    alpha_pred = math.degrees(math.atan2(ypr - ypl, (w - 1.0)))
+
+    ygl = edge_y_at_x(rho_gt, theta_gt_deg, 0.0, w, h)
+    ygr = edge_y_at_x(rho_gt, theta_gt_deg, w - 1.0, w, h)
+    alpha_gt = math.degrees(math.atan2(ygr - ygl, (w - 1.0)))
+
+    return float(alpha_pred - alpha_gt)
+
+
+def wrap_ae(da: float) -> float:
+    """将角度差 wrap 到 [-90, 90]: da_w = ((da + 90) % 180) - 90"""
+    return ((da + 90.0) % 180.0) - 90.0
+
+
+def safe_std(arr: np.ndarray, ddof: int = 1) -> float:
+    """安全计算标准差，样本数<=1时返回0.0"""
+    arr = np.asarray(arr, dtype=np.float64)
+    valid = arr[np.isfinite(arr)]
+    if len(valid) <= 1:
+        return 0.0
+    return float(np.std(valid, ddof=ddof))
 
 
 def pct_le(arr, thr):
@@ -119,16 +171,6 @@ def pct_le(arr, thr):
     if len(arr) == 0:
         return 0.0
     return 100.0 * float(np.mean(arr <= thr))
-
-
-def summarize(name, arr):
-    """统计摘要（与主评估代码对齐）"""
-    if len(arr) == 0:
-        return f"{name}: (empty)"
-    return (
-        f"{name}: mean={np.mean(arr):.4f}, median={np.median(arr):.4f}, "
-        f"p90={np.percentile(arr, 90):.4f}, p95={np.percentile(arr, 95):.4f}, max={np.max(arr):.4f}"
-    )
 
 
 # ============================
@@ -172,10 +214,13 @@ def main():
     print(f"[Device] {DEVICE}")
 
     # Evaluate
-    rho_err_unet = []
-    rho_err_orig = []
-    theta_err = []
+    dy_signed = []  # VE signed
+    da_wrapped = []  # AE wrapped signed
     rows = []
+
+    # Scale factors (Buoy: 800x600)
+    DEFAULT_ORIG_W, DEFAULT_ORIG_H = 800, 600
+    scale_y = DEFAULT_ORIG_H / UNET_H
 
     print("\n[Evaluating...]")
     with torch.no_grad():
@@ -192,47 +237,64 @@ def main():
                 rho_p, th_p = denorm_rho_theta(pred[i, 0], pred[i, 1])
                 rho_g, th_g = denorm_rho_theta(gt[i, 0], gt[i, 1])
 
-                # Errors in UNet space
-                e_rho_unet = abs(rho_p - rho_g)
-                e_theta = angular_diff_deg(th_p, th_g)
+                # VE/AE 计算
+                dy = compute_VE(rho_p, th_p, rho_g, th_g, UNET_W, UNET_H)
+                da = compute_AE(rho_p, th_p, rho_g, th_g, UNET_W, UNET_H)
+                da_w = wrap_ae(da)
+                
+                dy_signed.append(dy)
+                da_wrapped.append(da_w)
 
                 # Scale to original size
-                scale_x = orig_ws[i] / UNET_W
-                e_rho_orig = e_rho_unet * scale_x
-
-                rho_err_unet.append(e_rho_unet)
-                rho_err_orig.append(e_rho_orig)
-                theta_err.append(e_theta)
+                scale_y_sample = orig_hs[i] / UNET_H
+                dy_orig = dy * scale_y_sample
 
                 rows.append({
                     "idx": int(idxb[i]),
                     "img_name": names[i],
                     "orig_w": int(orig_ws[i]),
                     "orig_h": int(orig_hs[i]),
-                    "rho_err_px_unet": float(e_rho_unet),
-                    "rho_err_px_orig": float(e_rho_orig),
-                    "theta_err_deg": float(e_theta),
+                    "dy_signed_unet": float(dy),
+                    "dy_abs_unet": float(abs(dy)),
+                    "da_wrapped_deg": float(da_w),
+                    "da_abs_deg": float(abs(da_w)),
+                    "dy_signed_orig": float(dy_orig),
+                    "dy_abs_orig": float(abs(dy_orig)),
                 })
 
-    rho_err_unet = np.array(rho_err_unet)
-    rho_err_orig = np.array(rho_err_orig)
-    theta_err = np.array(theta_err)
+    dy_signed = np.array(dy_signed, dtype=np.float64)
+    da_wrapped = np.array(da_wrapped, dtype=np.float64)
+
+    # 计算统一指标
+    ve_abs_unet = np.abs(dy_signed)
+    ae_abs = np.abs(da_wrapped)
+    ve_abs_orig = ve_abs_unet * scale_y
+
+    VE_mean = float(np.mean(ve_abs_orig))
+    SVE = safe_std(dy_signed * scale_y)
+    AE_mean = float(np.mean(ae_abs))
+    SA = safe_std(da_wrapped)
+    VE_p95 = float(np.percentile(ve_abs_orig, 95)) if len(ve_abs_orig) > 0 else 0.0
+    AE_p95 = float(np.percentile(ae_abs, 95)) if len(ae_abs) > 0 else 0.0
 
     # Print results
-    print("\n" + "=" * 70)
-    print("Results Summary")
-    print("=" * 70)
+    print("\n" + "=" * 60)
+    print("海天线统一评价指标 (orig-scale, N={:d})".format(len(dy_signed)))
+    print("=" * 60)
     
-    print("\n[UNet Space (1024x576)]")
-    print(summarize("Rho error (px)", rho_err_unet))
-    print(summarize("Theta error (deg)", theta_err))
+    print(f"\nVE  (px):  {VE_mean:.2f}    SVE: {SVE:.2f}    P95: {VE_p95:.2f}")
+    print(f"AE (deg):  {AE_mean:.2f}    SA:  {SA:.2f}    P95: {AE_p95:.2f}")
     
-    print("\n[Original Image Scale]")
-    print(summarize("Rho error (px)", rho_err_orig))
+    print("\n" + "=" * 60)
+    print("论文表格汇总 (mean ± std)")
+    print("=" * 60)
+    print(f"VE (px):  {VE_mean:.2f} ± {SVE:.2f}")
+    print(f"AE (deg): {AE_mean:.2f} ± {SA:.2f}")
+    print("=" * 60)
     
-    print("\n[Threshold Statistics]")
-    print(f"Rho (orig): <=5px: {pct_le(rho_err_orig, 5):.2f}% | <=10px: {pct_le(rho_err_orig, 10):.2f}% | <=20px: {pct_le(rho_err_orig, 20):.2f}%")
-    print(f"Theta:      <=1°: {pct_le(theta_err, 1):.2f}% | <=2°: {pct_le(theta_err, 2):.2f}% | <=5°: {pct_le(theta_err, 5):.2f}%")
+    print("\n---- Hit-Rate (orig-scale) ----")
+    print(f"VE <=5px: {pct_le(ve_abs_orig, 5):.2f}% | <=10px: {pct_le(ve_abs_orig, 10):.2f}% | <=20px: {pct_le(ve_abs_orig, 20):.2f}%")
+    print(f"AE <=1°: {pct_le(ae_abs, 1):.2f}% | <=2°: {pct_le(ae_abs, 2):.2f}% | <=5°: {pct_le(ae_abs, 5):.2f}%")
 
     # Save CSV
     with open(OUT_CSV, "w", newline="", encoding="utf-8") as f:
@@ -241,7 +303,7 @@ def main():
         writer.writerows(rows)
     
     print(f"\n[Saved] {OUT_CSV}")
-    print("=" * 70)
+    print("=" * 60)
 
     return 0
 
