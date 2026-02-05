@@ -36,9 +36,10 @@ if str(PROJECT_ROOT) not in sys.path:
 # PyCharm 配置区
 # ============================
 RANDOM_SEED = 2026
-TRAIN_RATIO = 0.70
-VAL_RATIO = 0.15
-TEST_RATIO = 0.15
+# 与 MU-SID 保持一致的 8:1:1 划分
+TRAIN_RATIO = 0.80
+VAL_RATIO = 0.10
+TEST_RATIO = 0.10
 # ============================
 
 # Paths
