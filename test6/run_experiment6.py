@@ -2,21 +2,24 @@
 """
 Experiment 6: In-Domain Training on SMD and Buoy Datasets.
 
-目的: 分别在 SMD 和 Buoy 数据集上训练，测试在各自数据集上的效果
+目的: 分别在 SMD 和 Buoy 数据集上训练 UNet + CNN，测试在各自数据集上的效果
 
-执行流程:
-  1. 准备 SMD 数据集划分 (prepare_smd_trainset.py)
-  2. 准备 Buoy 数据集划分 (prepare_buoy_trainset.py)
-  3. 生成 SMD 训练缓存 (make_fusion_cache_smd_train.py)
-  4. 生成 Buoy 训练缓存 (make_fusion_cache_buoy_train.py)
-  5. 在 SMD 上训练 (train_fusion_cnn_smd.py)
-  6. 在 Buoy 上训练 (train_fusion_cnn_buoy.py)
-  7. 评估 SMD 模型 (evaluate_smd_indomain.py)
-  8. 评估 Buoy 模型 (evaluate_buoy_indomain.py)
+完整执行流程:
+  SMD:
+    1. 准备 SMD 数据集划分 (prepare_smd_trainset.py)
+    2. 训练 SMD UNet - 5阶段自动运行: A→B→C1→B2→C2
+    3. 生成 SMD 训练缓存 (make_fusion_cache_smd_train.py)
+    4. 训练 SMD CNN (train_fusion_cnn_smd.py)
+    5. 评估 SMD 模型 (evaluate_smd_indomain.py)
+  
+  Buoy:
+    6. 准备 Buoy 数据集划分 (prepare_buoy_trainset.py)
+    7. 训练 Buoy UNet - 5阶段自动运行: A→B→C1→B2→C2
+    8. 生成 Buoy 训练缓存 (make_fusion_cache_buoy_train.py)
+    9. 训练 Buoy CNN (train_fusion_cnn_buoy.py)
+    10. 评估 Buoy 模型 (evaluate_buoy_indomain.py)
 
 PyCharm: 直接运行此文件
-
-可选: 修改下面的 RUN_* 变量来控制执行哪些步骤
 """
 
 import sys
@@ -26,22 +29,25 @@ from pathlib import Path
 # ============================
 # PyCharm 配置区 - 控制执行步骤
 # ============================
-# SMD 相关
-RUN_PREPARE_SMD = True        # 1. 准备 SMD 数据集划分
-RUN_CACHE_SMD = True          # 2. 生成 SMD 缓存
-RUN_TRAIN_SMD = True          # 3. 训练 SMD 模型
-RUN_EVAL_SMD = True           # 4. 评估 SMD 模型
+# SMD 完整流程
+RUN_SMD_PIPELINE = True       # 运行完整 SMD 流程
 
-# Buoy 相关
-RUN_PREPARE_BUOY = True       # 5. 准备 Buoy 数据集划分
-RUN_CACHE_BUOY = True         # 6. 生成 Buoy 缓存
-RUN_TRAIN_BUOY = True         # 7. 训练 Buoy 模型
-RUN_EVAL_BUOY = True          # 8. 评估 Buoy 模型
+# Buoy 完整流程
+RUN_BUOY_PIPELINE = False     # 运行完整 Buoy 流程
+
+# 细粒度控制（仅当上面对应的 PIPELINE 为 True 时生效）
+SKIP_PREPARE = False           # 跳过数据准备（如果已运行过）
+SKIP_UNET = False             # 跳过 UNet 训练（如果已训练完成）
+SKIP_CACHE = False            # 跳过缓存生成
+SKIP_CNN = False              # 跳过 CNN 训练
+SKIP_EVAL = False             # 跳过评估
 # ============================
 
 TEST6_DIR = Path(__file__).resolve().parent
+UNET_STAGES = ["A", "B", "C1", "B2", "C2"]
 
-def run_script(name: str, script_path: Path):
+
+def run_script(name: str, script_path: Path, extra_args: list = None):
     """Run a Python script and print status."""
     print("\n" + "=" * 70)
     print(f"[Running] {name}")
@@ -52,10 +58,11 @@ def run_script(name: str, script_path: Path):
         print(f"[Error] Script not found: {script_path}")
         return False
 
-    result = subprocess.run(
-        [sys.executable, str(script_path)],
-        cwd=str(script_path.parent)
-    )
+    cmd = [sys.executable, str(script_path)]
+    if extra_args:
+        cmd.extend(extra_args)
+
+    result = subprocess.run(cmd, cwd=str(script_path.parent))
     
     if result.returncode != 0:
         print(f"[Error] {name} failed with code {result.returncode}")
@@ -65,71 +72,125 @@ def run_script(name: str, script_path: Path):
     return True
 
 
+def run_unet_all_stages(dataset: str):
+    """Run UNet training for all 5 stages."""
+    script_name = f"train_unet_{dataset}.py"
+    script_path = TEST6_DIR / script_name
+    
+    print("\n" + "=" * 70)
+    print(f"[UNet Training] {dataset.upper()} - 5 Stages")
+    print("=" * 70)
+    
+    for stage in UNET_STAGES:
+        name = f"UNet {dataset.upper()} Stage {stage}"
+        print(f"\n>>> Starting {name} <<<")
+        
+        if not run_script(name, script_path, ["--stage", stage]):
+            print(f"[Error] {name} failed!")
+            return False
+    
+    print(f"\n[Done] UNet {dataset.upper()} all 5 stages completed!")
+    return True
+
+
+def run_pipeline(dataset: str):
+    """Run complete pipeline for a dataset (SMD or Buoy)."""
+    print("\n" + "#" * 70)
+    print(f"# Pipeline: {dataset.upper()}")
+    print("#" * 70)
+    
+    failed = []
+    
+    # 1. Prepare dataset split
+    if not SKIP_PREPARE:
+        if not run_script(
+            f"Prepare {dataset.upper()} trainset",
+            TEST6_DIR / f"prepare_{dataset}_trainset.py"
+        ):
+            failed.append(f"Prepare {dataset}")
+    
+    # 2. Train UNet (5 stages)
+    if not SKIP_UNET:
+        if not run_unet_all_stages(dataset):
+            failed.append(f"UNet {dataset}")
+            print(f"[Warning] UNet training failed, but continuing...")
+    
+    # 3. Generate fusion cache
+    if not SKIP_CACHE:
+        if not run_script(
+            f"Generate {dataset.upper()} cache",
+            TEST6_DIR / f"make_fusion_cache_{dataset}_train.py"
+        ):
+            failed.append(f"Cache {dataset}")
+    
+    # 4. Train CNN
+    if not SKIP_CNN:
+        if not run_script(
+            f"Train {dataset.upper()} CNN",
+            TEST6_DIR / f"train_fusion_cnn_{dataset}.py"
+        ):
+            failed.append(f"CNN {dataset}")
+    
+    # 5. Evaluate
+    if not SKIP_EVAL:
+        if not run_script(
+            f"Evaluate {dataset.upper()} model",
+            TEST6_DIR / f"evaluate_{dataset}_indomain.py"
+        ):
+            failed.append(f"Eval {dataset}")
+    
+    return failed
+
+
 def main():
     print("=" * 70)
-    print("Experiment 6: In-Domain Training")
+    print("Experiment 6: In-Domain Training (UNet + CNN)")
     print("=" * 70)
-
-    scripts = []
-
+    
+    all_failed = []
+    
     # SMD pipeline
-    if RUN_PREPARE_SMD:
-        scripts.append(("1. Prepare SMD trainset", TEST6_DIR / "prepare_smd_trainset.py"))
-    if RUN_CACHE_SMD:
-        scripts.append(("2. Generate SMD cache", TEST6_DIR / "make_fusion_cache_smd_train.py"))
-    if RUN_TRAIN_SMD:
-        scripts.append(("3. Train on SMD", TEST6_DIR / "train_fusion_cnn_smd.py"))
-    if RUN_EVAL_SMD:
-        scripts.append(("4. Evaluate SMD model", TEST6_DIR / "evaluate_smd_indomain.py"))
-
+    if RUN_SMD_PIPELINE:
+        failed = run_pipeline("smd")
+        all_failed.extend(failed)
+    
     # Buoy pipeline
-    if RUN_PREPARE_BUOY:
-        scripts.append(("5. Prepare Buoy trainset", TEST6_DIR / "prepare_buoy_trainset.py"))
-    if RUN_CACHE_BUOY:
-        scripts.append(("6. Generate Buoy cache", TEST6_DIR / "make_fusion_cache_buoy_train.py"))
-    if RUN_TRAIN_BUOY:
-        scripts.append(("7. Train on Buoy", TEST6_DIR / "train_fusion_cnn_buoy.py"))
-    if RUN_EVAL_BUOY:
-        scripts.append(("8. Evaluate Buoy model", TEST6_DIR / "evaluate_buoy_indomain.py"))
-
-    if not scripts:
-        print("[Info] No steps selected. Modify RUN_* variables to enable steps.")
+    if RUN_BUOY_PIPELINE:
+        failed = run_pipeline("buoy")
+        all_failed.extend(failed)
+    
+    if not RUN_SMD_PIPELINE and not RUN_BUOY_PIPELINE:
+        print("[Info] No pipeline selected. Set RUN_SMD_PIPELINE or RUN_BUOY_PIPELINE to True.")
         return 0
-
-    print(f"\n[Plan] Will run {len(scripts)} steps:")
-    for name, _ in scripts:
-        print(f"  - {name}")
-
-    failed = []
-    for name, path in scripts:
-        if not run_script(name, path):
-            failed.append(name)
-            print(f"\n[Warning] {name} failed, continuing...")
 
     # Summary
     print("\n" + "=" * 70)
     print("Experiment 6 Complete")
     print("=" * 70)
     
-    if failed:
-        print(f"[Warning] {len(failed)} step(s) failed:")
-        for f in failed:
+    if all_failed:
+        print(f"[Warning] {len(all_failed)} step(s) failed:")
+        for f in all_failed:
             print(f"  - {f}")
     else:
         print("[Success] All steps completed!")
 
     print("\n[Outputs]")
     outputs = [
+        # SMD outputs
+        TEST6_DIR / "weights_smd" / "smd_rghnet_best_seg_c2.pth",
         TEST6_DIR / "weights" / "best_fusion_cnn_smd.pth",
-        TEST6_DIR / "weights" / "best_fusion_cnn_buoy.pth",
         TEST6_DIR / "eval_smd_indomain.csv",
+        # Buoy outputs
+        TEST6_DIR / "weights_buoy" / "buoy_rghnet_best_seg_c2.pth",
+        TEST6_DIR / "weights" / "best_fusion_cnn_buoy.pth",
         TEST6_DIR / "eval_buoy_indomain.csv",
     ]
     for o in outputs:
         status = "✓" if o.exists() else "✗"
         print(f"  {status} {o}")
 
-    return 0 if not failed else 1
+    return 0 if not all_failed else 1
 
 
 if __name__ == "__main__":

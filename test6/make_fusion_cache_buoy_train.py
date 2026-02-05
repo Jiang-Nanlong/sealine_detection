@@ -47,8 +47,8 @@ IMG_DIR = str(PROJECT_ROOT / "test4" / "buoy_frames")
 SPLIT_DIR = str(PROJECT_ROOT / "test6" / "splits_buoy")
 SAVE_ROOT = str(PROJECT_ROOT / "test6" / "FusionCache_Buoy")
 
-# MU-SID 预训练权重
-RGHNET_CKPT = str(PROJECT_ROOT / "weights" / "rghnet_best_c2.pth")
+# ✅ 使用 Buoy 本地训练的 UNet 权重 (In-Domain Training)
+RGHNET_CKPT = str(PROJECT_ROOT / "test6" / "weights_buoy" / "buoy_rghnet_best_seg_c2.pth")
 DCE_WEIGHTS = str(PROJECT_ROOT / "weights" / "Epoch99.pth")
 # ============================
 

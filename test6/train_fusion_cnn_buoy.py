@@ -37,20 +37,32 @@ from cnn_model import HorizonResNet  # noqa: E402
 
 
 # ============================
-# PyCharm 配置区
+# PyCharm 配置区（与主训练策略对齐）
 # ============================
-EPOCHS = 120
-BATCH_SIZE = 64
-LR = 3e-4
+SEED = 40  # 与主训练一致
+BATCH_SIZE = 16
+NUM_WORKERS = 4
+NUM_EPOCHS = 100
+LR = 2e-4
 WEIGHT_DECAY = 1e-4
-PATIENCE = 25
-NUM_WORKERS = 0
-SEED = 42
 
-# 数据增强概率 (仅雨和雾)
-AUG_RAIN_PROB = 0.3
-AUG_FOG_PROB = 0.3
-AUG_CLEAN_PROB = 0.4  # 无增强
+# 学习率调度（与主训练一致）
+PLATEAU_PATIENCE = 10
+PLATEAU_FACTOR = 0.5
+EARLY_STOP_PATIENCE = 100  # 实际禁用早停，保证跑满
+
+# 数据增强：船体直线干扰（与主训练一致）
+AUG_ENABLE = True
+AUG_SPURIOUS_P = 0.60          # 60%概率注入虚假峰值
+AUG_MAX_PEAKS = 3              # 每个样本最多3个虚假峰值
+AUG_AMP_MIN, AUG_AMP_MAX = 0.15, 0.60
+AUG_SIGMA_RHO = 18.0           # rho方向高斯半径
+AUG_SIGMA_THETA = 1.8          # theta方向高斯半径
+AUG_TARGET_CHANNELS = (0, 1, 2)  # 只影响传统Radon通道
+
+# AMP
+USE_AMP = True
+GRAD_CLIP_NORM = 1.0
 # ============================
 
 # Paths
@@ -68,43 +80,51 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 SINO_H, SINO_W = 2240, 180
 
 
-# ============================
-# Augmentation Functions
-# ============================
-def add_rain_to_sinogram(sino: np.ndarray, intensity_range=(0.05, 0.2),
-                         num_lines=(50, 150), width=(1, 3)):
-    """Add rain streak simulation to sinogram."""
-    sino = sino.copy()
-    h, w = sino.shape
-    intensity = np.random.uniform(*intensity_range)
-    n_lines = np.random.randint(*num_lines)
-    for _ in range(n_lines):
-        col = np.random.randint(0, w)
-        start = np.random.randint(0, h // 2)
-        length = np.random.randint(h // 4, h // 2)
-        line_w = np.random.randint(*width)
-        c_start = max(0, col - line_w // 2)
-        c_end = min(w, col + line_w // 2 + 1)
-        sino[start:min(h, start + length), c_start:c_end] += intensity
-    return np.clip(sino, 0.0, 1.0)
+# =========================
+# Data augmentation (ship-line / spurious straight-line interference)
+# 与主训练代码完全一致
+# =========================
+def _inject_gaussian_peak(x: torch.Tensor, ch: int, rho0: int, th0: int, amp: float,
+                          sigma_rho: float, sigma_th: float) -> None:
+    """In-place add a small 2D Gaussian peak to x[ch] at (rho0, th0).
+
+    This is used to simulate strong non-horizon straight-line responses (e.g., ship decks/masts)
+    that can create competing peaks in the Radon domain.
+    """
+    _, H, W = x.shape
+    # local window for efficiency
+    sr = int(max(3, min(H // 2, round(3.0 * sigma_rho))))
+    st = int(max(2, min(W // 2, round(3.0 * sigma_th))))
+    r1 = max(0, rho0 - sr)
+    r2 = min(H, rho0 + sr + 1)
+    t1 = max(0, th0 - st)
+    t2 = min(W, th0 + st + 1)
+
+    rr = torch.arange(r1, r2, device=x.device, dtype=x.dtype) - float(rho0)
+    tt = torch.arange(t1, t2, device=x.device, dtype=x.dtype) - float(th0)
+    gr = torch.exp(-(rr * rr) / (2.0 * sigma_rho * sigma_rho))
+    gt = torch.exp(-(tt * tt) / (2.0 * sigma_th * sigma_th))
+    g2d = gr[:, None] * gt[None, :]
+    x[ch, r1:r2, t1:t2] = torch.clamp(x[ch, r1:r2, t1:t2] + amp * g2d, 0.0, 1.0)
 
 
-def add_fog_to_sinogram(sino: np.ndarray, fog_level=(0.1, 0.4)):
-    """Add fog-like haze to sinogram by reducing contrast and shifting mean."""
-    sino = sino.copy()
-    fog = np.random.uniform(*fog_level)
-    sino = sino * (1 - fog) + fog * 0.5
-    return np.clip(sino, 0.0, 1.0)
+def augment_fusion_tensor(x: torch.Tensor) -> torch.Tensor:
+    """On-the-fly augmentation for FusionCache tensors.
 
+    x: [C, H, W], values assumed in [0,1].
+    """
+    if (not AUG_ENABLE) or (torch.rand(1).item() > AUG_SPURIOUS_P):
+        return x
 
-def augment_sinogram(sino_4ch: np.ndarray):
-    """Apply augmentation to sinogram based on probabilities."""
-    r = random.random()
-    if r < AUG_RAIN_PROB:
-        sino_4ch[0] = add_rain_to_sinogram(sino_4ch[0])
-    elif r < AUG_RAIN_PROB + AUG_FOG_PROB:
-        sino_4ch[0] = add_fog_to_sinogram(sino_4ch[0])
-    return sino_4ch
+    C, H, W = x.shape
+    n_peaks = int(torch.randint(1, AUG_MAX_PEAKS + 1, (1,)).item())
+    for _ in range(n_peaks):
+        ch = int(AUG_TARGET_CHANNELS[int(torch.randint(0, len(AUG_TARGET_CHANNELS), (1,)).item())])
+        rho0 = int(torch.randint(0, H, (1,)).item())
+        th0 = int(torch.randint(0, W, (1,)).item())
+        amp = float(AUG_AMP_MIN + (AUG_AMP_MAX - AUG_AMP_MIN) * torch.rand(1).item())
+        _inject_gaussian_peak(x, ch, rho0, th0, amp, AUG_SIGMA_RHO, AUG_SIGMA_THETA)
+    return x
 
 
 # ============================
@@ -123,13 +143,13 @@ class BuoyCacheDataset(Dataset):
         idx = int(self.indices[i])
         path = os.path.join(self.cache_dir, f"{idx}.npy")
         data = np.load(path, allow_pickle=True).item()
-        x = data["input"].astype(np.float32)
-        y = data["label"].astype(np.float32)
+        x = torch.from_numpy(data["input"].astype(np.float32))
+        y = torch.from_numpy(data["label"].astype(np.float32))
 
         if self.augment:
-            x = augment_sinogram(x.copy())
+            x = augment_fusion_tensor(x)
 
-        return torch.from_numpy(x), torch.from_numpy(y)
+        return x, y
 
 
 def load_split_indices(split_dir):
@@ -139,89 +159,94 @@ def load_split_indices(split_dir):
 
 
 # ============================
-# Loss Function
+# Loss Function（与主训练代码对齐）
 # ============================
 class HorizonPeriodicLoss(nn.Module):
-    def __init__(self, period: float = 1.0):
+    def __init__(self, rho_weight=1.0, theta_weight=2.0, rho_beta=0.02, theta_beta=0.02):
         super().__init__()
-        self.period = period
+        self.rho_weight = float(rho_weight)
+        self.theta_weight = float(theta_weight)
+        self.rho_loss = nn.SmoothL1Loss(beta=rho_beta)
+        self.theta_loss = nn.SmoothL1Loss(beta=theta_beta)
 
-    def forward(self, pred, target):
-        rho_loss = (pred[:, 0] - target[:, 0]) ** 2
-        theta_pred, theta_gt = pred[:, 1], target[:, 1]
-        diff = (theta_pred - theta_gt).abs()
-        theta_loss = torch.min(diff, self.period - diff) ** 2
-        return (rho_loss.mean() + theta_loss.mean()) * 0.5
+    def forward(self, preds, targets):
+        loss_rho = self.rho_loss(preds[:, 0], targets[:, 0])
+
+        theta_p = preds[:, 1] * np.pi
+        theta_t = targets[:, 1] * np.pi
+        sin_p, cos_p = torch.sin(theta_p), torch.cos(theta_p)
+        sin_t, cos_t = torch.sin(theta_t), torch.cos(theta_t)
+
+        loss_theta = self.theta_loss(sin_p, sin_t) + self.theta_loss(cos_p, cos_t)
+        return self.rho_weight * loss_rho + self.theta_weight * loss_theta
 
 
 # ============================
-# Training
+# Training（与主训练代码对齐）
 # ============================
-def train_one_epoch(model, loader, optimizer, scaler, loss_fn):
-    model.train()
-    total_loss = 0.0
-    for xb, yb in loader:
-        xb, yb = xb.to(DEVICE), yb.to(DEVICE)
-        optimizer.zero_grad()
-        with autocast():
-            pred = model(xb)
-            loss = loss_fn(pred, yb)
-        scaler.scale(loss).backward()
-        scaler.step(optimizer)
-        scaler.update()
-        total_loss += loss.item() * xb.size(0)
-    return total_loss / len(loader.dataset)
+def autocast_ctx():
+    if not USE_AMP or not DEVICE.startswith("cuda"):
+        from contextlib import nullcontext
+        return nullcontext()
+    return torch.amp.autocast(device_type="cuda", enabled=True)
+
+
+def make_scaler():
+    if not USE_AMP or not DEVICE.startswith("cuda"):
+        return None
+    return torch.amp.GradScaler(device="cuda", enabled=True)
 
 
 @torch.no_grad()
-def validate(model, loader, loss_fn):
+def evaluate(model, loader, criterion):
     model.eval()
     total_loss = 0.0
-    for xb, yb in loader:
-        xb, yb = xb.to(DEVICE), yb.to(DEVICE)
-        with autocast():
-            pred = model(xb)
-            loss = loss_fn(pred, yb)
-        total_loss += loss.item() * xb.size(0)
-    return total_loss / len(loader.dataset)
+    n = 0
+    for x, y in loader:
+        x = x.to(DEVICE, non_blocking=True)
+        y = y.to(DEVICE, non_blocking=True)
+        with autocast_ctx():
+            pred = model(x)
+            loss = criterion(pred, y)
+        total_loss += float(loss.item()) * x.size(0)
+        n += x.size(0)
+    return total_loss / max(1, n)
 
 
-def train(model, train_dl, val_dl, loss_fn, epochs, lr, weight_decay, patience):
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, "min", factor=0.5, patience=7)
-    scaler = GradScaler()
+def train_one_epoch(model, loader, optimizer, scaler, criterion):
+    from tqdm import tqdm
+    model.train()
+    total_loss = 0.0
+    n = 0
 
-    best_loss = float("inf")
-    wait = 0
-    log = {"train": [], "val": []}
+    for x, y in tqdm(loader, desc="train", ncols=80):
+        x = x.to(DEVICE, non_blocking=True)
+        y = y.to(DEVICE, non_blocking=True)
 
-    for ep in range(1, epochs + 1):
-        train_loss = train_one_epoch(model, train_dl, optimizer, scaler, loss_fn)
-        val_loss = validate(model, val_dl, loss_fn)
-        scheduler.step(val_loss)
+        optimizer.zero_grad(set_to_none=True)
 
-        log["train"].append(train_loss)
-        log["val"].append(val_loss)
-
-        improved = val_loss < best_loss
-        if improved:
-            best_loss = val_loss
-            wait = 0
-            WEIGHTS_DIR.mkdir(parents=True, exist_ok=True)
-            torch.save(model.state_dict(), WEIGHTS_PATH)
+        if scaler is not None:
+            with autocast_ctx():
+                pred = model(x)
+                loss = criterion(pred, y)
+            scaler.scale(loss).backward()
+            if GRAD_CLIP_NORM > 0:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP_NORM)
+            scaler.step(optimizer)
+            scaler.update()
         else:
-            wait += 1
+            pred = model(x)
+            loss = criterion(pred, y)
+            loss.backward()
+            if GRAD_CLIP_NORM > 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP_NORM)
+            optimizer.step()
 
-        mark = "*" if improved else ""
-        print(f"Epoch {ep:03d} | train={train_loss:.5f} | val={val_loss:.5f} | lr={optimizer.param_groups[0]['lr']:.2e} {mark}")
+        total_loss += float(loss.item()) * x.size(0)
+        n += x.size(0)
 
-        if wait >= patience:
-            print(f"Early stopping at epoch {ep}")
-            break
-
-    with open(LOG_PATH, "w") as f:
-        json.dump(log, f, indent=2)
-    print(f"[Saved] {LOG_PATH}")
+    return total_loss / max(1, n)
 
 
 def main():
@@ -232,8 +257,7 @@ def main():
         torch.cuda.manual_seed_all(SEED)
 
     print("=" * 60)
-    print("Train Fusion-CNN on Buoy Dataset (In-Domain)")
-    print(f"Augmentation: rain={AUG_RAIN_PROB}, fog={AUG_FOG_PROB}, clean={AUG_CLEAN_PROB}")
+    print("Train Fusion-CNN on Buoy Dataset (Experiment 6)")
     print("=" * 60)
 
     if not CACHE_TRAIN.exists() or not CACHE_VAL.exists():
@@ -241,22 +265,82 @@ def main():
         return 1
 
     train_idx, val_idx = load_split_indices(SPLIT_DIR)
-    print(f"[Train] {len(train_idx)} | [Val] {len(val_idx)}")
+    print(f"[Splits] train={len(train_idx)}, val={len(val_idx)}")
 
     ds_train = BuoyCacheDataset(str(CACHE_TRAIN), train_idx, augment=True)
     ds_val = BuoyCacheDataset(str(CACHE_VAL), val_idx, augment=False)
 
+    pin = DEVICE.startswith("cuda")
     dl_train = DataLoader(ds_train, batch_size=BATCH_SIZE, shuffle=True,
-                          num_workers=NUM_WORKERS, pin_memory=DEVICE.startswith("cuda"))
+                          num_workers=NUM_WORKERS, pin_memory=pin, drop_last=True)
     dl_val = DataLoader(ds_val, batch_size=BATCH_SIZE, shuffle=False,
-                        num_workers=NUM_WORKERS, pin_memory=DEVICE.startswith("cuda"))
+                        num_workers=NUM_WORKERS, pin_memory=pin)
 
-    model = HorizonResNet(in_channels=4, img_h=SINO_H, img_w=SINO_W).to(DEVICE)
-    loss_fn = HorizonPeriodicLoss(period=1.0)
+    model = HorizonResNet(in_channels=4).to(DEVICE)
+    criterion = HorizonPeriodicLoss()
+    optimizer = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
+    scaler = make_scaler()
 
-    train(model, dl_train, dl_val, loss_fn, EPOCHS, LR, WEIGHT_DECAY, PATIENCE)
-    print("Training complete.")
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="min", factor=PLATEAU_FACTOR, patience=PLATEAU_PATIENCE, verbose=True
+    )
+
+    best_val = float("inf")
+    best_epoch = 0
+    bad_epochs = 0
+    history = []
+
+    print(f"[Device] {DEVICE}")
+    print(f"[Train] {len(ds_train)} samples")
+    print(f"[Val]   {len(ds_val)} samples")
+    print("")
+
+    WEIGHTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    for epoch in range(1, NUM_EPOCHS + 1):
+        tr_loss = train_one_epoch(model, dl_train, optimizer, scaler, criterion)
+        va_loss = evaluate(model, dl_val, criterion)
+
+        lr_now = optimizer.param_groups[0]["lr"]
+        print(f"Epoch [{epoch:03d}/{NUM_EPOCHS}] lr={lr_now:.2e} train={tr_loss:.6f} val={va_loss:.6f}")
+
+        history.append({"epoch": epoch, "lr": lr_now, "train_loss": tr_loss, "val_loss": va_loss})
+        scheduler.step(va_loss)
+
+        if va_loss < best_val - 1e-8:
+            best_val = va_loss
+            best_epoch = epoch
+            bad_epochs = 0
+            torch.save(model.state_dict(), WEIGHTS_PATH)
+            print(f"  -> best updated: {best_val:.6f} (epoch={best_epoch})")
+        else:
+            bad_epochs += 1
+            if bad_epochs >= EARLY_STOP_PATIENCE:
+                print(f"[Early Stop] no improvement for {EARLY_STOP_PATIENCE} epochs")
+                break
+
+    # Final evaluation
+    print("\n" + "=" * 60)
+    print("Training Complete")
+    print("=" * 60)
+
+    # Save log
+    payload = {
+        "dataset": "Buoy",
+        "best_val_loss": best_val,
+        "best_epoch": best_epoch,
+        "history": history,
+    }
+    with open(LOG_PATH, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    print(f"[Saved] Log -> {LOG_PATH}")
+    print(f"[Saved] Weights -> {WEIGHTS_PATH}")
+
     return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
 
 
 if __name__ == "__main__":

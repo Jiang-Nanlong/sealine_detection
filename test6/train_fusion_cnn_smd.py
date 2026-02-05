@@ -39,25 +39,28 @@ from cnn_model import HorizonResNet  # noqa: E402
 
 
 # ============================
-# PyCharm 配置区
+# PyCharm 配置区（与主训练策略对齐）
 # ============================
-SEED = 2026
+SEED = 40  # 与主训练一致
 BATCH_SIZE = 16
 NUM_WORKERS = 4
 NUM_EPOCHS = 100
 LR = 2e-4
 WEIGHT_DECAY = 1e-4
 
-# 学习率调度
+# 学习率调度（与主训练一致）
 PLATEAU_PATIENCE = 10
 PLATEAU_FACTOR = 0.5
-EARLY_STOP_PATIENCE = 30  # 30个epoch不提升则停止
+EARLY_STOP_PATIENCE = 100  # 实际禁用早停，保证跑满
 
-# 数据增强：只用雨和雾
+# 数据增强：船体直线干扰（与主训练一致）
 AUG_ENABLE = True
-AUG_RAIN_PROB = 0.3      # 雨的概率
-AUG_FOG_PROB = 0.3       # 雾的概率
-AUG_CLEAN_PROB = 0.4     # 干净图像的概率
+AUG_SPURIOUS_P = 0.60          # 60%概率注入虚假峰值
+AUG_MAX_PEAKS = 3              # 每个样本最多3个虚假峰值
+AUG_AMP_MIN, AUG_AMP_MAX = 0.15, 0.60
+AUG_SIGMA_RHO = 18.0           # rho方向高斯半径
+AUG_SIGMA_THETA = 1.8          # theta方向高斯半径
+AUG_TARGET_CHANNELS = (0, 1, 2)  # 只影响传统Radon通道
 
 # AMP
 USE_AMP = True
@@ -88,60 +91,51 @@ def ensure_dir(p):
     os.makedirs(p, exist_ok=True)
 
 
-# ============================
-# 简单退化函数（雨和雾）
-# ============================
-def add_rain_to_sinogram(x: torch.Tensor) -> torch.Tensor:
-    """在 sinogram 上添加模拟雨的竖条纹噪声"""
-    C, H, W = x.shape
-    # 随机添加几条竖线（模拟雨滴在Radon域的影响）
-    n_lines = random.randint(2, 8)
-    for _ in range(n_lines):
-        col = random.randint(0, W - 1)
-        intensity = random.uniform(0.1, 0.4)
-        width = random.randint(1, 3)
-        for c in range(min(3, C)):  # 只影响前3个通道
-            col_start = max(0, col - width // 2)
-            col_end = min(W, col + width // 2 + 1)
-            x[c, :, col_start:col_end] = torch.clamp(
-                x[c, :, col_start:col_end] + intensity * torch.rand(H, col_end - col_start),
-                0, 1
-            )
-    return x
+# =========================
+# Data augmentation (ship-line / spurious straight-line interference)
+# 与主训练代码完全一致
+# =========================
+def _inject_gaussian_peak(x: torch.Tensor, ch: int, rho0: int, th0: int, amp: float,
+                          sigma_rho: float, sigma_th: float) -> None:
+    """In-place add a small 2D Gaussian peak to x[ch] at (rho0, th0).
+
+    This is used to simulate strong non-horizon straight-line responses (e.g., ship decks/masts)
+    that can create competing peaks in the Radon domain.
+    """
+    _, H, W = x.shape
+    # local window for efficiency
+    sr = int(max(3, min(H // 2, round(3.0 * sigma_rho))))
+    st = int(max(2, min(W // 2, round(3.0 * sigma_th))))
+    r1 = max(0, rho0 - sr)
+    r2 = min(H, rho0 + sr + 1)
+    t1 = max(0, th0 - st)
+    t2 = min(W, th0 + st + 1)
+
+    rr = torch.arange(r1, r2, device=x.device, dtype=x.dtype) - float(rho0)
+    tt = torch.arange(t1, t2, device=x.device, dtype=x.dtype) - float(th0)
+    gr = torch.exp(-(rr * rr) / (2.0 * sigma_rho * sigma_rho))
+    gt = torch.exp(-(tt * tt) / (2.0 * sigma_th * sigma_th))
+    g2d = gr[:, None] * gt[None, :]
+    x[ch, r1:r2, t1:t2] = torch.clamp(x[ch, r1:r2, t1:t2] + amp * g2d, 0.0, 1.0)
 
 
-def add_fog_to_sinogram(x: torch.Tensor) -> torch.Tensor:
-    """在 sinogram 上添加模拟雾的低频噪声"""
-    C, H, W = x.shape
-    # 添加低频高斯噪声模拟雾的影响
-    fog_intensity = random.uniform(0.05, 0.2)
-    for c in range(min(3, C)):
-        noise = torch.randn(H, W) * fog_intensity
-        # 低通滤波（简单平均）
-        kernel_size = random.choice([5, 7, 9])
-        noise = torch.nn.functional.avg_pool2d(
-            noise.unsqueeze(0).unsqueeze(0),
-            kernel_size, stride=1, padding=kernel_size // 2
-        ).squeeze()
-        x[c] = torch.clamp(x[c] + noise, 0, 1)
-    return x
+def augment_fusion_tensor(x: torch.Tensor) -> torch.Tensor:
+    """On-the-fly augmentation for FusionCache tensors.
 
-
-def augment_sinogram(x: torch.Tensor) -> torch.Tensor:
-    """简单数据增强：只用雨和雾"""
-    if not AUG_ENABLE:
+    x: [C, H, W], values assumed in [0,1].
+    """
+    if (not AUG_ENABLE) or (torch.rand(1).item() > AUG_SPURIOUS_P):
         return x
-    
-    r = random.random()
-    if r < AUG_CLEAN_PROB:
-        # 保持干净
-        return x
-    elif r < AUG_CLEAN_PROB + AUG_RAIN_PROB:
-        # 添加雨
-        return add_rain_to_sinogram(x)
-    else:
-        # 添加雾
-        return add_fog_to_sinogram(x)
+
+    C, H, W = x.shape
+    n_peaks = int(torch.randint(1, AUG_MAX_PEAKS + 1, (1,)).item())
+    for _ in range(n_peaks):
+        ch = int(AUG_TARGET_CHANNELS[int(torch.randint(0, len(AUG_TARGET_CHANNELS), (1,)).item())])
+        rho0 = int(torch.randint(0, H, (1,)).item())
+        th0 = int(torch.randint(0, W, (1,)).item())
+        amp = float(AUG_AMP_MIN + (AUG_AMP_MAX - AUG_AMP_MIN) * torch.rand(1).item())
+        _inject_gaussian_peak(x, ch, rho0, th0, amp, AUG_SIGMA_RHO, AUG_SIGMA_THETA)
+    return x
 
 
 # ============================
@@ -171,7 +165,7 @@ class SMDCacheDataset(Dataset):
         y = torch.from_numpy(data["label"]).float()
         
         if self.augment:
-            x = augment_sinogram(x)
+            x = augment_fusion_tensor(x)
         
         return x, y
 
