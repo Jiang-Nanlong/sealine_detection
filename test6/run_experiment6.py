@@ -10,14 +10,14 @@ Experiment 6: In-Domain Training on SMD and Buoy Datasets.
     2. 训练 SMD UNet - 5阶段自动运行: A→B→C1→B2→C2
     3. 生成 SMD 训练缓存 (make_fusion_cache_smd_train.py)
     4. 训练 SMD CNN (train_fusion_cnn_smd.py)
-    5. 评估 SMD 模型 (evaluate_smd_indomain.py)
+    5. 评估 SMD 模型 (evaluate_smd_full.py) - 完整指标与 evaluate_full_pipeline.py 对齐
   
   Buoy:
     6. 准备 Buoy 数据集划分 (prepare_buoy_trainset.py)
     7. 训练 Buoy UNet - 5阶段自动运行: A→B→C1→B2→C2
     8. 生成 Buoy 训练缓存 (make_fusion_cache_buoy_train.py)
     9. 训练 Buoy CNN (train_fusion_cnn_buoy.py)
-    10. 评估 Buoy 模型 (evaluate_buoy_indomain.py)
+    10. 评估 Buoy 模型 (evaluate_buoy_full.py) - 完整指标与 evaluate_full_pipeline.py 对齐
 
 PyCharm: 直接运行此文件
 """
@@ -131,11 +131,11 @@ def run_pipeline(dataset: str):
         ):
             failed.append(f"CNN {dataset}")
     
-    # 5. Evaluate
+    # 5. Evaluate (full metrics aligned with evaluate_full_pipeline.py)
     if not SKIP_EVAL:
         if not run_script(
-            f"Evaluate {dataset.upper()} model",
-            TEST6_DIR / f"evaluate_{dataset}_indomain.py"
+            f"Evaluate {dataset.upper()} model (full metrics)",
+            TEST6_DIR / f"evaluate_{dataset}_full.py"
         ):
             failed.append(f"Eval {dataset}")
     
@@ -180,11 +180,13 @@ def main():
         # SMD outputs
         TEST6_DIR / "weights_smd" / "smd_rghnet_best_seg_c2.pth",
         TEST6_DIR / "weights" / "best_fusion_cnn_smd.pth",
-        TEST6_DIR / "eval_smd_indomain.csv",
+        TEST6_DIR / "eval_smd_full_outputs" / "full_eval_smd_test.csv",
+        TEST6_DIR / "eval_smd_full_outputs" / "eval_summary_smd.csv",
         # Buoy outputs
         TEST6_DIR / "weights_buoy" / "buoy_rghnet_best_seg_c2.pth",
         TEST6_DIR / "weights" / "best_fusion_cnn_buoy.pth",
-        TEST6_DIR / "eval_buoy_indomain.csv",
+        TEST6_DIR / "eval_buoy_full_outputs" / "full_eval_buoy_test.csv",
+        TEST6_DIR / "eval_buoy_full_outputs" / "eval_summary_buoy.csv",
     ]
     for o in outputs:
         status = "✓" if o.exists() else "✗"
