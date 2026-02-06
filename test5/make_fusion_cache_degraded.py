@@ -225,6 +225,10 @@ def build_cache_for_degradation(df, deg_folder, out_dir, model, detector, theta_
     for _, row in tqdm(df.iterrows(), total=len(df), desc=deg_name, ncols=80):
         img_stem = str(row["img_stem"])
         
+        # 如果 img_stem 已包含扩展名，去掉它
+        if img_stem.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp')):
+            img_stem = os.path.splitext(img_stem)[0]
+        
         # 原始坐标 (坐标值基于原图尺寸，各数据集不同)
         try:
             x1_org, y1_org = float(row["x1"]), float(row["y1"])
