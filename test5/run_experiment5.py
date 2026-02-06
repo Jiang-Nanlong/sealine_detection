@@ -187,8 +187,7 @@ def main():
         print("\n[Skip] Visualization (SKIP_VIS=True)")
     else:
         script = TEST5_DIR / "visualize_degraded.py"
-        # visualize_degraded.py 可能不支持 --dataset，用 pass_dataset=False
-        if not run_script(script, "Visualize degraded predictions", pass_dataset=False):
+        if not run_script(script, "Visualize degraded predictions", pass_dataset=True):
             print("[Warning] Visualization failed, continuing...")
     
     # Final summary

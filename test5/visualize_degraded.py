@@ -40,12 +40,41 @@ SELECTED_DEGRADATIONS = [       # 选择要可视化的退化类型（海洋特�
     "fog_0.5",
 ]
 SEED = 42
+# 选择数据集: "musid", "smd", "buoy"
+DATASET = "musid"
 # ============================
+
+# 命令行参数覆盖 (支持 run_experiment5.py 一键调用)
+if "--dataset" in sys.argv:
+    _idx = sys.argv.index("--dataset")
+    if _idx + 1 < len(sys.argv):
+        DATASET = sys.argv[_idx + 1]
 
 # ----------------------------
 # Config
 # ----------------------------
 TEST5_DIR = PROJECT_ROOT / "test5"
+
+# 数据集配置
+DATASET_CONFIGS = {
+    "musid": {
+        "degraded_img_dir": TEST5_DIR / "degraded_images",
+        "cache_root": TEST5_DIR / "FusionCache_Degraded",
+        "out_dir": TEST5_DIR / "visualization",
+    },
+    "smd": {
+        "degraded_img_dir": TEST5_DIR / "degraded_images_smd",
+        "cache_root": TEST5_DIR / "FusionCache_Degraded_SMD",
+        "out_dir": TEST5_DIR / "visualization_smd",
+    },
+    "buoy": {
+        "degraded_img_dir": TEST5_DIR / "degraded_images_buoy",
+        "cache_root": TEST5_DIR / "FusionCache_Degraded_Buoy",
+        "out_dir": TEST5_DIR / "visualization_buoy",
+    },
+}
+
+# Legacy compatibility
 DEGRADED_IMG_DIR = TEST5_DIR / "degraded_images"
 CACHE_ROOT = TEST5_DIR / "FusionCache_Degraded"
 OUT_DIR = TEST5_DIR / "visualization"
@@ -165,23 +194,29 @@ def load_cache_data(cache_dir):
 def main():
     np.random.seed(SEED)
     
+    cfg = DATASET_CONFIGS[DATASET]
+    degraded_img_dir = cfg["degraded_img_dir"]
+    cache_root = cfg["cache_root"]
+    out_dir = cfg["out_dir"]
+    
     print("=" * 60)
     print("Experiment 5: Visualize Degraded Predictions")
+    print(f"Dataset: {DATASET.upper()}")
     print("=" * 60)
     
-    ensure_dir(OUT_DIR)
+    ensure_dir(out_dir)
     
     # Check directories exist
-    if not DEGRADED_IMG_DIR.exists():
-        print(f"[Error] Degraded images not found: {DEGRADED_IMG_DIR}")
+    if not degraded_img_dir.exists():
+        print(f"[Error] Degraded images not found: {degraded_img_dir}")
         sys.exit(1)
     
-    if not CACHE_ROOT.exists():
-        print(f"[Error] Cache not found: {CACHE_ROOT}")
+    if not cache_root.exists():
+        print(f"[Error] Cache not found: {cache_root}")
         sys.exit(1)
     
     # Load clean cache for GT and clean predictions
-    clean_cache_dir = CACHE_ROOT / "clean"
+    clean_cache_dir = cache_root / "clean"
     if not clean_cache_dir.exists():
         print(f"[Error] Clean cache not found: {clean_cache_dir}")
         sys.exit(1)
@@ -198,7 +233,7 @@ def main():
     
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model = HorizonResNet(in_channels=4, img_h=RESIZE_H, img_w=180).to(device)
-    weights_path = PROJECT_ROOT / "weights" / "best_fusion_cnn_1024x576.pth"
+    weights_path = PROJECT_ROOT / cfg["cnn_weights"]
     ckpt = torch.load(weights_path, map_location=device, weights_only=False)
     if isinstance(ckpt, dict) and "state_dict" in ckpt:
         model.load_state_dict(ckpt["state_dict"], strict=True)
@@ -210,9 +245,9 @@ def main():
     for deg_name in SELECTED_DEGRADATIONS:
         print(f"\n[Visualize] {deg_name}...")
         
-        deg_cache_dir = CACHE_ROOT / deg_name
-        deg_img_dir = DEGRADED_IMG_DIR / deg_name
-        clean_img_dir = DEGRADED_IMG_DIR / "clean"
+        deg_cache_dir = cache_root / deg_name
+        deg_img_dir = degraded_img_dir / deg_name
+        clean_img_dir = degraded_img_dir / "clean"
         
         if not deg_cache_dir.exists():
             print(f"  [Skip] Cache not found: {deg_cache_dir}")
@@ -225,7 +260,7 @@ def main():
         n_samples = min(N_SAMPLES, len(common_imgs))
         selected = np.random.choice(common_imgs, n_samples, replace=False)
         
-        out_subdir = OUT_DIR / deg_name
+        out_subdir = out_dir / deg_name
         ensure_dir(out_subdir)
         
         for i, img_name in enumerate(selected):
@@ -258,9 +293,18 @@ def main():
     
     print("\n" + "=" * 60)
     print("[Done] Visualizations saved to:")
-    print(f"  {OUT_DIR}")
+    print(f"  {out_dir}")
     print("=" * 60)
 
 
 if __name__ == "__main__":
+    # CLI override for dataset
+    if "--dataset" in sys.argv:
+        idx = sys.argv.index("--dataset")
+        if idx + 1 < len(sys.argv):
+            DATASET = sys.argv[idx + 1].lower()
+            if DATASET not in DATASET_CONFIGS:
+                print(f"[Error] Unknown dataset: {DATASET}")
+                print(f"  Available: {list(DATASET_CONFIGS.keys())}")
+                sys.exit(1)
     main()
