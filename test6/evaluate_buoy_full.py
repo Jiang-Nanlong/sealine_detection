@@ -310,18 +310,56 @@ def edge_y_error(rho: float, theta_deg: float, rho_gt: float, theta_gt_deg: floa
 
 def compute_VE(rho: float, theta_deg: float, rho_gt: float, theta_gt_deg: float, 
                w: int, h: int) -> float:
-    """Compute Vertical Error at center column (signed)."""
+    """
+    Vertical Error (VE): 在图像中心列 xc = (W-1)/2 处，预测线与GT线的y值差
+    返回带符号的 Δy（用于计算 std），取 abs 得到 VE
+    """
+    xc = (w - 1.0) / 2.0
     cx, cy = w / 2.0, h / 2.0
-    y_pred = edge_y_at_x(rho, theta_deg, cx, cx, cy)
-    y_gt = edge_y_at_x(rho_gt, theta_gt_deg, cx, cx, cy)
+    y_pred = edge_y_at_x(rho, theta_deg, xc, cx, cy)
+    y_gt = edge_y_at_x(rho_gt, theta_gt_deg, xc, cx, cy)
     if math.isnan(y_pred) or math.isnan(y_gt):
         return float('nan')
-    return y_pred - y_gt  # signed
+    return y_pred - y_gt  # 带符号
 
 
-def compute_AE(theta_deg: float, theta_gt_deg: float) -> float:
-    """Compute Angular Error (signed)."""
-    return theta_deg - theta_gt_deg  # signed
+def compute_AE(rho: float, theta_deg: float, rho_gt: float, theta_gt_deg: float,
+               w: int, h: int) -> float:
+    """
+    Angular Error (AE): 预测线与GT线的角度差
+    使用端点计算角度: α = arctan2(y2-y1, x2-x1) * 180/π
+    返回带符号的 Δα（用于计算 std），取 abs + wrap 得到 AE
+    """
+    cx, cy = w / 2.0, h / 2.0
+    ypl = edge_y_at_x(rho, theta_deg, 0.0, cx, cy)
+    ypr = edge_y_at_x(rho, theta_deg, w - 1.0, cx, cy)
+    if math.isnan(ypl) or math.isnan(ypr):
+        return float('nan')
+    alpha_pred = math.degrees(math.atan2(ypr - ypl, (w - 1.0)))
+
+    ygl = edge_y_at_x(rho_gt, theta_gt_deg, 0.0, cx, cy)
+    ygr = edge_y_at_x(rho_gt, theta_gt_deg, w - 1.0, cx, cy)
+    if math.isnan(ygl) or math.isnan(ygr):
+        return float('nan')
+    alpha_gt = math.degrees(math.atan2(ygr - ygl, (w - 1.0)))
+
+    return float(alpha_pred - alpha_gt)  # 带符号
+
+
+def wrap_ae(da: float) -> float:
+    """将角度差 wrap 到 [-90, 90]: da_w = ((da + 90) % 180) - 90"""
+    if math.isnan(da):
+        return float('nan')
+    return ((da + 90.0) % 180.0) - 90.0
+
+
+def safe_std(arr: np.ndarray, ddof: int = 1) -> float:
+    """安全计算标准差，样本数<=1时返回0.0"""
+    arr = np.asarray(arr, dtype=np.float64)
+    valid = arr[np.isfinite(arr)]
+    if len(valid) <= 1:
+        return 0.0
+    return float(np.std(valid, ddof=ddof))
 
 
 # ============================
@@ -571,7 +609,8 @@ def main():
                 ld_c = mean_point_to_line_distance(rho_c, theta_c, rho_gt, theta_gt, UNET_W, UNET_H)
                 ey_c = edge_y_error(rho_c, theta_c, rho_gt, theta_gt, UNET_W, UNET_H)
                 ve_c = compute_VE(rho_c, theta_c, rho_gt, theta_gt, UNET_W, UNET_H)
-                ae_c = compute_AE(theta_c, theta_gt)
+                ae_c = compute_AE(rho_c, theta_c, rho_gt, theta_gt, UNET_W, UNET_H)
+                ae_c_w = wrap_ae(ae_c)  # wrap to [-90, 90]
                 
                 if not math.isnan(ld_c):
                     line_dist_cnn.append(ld_c)
@@ -579,10 +618,11 @@ def main():
                     edgey_cnn.append(ey_c)
                 if not math.isnan(ve_c):
                     ve_signed_cnn.append(ve_c)
+                if not math.isnan(ae_c_w):
+                    ae_signed_cnn.append(ae_c_w)  # 已 wrap 到 [-90, 90]
                 
                 rho_err_cnn.append(rho_abs_c)
                 theta_err_cnn.append(theta_abs_c)
-                ae_signed_cnn.append(ae_c)
                 
                 # Final metrics (same as CNN for now)
                 rho_f, theta_f = rho_c, theta_c
@@ -591,7 +631,7 @@ def main():
                 ld_f = ld_c
                 ey_f = ey_c
                 ve_f = ve_c
-                ae_f = ae_c
+                ae_f_w = ae_c_w  # 已 wrap
                 
                 rho_err_final.append(rho_abs_f)
                 theta_err_final.append(theta_abs_f)
@@ -601,7 +641,8 @@ def main():
                     edgey_final.append(ey_f)
                 if not math.isnan(ve_f):
                     ve_signed_final.append(ve_f)
-                ae_signed_final.append(ae_f)
+                if not math.isnan(ae_f_w):
+                    ae_signed_final.append(ae_f_w)
                 
                 # Per-sample record
                 rows.append({
@@ -619,7 +660,7 @@ def main():
                     "line_dist_unet": float(ld_f) if not math.isnan(ld_f) else None,
                     "edgey_unet": float(ey_f) if not math.isnan(ey_f) else None,
                     "VE_unet": float(ve_f) if not math.isnan(ve_f) else None,
-                    "AE_deg": float(ae_f),
+                    "AE_deg": float(ae_f_w) if not math.isnan(ae_f_w) else None,
                     "rho_err_orig": float(rho_abs_f * scale_diag),
                     "line_dist_orig": float(ld_f * scale_diag) if not math.isnan(ld_f) else None,
                     "edgey_orig": float(ey_f * scale_y) if not math.isnan(ey_f) else None,
@@ -644,15 +685,12 @@ def main():
     ve_signed_final = np.array(ve_signed_final, dtype=np.float64)
     ae_signed_final = np.array(ae_signed_final, dtype=np.float64)
 
-    # AE wrap
-    ae_signed_cnn_w = wrap_signed_angle_diff(ae_signed_cnn, 180.0)
-    ae_signed_final_w = wrap_signed_angle_diff(ae_signed_final, 180.0)
-
+    # ae_signed_cnn/ae_signed_final 已在采样时通过 wrap_ae 处理到 [-90, 90]
     # Absolute values
     ve_abs_cnn = np.abs(ve_signed_cnn)
-    ae_abs_cnn = np.abs(ae_signed_cnn_w)
+    ae_abs_cnn = np.abs(ae_signed_cnn)
     ve_abs_final = np.abs(ve_signed_final)
-    ae_abs_final = np.abs(ae_signed_final_w)
+    ae_abs_final = np.abs(ae_signed_final)
 
     # Print summaries
     print("\n" + "=" * 70)
@@ -688,8 +726,8 @@ def main():
     print("=" * 60)
     ve_orig_f = ve_abs_final * scale_y
     ve_signed_orig_f = ve_signed_final * scale_y
-    print(f"VE (px):  {np.mean(ve_orig_f):.2f} ± {np.std(ve_signed_orig_f, ddof=1):.2f}")
-    print(f"AE (deg): {np.mean(ae_abs_final):.2f} ± {np.std(ae_signed_final_w, ddof=1):.2f}")
+    print(f"VE (px):  {np.mean(ve_orig_f):.2f} ± {safe_std(ve_signed_orig_f):.2f}")
+    print(f"AE (deg): {np.mean(ae_abs_final):.2f} ± {safe_std(ae_signed_final):.2f}")
     print(f"EdgeY (px): {np.mean(edgey_final * scale_y):.2f}")
     print(f"LineDist (px): {np.mean(line_dist_final * scale_diag):.2f}")
     print("=" * 60)
@@ -710,6 +748,28 @@ def main():
     print(f"AE <=1°: {pct_le(ae_abs_final, 1.0):.2f}% | <=2°: {pct_le(ae_abs_final, 2.0):.2f}% | <=5°: {pct_le(ae_abs_final, 5.0):.2f}%")
     print("")
 
+    # ============================================================
+    # 论文对齐小表 (CNN-only, mean ± std, orig-scale)
+    # ============================================================
+    print("=" * 60)
+    print("论文对齐小表 (CNN-only, mean ± std, orig-scale)")
+    print("=" * 60)
+    ve_abs_cnn_orig = ve_abs_cnn * scale_y
+    ve_signed_cnn_orig = ve_signed_cnn * scale_y
+    VE_mean_cnn = float(np.mean(ve_abs_cnn_orig)) if len(ve_abs_cnn_orig) > 0 else 0.0
+    SVE_cnn = safe_std(ve_signed_cnn_orig)
+    P95_VE_cnn = float(np.percentile(ve_abs_cnn_orig, 95)) if len(ve_abs_cnn_orig) > 0 else 0.0
+    AE_mean_cnn = float(np.mean(ae_abs_cnn)) if len(ae_abs_cnn) > 0 else 0.0
+    SA_cnn = safe_std(ae_signed_cnn)
+    P95_AE_cnn = float(np.percentile(ae_abs_cnn, 95)) if len(ae_abs_cnn) > 0 else 0.0
+    print(f"VE (px):  {VE_mean_cnn:.2f} ± {SVE_cnn:.2f}    P95: {P95_VE_cnn:.2f}")
+    print(f"AE (deg): {AE_mean_cnn:.2f} ± {SA_cnn:.2f}     P95: {P95_AE_cnn:.2f}")
+    print("---- Hit-Rate (CNN-only, orig-scale) ----")
+    print(f"VE <=5px: {pct_le(ve_abs_cnn_orig, 5.0):.2f}% | <=10px: {pct_le(ve_abs_cnn_orig, 10.0):.2f}% | <=20px: {pct_le(ve_abs_cnn_orig, 20.0):.2f}%")
+    print(f"AE <=1°:  {pct_le(ae_abs_cnn, 1.0):.2f}% | <=2°:  {pct_le(ae_abs_cnn, 2.0):.2f}% | <=5°:  {pct_le(ae_abs_cnn, 5.0):.2f}%")
+    print("=" * 60)
+    print("")
+
     # Save CSV
     if rows:
         with open(OUT_CSV, "w", newline="", encoding="utf-8") as f:
@@ -724,9 +784,9 @@ def main():
         "dataset": "Buoy",
         "n_samples": len(rows),
         "VE_mean_px": float(np.mean(ve_orig_f)),
-        "VE_std_px": float(np.std(ve_signed_orig_f, ddof=1)),
+        "VE_std_px": safe_std(ve_signed_orig_f),
         "AE_mean_deg": float(np.mean(ae_abs_final)),
-        "AE_std_deg": float(np.std(ae_signed_final_w, ddof=1)),
+        "AE_std_deg": safe_std(ae_signed_final),
         "EdgeY_mean_px": float(np.mean(edgey_final * scale_y)),
         "LineDist_mean_px": float(np.mean(line_dist_final * scale_diag)),
         "Theta_le1deg_pct": pct_le(theta_err_final, 1.0),

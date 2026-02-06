@@ -414,6 +414,22 @@ def wrap_signed_angle_diff(da: np.ndarray, period: float = 180.0) -> np.ndarray:
     return (da + period / 2.0) % period - period / 2.0
 
 
+def wrap_ae(da: float) -> float:
+    """将角度差 wrap 到 [-90, 90]: da_w = ((da + 90) % 180) - 90"""
+    if math.isnan(da):
+        return float('nan')
+    return ((da + 90.0) % 180.0) - 90.0
+
+
+def safe_std(arr: np.ndarray, ddof: int = 1) -> float:
+    """安全计算标准差，样本数<=1时返回0.0"""
+    arr = np.asarray(arr, dtype=np.float64)
+    valid = arr[np.isfinite(arr)]
+    if len(valid) <= 1:
+        return 0.0
+    return float(np.std(valid, ddof=ddof))
+
+
 def compute_line_endpoints(rho: float, theta_deg: float, w: int, h: int) -> Tuple[float, float, float, float]:
     """
     从 (rho, theta) 计算直线在图像左右边界的端点
@@ -1363,6 +1379,30 @@ def main():
     ve_orig_final = ve_abs_final * scale_y
     print(f"VE <=5px: {pct_le(ve_orig_final, 5.0):.2f}% | <=10px: {pct_le(ve_orig_final, 10.0):.2f}% | <=20px: {pct_le(ve_orig_final, 20.0):.2f}%")
     print(f"AE <=1°: {pct_le(ae_abs_final, 1.0):.2f}% | <=2°: {pct_le(ae_abs_final, 2.0):.2f}% | <=5°: {pct_le(ae_abs_final, 5.0):.2f}%")
+    print("")
+
+    # ============================================================
+    # 论文对齐小表 (CNN-only, mean ± std, orig-scale)
+    # ============================================================
+    print("=" * 60)
+    print("论文对齐小表 (CNN-only, mean ± std, orig-scale)")
+    print("=" * 60)
+    ve_abs_cnn_orig = ve_abs_cnn * scale_y
+    ve_signed_cnn_orig = ve_signed_cnn * scale_y
+    ae_signed_cnn_w = wrap_signed_angle_diff(ae_signed_cnn, 180.0)  # wrap to [-90, 90]
+    ae_abs_cnn_w = np.abs(ae_signed_cnn_w)
+    VE_mean_cnn = float(np.mean(ve_abs_cnn_orig)) if len(ve_abs_cnn_orig) > 0 else 0.0
+    SVE_cnn = safe_std(ve_signed_cnn_orig)
+    P95_VE_cnn = float(np.percentile(ve_abs_cnn_orig, 95)) if len(ve_abs_cnn_orig) > 0 else 0.0
+    AE_mean_cnn = float(np.mean(ae_abs_cnn_w)) if len(ae_abs_cnn_w) > 0 else 0.0
+    SA_cnn = safe_std(ae_signed_cnn_w)
+    P95_AE_cnn = float(np.percentile(ae_abs_cnn_w, 95)) if len(ae_abs_cnn_w) > 0 else 0.0
+    print(f"VE (px):  {VE_mean_cnn:.2f} ± {SVE_cnn:.2f}    P95: {P95_VE_cnn:.2f}")
+    print(f"AE (deg): {AE_mean_cnn:.2f} ± {SA_cnn:.2f}     P95: {P95_AE_cnn:.2f}")
+    print("---- Hit-Rate (CNN-only, orig-scale) ----")
+    print(f"VE <=5px: {pct_le(ve_abs_cnn_orig, 5.0):.2f}% | <=10px: {pct_le(ve_abs_cnn_orig, 10.0):.2f}% | <=20px: {pct_le(ve_abs_cnn_orig, 20.0):.2f}%")
+    print(f"AE <=1°:  {pct_le(ae_abs_cnn_w, 1.0):.2f}% | <=2°:  {pct_le(ae_abs_cnn_w, 2.0):.2f}% | <=5°:  {pct_le(ae_abs_cnn_w, 5.0):.2f}%")
+    print("=" * 60)
     print("")
 
     # ---- Top-K subset summary (if enabled) ----
