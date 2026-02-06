@@ -32,6 +32,12 @@ TEST5_DIR = PROJECT_ROOT / "test5"
 DATASET = "musid"
 # ============================
 
+# 命令行参数覆盖 (支持 run_experiment5.py 一键调用)
+if "--dataset" in sys.argv:
+    _idx = sys.argv.index("--dataset")
+    if _idx + 1 < len(sys.argv):
+        DATASET = sys.argv[_idx + 1]
+
 # 数据集配置
 DATASET_CONFIGS = {
     "musid": {

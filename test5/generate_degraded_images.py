@@ -50,6 +50,12 @@ GLOBAL_SEED = 42  # 全局种子基数
 DATASET = "musid"
 # ============================
 
+# 命令行参数覆盖 (支持 run_experiment5.py 一键调用)
+if "--dataset" in sys.argv:
+    _idx = sys.argv.index("--dataset")
+    if _idx + 1 < len(sys.argv):
+        DATASET = sys.argv[_idx + 1]
+
 # ----------------------------
 # Config
 # ----------------------------

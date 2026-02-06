@@ -42,6 +42,12 @@ SELECTED_DEGRADATIONS = None  # 或 ["gaussian_noise_15", "low_light_2.0"]
 DATASET = "musid"
 # ============================
 
+# 命令行参数覆盖 (支持 run_experiment5.py 一键调用)
+if "--dataset" in sys.argv:
+    _idx = sys.argv.index("--dataset")
+    if _idx + 1 < len(sys.argv):
+        DATASET = sys.argv[_idx + 1]
+
 # ----------------------------
 # Config
 # ----------------------------

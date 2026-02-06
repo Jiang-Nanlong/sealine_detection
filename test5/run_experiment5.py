@@ -76,7 +76,7 @@ DATASET_CONFIGS = {
 }
 
 
-def run_script(script_path, description):
+def run_script(script_path, description, pass_dataset=True):
     """Run a Python script and check for errors."""
     print("\n" + "=" * 60)
     print(f"[Step] {description}")
@@ -84,6 +84,8 @@ def run_script(script_path, description):
     print("=" * 60 + "\n")
     
     cmd = [sys.executable, str(script_path)]
+    if pass_dataset:
+        cmd.extend(["--dataset", DATASET])
     result = subprocess.run(cmd, cwd=str(PROJECT_ROOT))
     
     if result.returncode != 0:
@@ -133,11 +135,7 @@ def main():
     print(f"  SKIP_GENERATE = {SKIP_GENERATE}")
     print(f"  SKIP_CACHE    = {SKIP_CACHE}")
     print(f"  SKIP_VIS      = {SKIP_VIS}")
-    print(f"\n[Important] 请确保以下脚本中的 DATASET 变量也设置为 '{DATASET}':")
-    print(f"  - generate_degraded_images.py")
-    print(f"  - make_fusion_cache_degraded.py")
-    print(f"  - evaluate_degraded.py")
-    print(f"  - summarize_degraded_results.py")
+    print(f"\n[Info] 将自动传递 --dataset {DATASET} 给所有子脚本")
     
     # Check prerequisites
     issues = check_prerequisites()
@@ -189,7 +187,8 @@ def main():
         print("\n[Skip] Visualization (SKIP_VIS=True)")
     else:
         script = TEST5_DIR / "visualize_degraded.py"
-        if not run_script(script, "Visualize degraded predictions"):
+        # visualize_degraded.py 可能不支持 --dataset，用 pass_dataset=False
+        if not run_script(script, "Visualize degraded predictions", pass_dataset=False):
             print("[Warning] Visualization failed, continuing...")
     
     # Final summary
