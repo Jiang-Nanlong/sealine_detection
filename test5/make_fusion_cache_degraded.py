@@ -38,15 +38,54 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 DEVICE_TYPE = "cuda" if torch.cuda.is_available() else "cpu"
 # 选择要处理的退化类型，None 表示处理全部
 SELECTED_DEGRADATIONS = None  # 或 ["gaussian_noise_15", "low_light_2.0"]
+# 选择数据集: "musid", "smd", "buoy"
+DATASET = "musid"
 # ============================
 
 # ----------------------------
 # Config
 # ----------------------------
 TEST5_DIR = PROJECT_ROOT / "test5"
+TEST4_DIR = PROJECT_ROOT / "test4"
+TEST6_DIR = PROJECT_ROOT / "test6"
+
+# 数据集配置
+DATASET_CONFIGS = {
+    "musid": {
+        "degraded_img_dir": TEST5_DIR / "degraded_images",
+        "gt_csv": PROJECT_ROOT / "splits_musid" / "GroundTruth_test.csv",
+        "split_dir": PROJECT_ROOT / "splits_musid",
+        "has_header": False,
+        "use_indices": False,
+        "cache_root": TEST5_DIR / "FusionCache_Degraded",
+        "rghnet_ckpt": str(PROJECT_ROOT / "weights" / "rghnet_best_c2.pth"),
+        "col_names": ["img_stem", "x1", "y1", "x2", "y2", "mx", "my", "theta"],
+    },
+    "smd": {
+        "degraded_img_dir": TEST5_DIR / "degraded_images_smd",
+        "gt_csv": TEST4_DIR / "manual_review" / "SMD_GroundTruth_filtered.csv",
+        "split_dir": TEST6_DIR / "splits_smd",
+        "has_header": True,
+        "use_indices": True,
+        "cache_root": TEST5_DIR / "FusionCache_Degraded_SMD",
+        "rghnet_ckpt": str(TEST6_DIR / "weights_smd" / "smd_rghnet_best_seg_c2.pth"),
+        "col_names": ["img_name", "x1", "y1", "x2", "y2"],
+    },
+    "buoy": {
+        "degraded_img_dir": TEST5_DIR / "degraded_images_buoy",
+        "gt_csv": TEST4_DIR / "Buoy_GroundTruth.csv",
+        "split_dir": TEST6_DIR / "splits_buoy",
+        "has_header": True,
+        "use_indices": True,
+        "cache_root": TEST5_DIR / "FusionCache_Degraded_Buoy",
+        "rghnet_ckpt": str(TEST6_DIR / "weights_buoy" / "buoy_rghnet_best_seg_c2.pth"),
+        "col_names": ["img_name", "x1", "y1", "x2", "y2", "video"],
+    },
+}
+
+# Legacy compatibility
 DEGRADED_IMG_DIR = TEST5_DIR / "degraded_images"
 SPLITS_DIR = PROJECT_ROOT / "splits_musid"
-
 CACHE_ROOT = TEST5_DIR / "FusionCache_Degraded"
 
 # MU-SID trained weights
@@ -74,11 +113,30 @@ def ensure_dir(p):
 
 
 def load_gt_csv():
-    """Load GroundTruth_test.csv as DataFrame."""
-    gt_csv = SPLITS_DIR / "GroundTruth_test.csv"
-    # CSV 无 header: img_stem, x1, y1, x2, y2, mx, my, theta
-    df = pd.read_csv(gt_csv, header=None)
-    df.columns = ["img_stem", "x1", "y1", "x2", "y2", "mx", "my", "theta"]
+    """Load ground truth CSV as DataFrame for current dataset."""
+    cfg = DATASET_CONFIGS[DATASET]
+    gt_csv = cfg["gt_csv"]
+    has_header = cfg["has_header"]
+    col_names = cfg["col_names"]
+    use_indices = cfg.get("use_indices", False)
+    
+    # Load CSV
+    if has_header:
+        df = pd.read_csv(gt_csv)
+        # Rename first column to img_stem for consistency
+        df = df.rename(columns={df.columns[0]: "img_stem"})
+    else:
+        df = pd.read_csv(gt_csv, header=None)
+        df.columns = col_names
+    
+    # Filter by test indices if needed
+    if use_indices:
+        split_dir = cfg["split_dir"]
+        indices_path = split_dir / "test_indices.npy"
+        if indices_path.exists():
+            test_indices = np.load(indices_path).astype(int).tolist()
+            df = df.iloc[test_indices].reset_index(drop=True)
+    
     return df
 
 
@@ -262,16 +320,22 @@ def build_cache_for_degradation(df, deg_folder, out_dir, model, detector, theta_
 
 
 def main():
+    cfg = DATASET_CONFIGS[DATASET]
+    degraded_img_dir = cfg["degraded_img_dir"]
+    cache_root = cfg["cache_root"]
+    rghnet_ckpt = cfg["rghnet_ckpt"]
+    
     print("=" * 60)
     print("Experiment 5: Build FusionCache for Degraded Images")
+    print(f"Dataset: {DATASET.upper()}")
     print("=" * 60)
     
     # Load model
     print(f"\n[Device] {DEVICE}")
-    print("[Load] UNet (RestorationGuidedHorizonNet)...")
+    print(f"[Load] UNet (RestorationGuidedHorizonNet) from {rghnet_ckpt}...")
     
     model = RestorationGuidedHorizonNet(num_classes=2, dce_weights_path=DCE_WEIGHTS).to(DEVICE)
-    model.load_state_dict(torch.load(RGHNET_CKPT, map_location=DEVICE, weights_only=False), strict=False)
+    model.load_state_dict(torch.load(rghnet_ckpt, map_location=DEVICE, weights_only=False), strict=False)
     model.eval()
     
     print("[Load] Radon Transform (TextureSuppressedMuSCoWERT)...")
@@ -279,17 +343,17 @@ def main():
     theta_scan = np.linspace(0.0, 180.0, RESIZE_W, endpoint=False)
     
     # Load ground truth
-    print("[Load] GroundTruth_test.csv...")
+    print(f"[Load] Ground truth for {DATASET}...")
     df = load_gt_csv()
     print(f"  -> {len(df)} test images")
     
     # Get degradation folders
-    if not DEGRADED_IMG_DIR.exists():
-        print(f"[Error] Degraded images not found: {DEGRADED_IMG_DIR}")
+    if not degraded_img_dir.exists():
+        print(f"[Error] Degraded images not found: {degraded_img_dir}")
         print("Please run generate_degraded_images.py first")
         sys.exit(1)
     
-    deg_folders = sorted([d for d in DEGRADED_IMG_DIR.iterdir() if d.is_dir()])
+    deg_folders = sorted([d for d in degraded_img_dir.iterdir() if d.is_dir()])
     
     if SELECTED_DEGRADATIONS:
         deg_folders = [d for d in deg_folders if d.name in SELECTED_DEGRADATIONS]
@@ -298,14 +362,14 @@ def main():
     for d in deg_folders:
         print(f"  - {d.name}")
     
-    ensure_dir(CACHE_ROOT)
+    ensure_dir(cache_root)
     
     # Build cache for each degradation
     total_processed = 0
     total_skipped = 0
     
     for deg_folder in deg_folders:
-        out_dir = CACHE_ROOT / deg_folder.name
+        out_dir = cache_root / deg_folder.name
         processed, skipped = build_cache_for_degradation(
             df, deg_folder, str(out_dir), model, detector, theta_scan
         )
@@ -315,7 +379,7 @@ def main():
     
     print("\n" + "=" * 60)
     print("[Done] FusionCache for degraded images saved to:")
-    print(f"  {CACHE_ROOT}")
+    print(f"  {cache_root}")
     print(f"\nTotal: {total_processed} cached, {total_skipped} skipped")
     print("=" * 60)
 

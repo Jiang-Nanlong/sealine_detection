@@ -25,10 +25,31 @@ import pandas as pd
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TEST5_DIR = PROJECT_ROOT / "test5"
 
-# Input
-EVAL_CSV = TEST5_DIR / "eval_results" / "degradation_results.csv"
+# ============================
+# PyCharm 配置区 (在这里修改)
+# ============================
+# 选择数据集: "musid", "smd", "buoy"
+DATASET = "musid"
+# ============================
 
-# Output
+# 数据集配置
+DATASET_CONFIGS = {
+    "musid": {
+        "eval_csv": TEST5_DIR / "eval_results" / "degradation_results.csv",
+        "out_dir": TEST5_DIR / "experiment5_results",
+    },
+    "smd": {
+        "eval_csv": TEST5_DIR / "eval_results_smd" / "degradation_results.csv",
+        "out_dir": TEST5_DIR / "experiment5_results_smd",
+    },
+    "buoy": {
+        "eval_csv": TEST5_DIR / "eval_results_buoy" / "degradation_results.csv",
+        "out_dir": TEST5_DIR / "experiment5_results_buoy",
+    },
+}
+
+# Legacy compatibility
+EVAL_CSV = TEST5_DIR / "eval_results" / "degradation_results.csv"
 OUT_DIR = TEST5_DIR / "experiment5_results"
 SUMMARY_MD = OUT_DIR / "summary_table.md"
 SUMMARY_LATEX = OUT_DIR / "summary_table.tex"
@@ -235,19 +256,26 @@ def generate_latex(df: pd.DataFrame) -> str:
 
 
 def main():
+    cfg = DATASET_CONFIGS[DATASET]
+    eval_csv = cfg["eval_csv"]
+    out_dir = cfg["out_dir"]
+    summary_md = out_dir / "summary_table.md"
+    summary_latex = out_dir / "summary_table.tex"
+    
     print("=" * 60)
     print("Experiment 5: Generate Summary Tables")
+    print(f"Dataset: {DATASET.upper()}")
     print("=" * 60)
     
-    if not EVAL_CSV.exists():
-        print(f"[Error] Results file not found: {EVAL_CSV}")
+    if not eval_csv.exists():
+        print(f"[Error] Results file not found: {eval_csv}")
         print("Please run evaluate_degraded.py first")
         sys.exit(1)
     
-    ensure_dir(OUT_DIR)
+    ensure_dir(out_dir)
     
     # Load results
-    df = pd.read_csv(EVAL_CSV)
+    df = pd.read_csv(eval_csv)
     print(f"\n[Load] {len(df)} degradation results")
     
     # Sort by degradation type
@@ -257,15 +285,15 @@ def main():
     
     # Generate markdown
     md_content = generate_markdown(df)
-    with open(SUMMARY_MD, "w", encoding="utf-8") as f:
+    with open(summary_md, "w", encoding="utf-8") as f:
         f.write(md_content)
-    print(f"[Saved] Markdown -> {SUMMARY_MD}")
+    print(f"[Saved] Markdown -> {summary_md}")
     
     # Generate LaTeX
     latex_content = generate_latex(df)
-    with open(SUMMARY_LATEX, "w", encoding="utf-8") as f:
+    with open(summary_latex, "w", encoding="utf-8") as f:
         f.write(latex_content)
-    print(f"[Saved] LaTeX -> {SUMMARY_LATEX}")
+    print(f"[Saved] LaTeX -> {summary_latex}")
     
     # Print to console
     print("\n" + "=" * 60)

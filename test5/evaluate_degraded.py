@@ -38,12 +38,42 @@ from cnn_model import HorizonResNet
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 BATCH_SIZE = 64
 NUM_WORKERS = 0
+# 选择数据集: "musid", "smd", "buoy"
+DATASET = "musid"
 # ============================
 
 # ----------------------------
 # Config
 # ----------------------------
 TEST5_DIR = PROJECT_ROOT / "test5"
+TEST6_DIR = PROJECT_ROOT / "test6"
+
+# 数据集配置
+DATASET_CONFIGS = {
+    "musid": {
+        "cache_root": TEST5_DIR / "FusionCache_Degraded",
+        "weights_path": PROJECT_ROOT / "weights" / "best_fusion_cnn_1024x576.pth",
+        "out_dir": TEST5_DIR / "eval_results",
+        "orig_w": 1920,
+        "orig_h": 1080,
+    },
+    "smd": {
+        "cache_root": TEST5_DIR / "FusionCache_Degraded_SMD",
+        "weights_path": TEST6_DIR / "weights" / "best_fusion_cnn_smd.pth",
+        "out_dir": TEST5_DIR / "eval_results_smd",
+        "orig_w": 1920,
+        "orig_h": 1080,
+    },
+    "buoy": {
+        "cache_root": TEST5_DIR / "FusionCache_Degraded_Buoy",
+        "weights_path": TEST6_DIR / "weights" / "best_fusion_cnn_buoy.pth",
+        "out_dir": TEST5_DIR / "eval_results_buoy",
+        "orig_w": 800,
+        "orig_h": 600,
+    },
+}
+
+# Legacy compatibility
 CACHE_ROOT = TEST5_DIR / "FusionCache_Degraded"
 WEIGHTS_PATH = PROJECT_ROOT / "weights" / "best_fusion_cnn_1024x576.pth"
 OUT_DIR = TEST5_DIR / "eval_results"
@@ -150,19 +180,28 @@ def evaluate_single(model, dataloader, cfg: DenormConfig, device: str):
 
 
 def main():
+    cfg_ds = DATASET_CONFIGS[DATASET]
+    cache_root = cfg_ds["cache_root"]
+    weights_path = cfg_ds["weights_path"]
+    out_dir = cfg_ds["out_dir"]
+    
     print("=" * 60)
     print("Experiment 5: Evaluate Degraded Images")
+    print(f"Dataset: {DATASET.upper()}")
     print("=" * 60)
     
-    ensure_dir(OUT_DIR)
-    cfg = DenormConfig()
+    ensure_dir(out_dir)
+    cfg = DenormConfig(
+        unet_w=UNET_W, unet_h=UNET_H, resize_h=RESIZE_H,
+        orig_w=cfg_ds["orig_w"], orig_h=cfg_ds["orig_h"]
+    )
     
     # Load model
     print(f"\n[Device] {DEVICE}")
-    print(f"[Load] Fusion-CNN: {WEIGHTS_PATH}")
+    print(f"[Load] Fusion-CNN: {weights_path}")
     
     model = HorizonResNet(in_channels=4, img_h=RESIZE_H, img_w=180).to(DEVICE)
-    ckpt = torch.load(WEIGHTS_PATH, map_location=DEVICE, weights_only=False)
+    ckpt = torch.load(weights_path, map_location=DEVICE, weights_only=False)
     if isinstance(ckpt, dict) and "state_dict" in ckpt:
         model.load_state_dict(ckpt["state_dict"], strict=True)
     else:
@@ -170,15 +209,17 @@ def main():
     model.eval()
     
     # Get degradation folders
-    if not CACHE_ROOT.exists():
-        print(f"[Error] Cache not found: {CACHE_ROOT}")
+    if not cache_root.exists():
+        print(f"[Error] Cache not found: {cache_root}")
         print("Please run make_fusion_cache_degraded.py first")
         sys.exit(1)
     
-    deg_folders = sorted([d for d in CACHE_ROOT.iterdir() if d.is_dir()])
+    deg_folders = sorted([d for d in cache_root.iterdir() if d.is_dir()])
     print(f"\n[Evaluate] {len(deg_folders)} degradation types")
     
     results = []
+    clean_metrics = None
+    degraded_metrics_list = []
     
     for deg_folder in deg_folders:
         deg_name = deg_folder.name
@@ -200,12 +241,37 @@ def main():
         metrics["degradation"] = deg_name
         results.append(metrics)
         
+        if deg_name == "clean":
+            clean_metrics = metrics
+        else:
+            degraded_metrics_list.append(metrics)
+        
         print(f"\n[{deg_name}] N={metrics['n']}")
-        print(f"  ρ: mean={metrics['rho_mean']:.2f}px, ≤10px={metrics['rho_le_10']:.1f}%")
-        print(f"  θ: mean={metrics['theta_mean']:.3f}°, ≤2°={metrics['theta_le_2']:.1f}%")
+        print(f"  ρ: mean={metrics['rho_mean']:.2f}px, ≤5px={metrics['rho_le_5']:.1f}%, ≤10px={metrics['rho_le_10']:.1f}%, ≤20px={metrics['rho_le_20']:.1f}%")
+        print(f"  θ: mean={metrics['theta_mean']:.3f}°, ≤1°={metrics['theta_le_1']:.1f}%, ≤2°={metrics['theta_le_2']:.1f}%")
+    
+    # Print clean vs degraded comparison
+    if clean_metrics and degraded_metrics_list:
+        print("\n" + "=" * 60)
+        print("[Drop] Clean vs Degraded (Average)")
+        print("=" * 60)
+        
+        avg_rho = np.mean([m["rho_mean"] for m in degraded_metrics_list])
+        avg_theta = np.mean([m["theta_mean"] for m in degraded_metrics_list])
+        
+        rho_c = clean_metrics["rho_mean"]
+        theta_c = clean_metrics["theta_mean"]
+        
+        d_rho = avg_rho - rho_c
+        d_theta = avg_theta - theta_c
+        pct_rho = (d_rho / rho_c * 100) if rho_c > 0 else 0
+        pct_theta = (d_theta / theta_c * 100) if theta_c > 0 else 0
+        
+        print(f"[Drop] rho_mean: {rho_c:.2f} -> {avg_rho:.2f} ({d_rho:+.2f}, {pct_rho:+.1f}%)")
+        print(f"[Drop] theta_mean: {theta_c:.3f} -> {avg_theta:.3f} ({d_theta:+.3f}, {pct_theta:+.1f}%)")
     
     # Save detailed results
-    out_csv = OUT_DIR / "degradation_results.csv"
+    out_csv = out_dir / "degradation_results.csv"
     if results:
         with open(out_csv, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=list(results[0].keys()))

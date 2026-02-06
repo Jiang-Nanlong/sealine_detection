@@ -46,13 +46,49 @@ if str(PROJECT_ROOT) not in sys.path:
 # PyCharm 配置区 (在这里修改)
 # ============================
 GLOBAL_SEED = 42  # 全局种子基数
+# 选择数据集: "musid", "smd", "buoy"
+DATASET = "musid"
 # ============================
 
 # ----------------------------
 # Config
 # ----------------------------
 TEST5_DIR = PROJECT_ROOT / "test5"
-# 注意：测试图片在 MU-SID 目录，不是 clear 目录
+TEST4_DIR = PROJECT_ROOT / "test4"
+TEST6_DIR = PROJECT_ROOT / "test6"
+
+# 数据集配置
+DATASET_CONFIGS = {
+    "musid": {
+        "img_dir": PROJECT_ROOT / "Hashmani's Dataset" / "MU-SID",
+        "gt_csv": PROJECT_ROOT / "splits_musid" / "GroundTruth_test.csv",
+        "split_dir": PROJECT_ROOT / "splits_musid",
+        "has_header": False,
+        "use_indices": False,  # MU-SID 直接使用 GroundTruth_test.csv
+        "img_ext": ".JPG",
+        "out_dir": TEST5_DIR / "degraded_images",
+    },
+    "smd": {
+        "img_dir": TEST4_DIR / "manual_review" / "kept_frames",
+        "gt_csv": TEST4_DIR / "manual_review" / "SMD_GroundTruth_filtered.csv",
+        "split_dir": TEST6_DIR / "splits_smd",
+        "has_header": True,
+        "use_indices": True,  # SMD 需要 test_indices.npy 过滤
+        "img_ext": ".jpg",
+        "out_dir": TEST5_DIR / "degraded_images_smd",
+    },
+    "buoy": {
+        "img_dir": TEST4_DIR / "buoy_frames",
+        "gt_csv": TEST4_DIR / "Buoy_GroundTruth.csv",
+        "split_dir": TEST6_DIR / "splits_buoy",
+        "has_header": True,
+        "use_indices": True,  # Buoy 需要 test_indices.npy 过滤
+        "img_ext": ".jpg",
+        "out_dir": TEST5_DIR / "degraded_images_buoy",
+    },
+}
+
+# Legacy compatibility
 MUSID_IMG_DIR = PROJECT_ROOT / "Hashmani's Dataset" / "MU-SID"
 MUSID_GT_CSV = PROJECT_ROOT / "Hashmani's Dataset" / "GroundTruth.csv"
 SPLITS_DIR = PROJECT_ROOT / "splits_musid"
@@ -346,19 +382,42 @@ def apply_degradation(img, config, img_name: str, deg_name: str):
 
 
 def load_test_split():
-    """Load test split image names from GroundTruth_test.csv."""
-    test_csv = SPLITS_DIR / "GroundTruth_test.csv"
-    if not test_csv.exists():
-        raise FileNotFoundError(f"Test split file not found: {test_csv}")
+    """Load test split image names."""
+    cfg = DATASET_CONFIGS[DATASET]
+    gt_csv = cfg["gt_csv"]
+    has_header = cfg["has_header"]
+    img_ext = cfg["img_ext"]
+    use_indices = cfg.get("use_indices", False)
     
-    image_names = []
-    with open(test_csv, "r") as f:
-        for line in f:
+    if not gt_csv.exists():
+        raise FileNotFoundError(f"GT CSV file not found: {gt_csv}")
+    
+    # Load full CSV
+    all_names = []
+    with open(gt_csv, "r") as f:
+        for i, line in enumerate(f):
+            if has_header and i == 0:
+                continue  # Skip header row
             if line.strip():
-                # First column is image name (without extension)
+                # First column is image name
                 name = line.strip().split(",")[0]
-                # MU-SID 原始图片使用大写 .JPG 扩展名
-                image_names.append(f"{name}.JPG")
+                # 检查是否已经有扩展名
+                if not any(name.lower().endswith(ext) for ext in [".jpg", ".jpeg", ".png", ".bmp"]):
+                    name = f"{name}{img_ext}"
+                all_names.append(name)
+    
+    if use_indices:
+        # Filter by test_indices.npy
+        split_dir = cfg["split_dir"]
+        indices_path = split_dir / "test_indices.npy"
+        if not indices_path.exists():
+            raise FileNotFoundError(f"Test indices not found: {indices_path}")
+        test_indices = np.load(indices_path).astype(int).tolist()
+        image_names = [all_names[i] for i in test_indices if i < len(all_names)]
+    else:
+        # Use all names from CSV (MU-SID GroundTruth_test.csv)
+        image_names = all_names
+    
     return image_names
 
 
@@ -367,25 +426,30 @@ def main():
     # so GLOBAL_SEED is only for any legacy code that might use np.random directly
     np.random.seed(GLOBAL_SEED)
     
+    cfg = DATASET_CONFIGS[DATASET]
+    img_dir = cfg["img_dir"]
+    out_dir = cfg["out_dir"]
+    
     print("=" * 60)
     print("Experiment 5: Generate Degraded Images")
+    print(f"Dataset: {DATASET.upper()}")
     print("=" * 60)
     
     # Load test images
     test_images = load_test_split()
-    print(f"\n[Load] {len(test_images)} test images from MU-SID")
+    print(f"\n[Load] {len(test_images)} test images from {DATASET.upper()}")
     
     # Create output directories
-    ensure_dir(OUT_DIR)
+    ensure_dir(out_dir)
     
     # Also save clean images for reference
-    clean_dir = OUT_DIR / "clean"
+    clean_dir = out_dir / "clean"
     ensure_dir(clean_dir)
     
     # Copy clean images (use shutil.copy2 to preserve original, avoid re-encoding)
     print("\n[Copy] Clean images (direct file copy, no re-encoding)...")
     for img_name in tqdm(test_images, desc="Clean"):
-        src_path = MUSID_IMG_DIR / img_name
+        src_path = img_dir / img_name
         dst_path = clean_dir / img_name
         if src_path.exists():
             shutil.copy2(str(src_path), str(dst_path))
@@ -393,11 +457,11 @@ def main():
     # Generate degraded versions
     for deg_name, deg_config in DEGRADATIONS.items():
         print(f"\n[Generate] {deg_name}...")
-        deg_dir = OUT_DIR / deg_name
+        deg_dir = out_dir / deg_name
         ensure_dir(deg_dir)
         
         for img_name in tqdm(test_images, desc=deg_name):
-            src_path = MUSID_IMG_DIR / img_name
+            src_path = img_dir / img_name
             if not src_path.exists():
                 continue
             
@@ -408,7 +472,7 @@ def main():
     
     print("\n" + "=" * 60)
     print("[Done] Degraded images saved to:")
-    print(f"  {OUT_DIR}")
+    print(f"  {out_dir}")
     print(f"\nGenerated {len(DEGRADATIONS)} degradation types:")
     for name in DEGRADATIONS:
         print(f"  - {name}")
