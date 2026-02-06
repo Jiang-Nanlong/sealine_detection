@@ -314,6 +314,8 @@ def build_cache_for_degradation(df, deg_folder, out_dir, model, detector, theta_
                 "label": label,
                 "img_name": f"{img_stem}.jpg",
                 "degradation": deg_name,
+                "orig_w": w_orig,
+                "orig_h": h_orig,
             },
         )
         processed += 1

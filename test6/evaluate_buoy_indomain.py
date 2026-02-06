@@ -82,8 +82,8 @@ class TestCacheDataset(Dataset):
         x = torch.from_numpy(data["input"]).float()
         y = torch.from_numpy(data["label"]).float()
         img_name = str(data.get("img_name", f"{idx}.jpg"))
-        orig_w = int(data.get("orig_w", 1920))
-        orig_h = int(data.get("orig_h", 1080))
+        orig_w = int(data.get("orig_w", 800))   # Buoy: 800x600
+        orig_h = int(data.get("orig_h", 600))
         return x, y, idx, img_name, orig_w, orig_h
 
 
