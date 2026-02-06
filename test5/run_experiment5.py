@@ -39,7 +39,19 @@ SKIP_CACHE = False      # True: 跳过缓存生成步骤
 SKIP_VIS = False        # True: 跳过可视化步骤
 # 选择数据集: "musid", "smd", "buoy"
 DATASET = "musid"
+GLOBAL_SEED = 42        # 全局种子（传递给 generate_degraded_images.py）
 # ============================
+
+# 命令行参数覆盖
+if "--dataset" in sys.argv:
+    _idx = sys.argv.index("--dataset")
+    if _idx + 1 < len(sys.argv):
+        DATASET = sys.argv[_idx + 1]
+
+if "--seed" in sys.argv:
+    _idx = sys.argv.index("--seed")
+    if _idx + 1 < len(sys.argv):
+        GLOBAL_SEED = int(sys.argv[_idx + 1])
 
 # 数据集配置
 DATASET_CONFIGS = {
@@ -76,7 +88,7 @@ DATASET_CONFIGS = {
 }
 
 
-def run_script(script_path, description, pass_dataset=True):
+def run_script(script_path, description, pass_dataset=True, pass_seed=False):
     """Run a Python script and check for errors."""
     print("\n" + "=" * 60)
     print(f"[Step] {description}")
@@ -86,6 +98,8 @@ def run_script(script_path, description, pass_dataset=True):
     cmd = [sys.executable, str(script_path)]
     if pass_dataset:
         cmd.extend(["--dataset", DATASET])
+    if pass_seed:
+        cmd.extend(["--seed", str(GLOBAL_SEED)])
     result = subprocess.run(cmd, cwd=str(PROJECT_ROOT))
     
     if result.returncode != 0:
@@ -129,13 +143,15 @@ def main():
     print("=" * 60)
     print("Experiment 5: Degradation Robustness")
     print(f"Dataset: {DATASET.upper()}")
+    print(f"[Seed] global_seed={GLOBAL_SEED}")
     print("=" * 60)
     print(f"\n[Config]")
     print(f"  DATASET       = {DATASET}")
+    print(f"  GLOBAL_SEED   = {GLOBAL_SEED}")
     print(f"  SKIP_GENERATE = {SKIP_GENERATE}")
     print(f"  SKIP_CACHE    = {SKIP_CACHE}")
     print(f"  SKIP_VIS      = {SKIP_VIS}")
-    print(f"\n[Info] 将自动传递 --dataset {DATASET} 给所有子脚本")
+    print(f"\n[Info] 将自动传递 --dataset {DATASET} --seed {GLOBAL_SEED} 给 generate_degraded_images.py")
     
     # Check prerequisites
     issues = check_prerequisites()
@@ -156,7 +172,7 @@ def main():
         print(f"\n[Skip] Degraded images already exist: {n_types} types found in {degraded_dir}")
     else:
         script = TEST5_DIR / "generate_degraded_images.py"
-        if not run_script(script, f"Generate degraded images for {DATASET.upper()}"):
+        if not run_script(script, f"Generate degraded images for {DATASET.upper()}", pass_seed=True):
             sys.exit(1)
     
     # Step 2: Build FusionCache

@@ -56,6 +56,11 @@ if "--dataset" in sys.argv:
     if _idx + 1 < len(sys.argv):
         DATASET = sys.argv[_idx + 1]
 
+if "--seed" in sys.argv:
+    _idx = sys.argv.index("--seed")
+    if _idx + 1 < len(sys.argv):
+        GLOBAL_SEED = int(sys.argv[_idx + 1])
+
 # ----------------------------
 # Config
 # ----------------------------
@@ -439,6 +444,7 @@ def main():
     print("=" * 60)
     print("Experiment 5: Generate Degraded Images")
     print(f"Dataset: {DATASET.upper()}")
+    print(f"[Seed] global_seed={GLOBAL_SEED}")
     print("=" * 60)
     
     # Load test images
@@ -463,6 +469,7 @@ def main():
     # Generate degraded versions
     for deg_name, deg_config in DEGRADATIONS.items():
         print(f"\n[Generate] {deg_name}...")
+        print(f"[Seed] degr={deg_name}, seed_mode=per-sample (global+degr+img_name)")
         deg_dir = out_dir / deg_name
         ensure_dir(deg_dir)
         
