@@ -11,8 +11,11 @@ Figure A: 3x5 qualitative visualization grid
 Figure B: Top-5 hardest degradation bar chart
   Grouped by dataset, sorted by rho_le_10 (lower = harder)
 
+Figure C: Buoy fog intensity trend (Clean -> Fog 0.3 -> Fog 0.5)
+
 Usage:
   python test5/generate_paper_figures.py [--seed 123] [--device cuda]
+  python test5/generate_paper_figures.py --mu_idx 10 --smd_idx 20 --buoy_idx 30
 
 PyCharm: 直接运行此文件，在下方配置区修改参数
 """
@@ -53,6 +56,13 @@ DEGRADATION_LABELS = ["Clean", "Fog 0.5", "Noise σ=30", "Low Light γ=2.5", "Ra
 # 数据集配置（行顺序）
 DATASET_ROWS = ["musid", "smd", "buoy"]
 DATASET_LABELS = ["MU-SID", "SMD", "Buoy"]
+
+# 手动指定样本索引（None表示自动选择）
+MANUAL_SAMPLE_IDX = {
+    "musid": None,
+    "smd": None,
+    "buoy": None,
+}
 # ============================
 
 # 命令行参数覆盖
@@ -66,6 +76,22 @@ if "--device" in sys.argv:
     if _idx + 1 < len(sys.argv):
         DEVICE = sys.argv[_idx + 1]
 
+# 手动样本索引覆盖
+if "--mu_idx" in sys.argv:
+    _idx = sys.argv.index("--mu_idx")
+    if _idx + 1 < len(sys.argv):
+        MANUAL_SAMPLE_IDX["musid"] = int(sys.argv[_idx + 1])
+
+if "--smd_idx" in sys.argv:
+    _idx = sys.argv.index("--smd_idx")
+    if _idx + 1 < len(sys.argv):
+        MANUAL_SAMPLE_IDX["smd"] = int(sys.argv[_idx + 1])
+
+if "--buoy_idx" in sys.argv:
+    _idx = sys.argv.index("--buoy_idx")
+    if _idx + 1 < len(sys.argv):
+        MANUAL_SAMPLE_IDX["buoy"] = int(sys.argv[_idx + 1])
+
 # ----------------------------
 # Config
 # ----------------------------
@@ -77,9 +103,10 @@ UNET_W = 1024
 UNET_H = 576
 RESIZE_H = 2240
 
-# Drawing config
-COLOR_GT = (0, 255, 0)      # Green for GT
-COLOR_PRED = (0, 0, 255)    # Red for Prediction
+# Drawing config - RGB format (用于 matplotlib 显示)
+# cv2.line 在 RGB 图像上绘制时，颜色需要按 RGB 顺序
+COLOR_GT_RGB = (0, 255, 0)      # Green for GT (RGB)
+COLOR_PRED_RGB = (255, 0, 0)    # Red for Prediction (RGB)
 LINE_THICKNESS = 2
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 FONT_SCALE = 0.5
@@ -169,24 +196,29 @@ def rho_theta_to_line(rho, theta_deg, w, h):
     return (x1, y1), (x2, y2)
 
 
-def draw_horizon_lines(img, rho_gt, theta_gt, rho_pred, theta_pred, cfg: DenormConfig):
-    """Draw GT and prediction lines on image (scaled to original size)."""
-    h, w = img.shape[:2]
+def draw_horizon_lines_rgb(img_rgb, rho_gt, theta_gt, rho_pred, theta_pred, cfg: DenormConfig):
+    """
+    Draw GT and prediction lines on RGB image.
+    
+    注意：img_rgb 已经是 RGB 格式（从 BGR 转换而来）
+    cv2.line 直接按通道顺序绘制，所以传入 RGB 颜色即可
+    """
+    h, w = img_rgb.shape[:2]
     
     # Scale rho from UNET space to original image space
     scale = cfg.orig_w / cfg.unet_w
     rho_gt_scaled = rho_gt * scale
     rho_pred_scaled = rho_pred * scale
     
-    # Draw GT line (green)
+    # Draw GT line (green) - 直接使用 RGB 颜色
     pt1, pt2 = rho_theta_to_line(rho_gt_scaled, theta_gt, w, h)
-    cv2.line(img, pt1, pt2, COLOR_GT, LINE_THICKNESS, cv2.LINE_AA)
+    cv2.line(img_rgb, pt1, pt2, COLOR_GT_RGB, LINE_THICKNESS, cv2.LINE_AA)
     
-    # Draw prediction line (red)
+    # Draw prediction line (red) - 直接使用 RGB 颜色
     pt1, pt2 = rho_theta_to_line(rho_pred_scaled, theta_pred, w, h)
-    cv2.line(img, pt1, pt2, COLOR_PRED, LINE_THICKNESS, cv2.LINE_AA)
+    cv2.line(img_rgb, pt1, pt2, COLOR_PRED_RGB, LINE_THICKNESS, cv2.LINE_AA)
     
-    return img
+    return img_rgb
 
 
 def load_cache_item(cache_path: Path) -> Optional[dict]:
@@ -216,29 +248,108 @@ def get_prediction(model, input_tensor, device: str):
     return pred  # (rho_norm, theta_norm)
 
 
-def find_representative_sample(cache_dir: Path, n_samples: int = 10) -> Optional[str]:
+def compute_all_errors_for_dataset(model, cache_root: Path, denorm_cfg: DenormConfig, 
+                                   degradations: List[str], device: str) -> Dict:
     """
-    Find a representative sample from cache directory.
+    Compute rho errors for all samples across all degradations.
     
-    Strategy: Pick a sample with moderate error (not the best, not the worst)
-    to show realistic performance.
+    Returns:
+        dict mapping sample_stem -> {deg_name: rho_error}
     """
-    npy_files = sorted(cache_dir.glob("*.npy"))
-    if not npy_files:
+    # First, find common samples across all degradations
+    sample_sets = []
+    for deg in degradations:
+        deg_dir = cache_root / deg
+        if not deg_dir.exists():
+            return {}
+        samples = {f.stem for f in deg_dir.glob("*.npy")}
+        sample_sets.append(samples)
+    
+    if not sample_sets:
+        return {}
+    
+    common = sample_sets[0]
+    for s in sample_sets[1:]:
+        common = common & s
+    
+    if not common:
+        return {}
+    
+    common_list = sorted(list(common))
+    scale = denorm_cfg.orig_w / denorm_cfg.unet_w
+    
+    # Compute errors for each sample
+    all_errors = {}
+    for sample_stem in common_list:
+        sample_errors = {}
+        for deg in degradations:
+            cache_path = cache_root / deg / f"{sample_stem}.npy"
+            cache_item = load_cache_item(cache_path)
+            if cache_item is None:
+                continue
+            
+            gt_label = cache_item["label"]
+            input_tensor = cache_item["input"]
+            pred = get_prediction(model, input_tensor, device)
+            
+            rho_gt, theta_gt = denorm_rho_theta(gt_label[0], gt_label[1], denorm_cfg)
+            rho_pred, theta_pred = denorm_rho_theta(pred[0], pred[1], denorm_cfg)
+            
+            rho_err = abs(rho_pred - rho_gt) * scale
+            sample_errors[deg] = rho_err
+        
+        if len(sample_errors) == len(degradations):
+            all_errors[sample_stem] = sample_errors
+    
+    return all_errors
+
+
+def select_representative_sample(all_errors: Dict, degradations: List[str]) -> Optional[str]:
+    """
+    Select representative sample using median-based criterion.
+    
+    Algorithm:
+    1. Compute median error for each degradation
+    2. For each sample, compute L1 distance to medians across all degradations
+    3. Filter samples where clean error <= P75 of clean errors
+    4. Return sample with minimum total L1 distance
+    """
+    if not all_errors:
         return None
     
-    # Take a deterministic sample from middle of the sorted list
-    np.random.seed(SEED)
-    idx = len(npy_files) // 3  # ~33% position
-    return npy_files[idx].stem
-
-
-def get_common_sample_across_degradations(cache_root: Path, degradations: List[str]) -> Optional[str]:
-    """
-    Find a sample that exists in all degradation folders.
+    samples = list(all_errors.keys())
     
-    Returns the sample stem (without extension).
-    """
+    # Compute per-degradation medians
+    medians = {}
+    for deg in degradations:
+        errors = [all_errors[s][deg] for s in samples]
+        medians[deg] = np.median(errors)
+    
+    # Compute P75 for clean
+    clean_errors = [all_errors[s]["clean"] for s in samples]
+    clean_p75 = np.percentile(clean_errors, 75)
+    
+    # Filter samples where clean error <= P75
+    valid_samples = [s for s in samples if all_errors[s]["clean"] <= clean_p75]
+    
+    if not valid_samples:
+        valid_samples = samples  # Fallback to all samples
+    
+    # Compute L1 distance to medians for each valid sample
+    best_sample = None
+    best_score = float('inf')
+    
+    for sample in valid_samples:
+        score = sum(abs(all_errors[sample][deg] - medians[deg]) for deg in degradations)
+        if score < best_score:
+            best_score = score
+            best_sample = sample
+    
+    return best_sample
+
+
+def get_sample_by_index(cache_root: Path, degradations: List[str], idx: int) -> Optional[str]:
+    """Get sample stem by index from common samples."""
     sample_sets = []
     for deg in degradations:
         deg_dir = cache_root / deg
@@ -250,18 +361,15 @@ def get_common_sample_across_degradations(cache_root: Path, degradations: List[s
     if not sample_sets:
         return None
     
-    # Find intersection
     common = sample_sets[0]
     for s in sample_sets[1:]:
         common = common & s
     
-    if not common:
-        return None
-    
-    # Pick one deterministically
-    np.random.seed(SEED)
     common_list = sorted(list(common))
-    idx = len(common_list) // 3  # ~33% position
+    if idx < 0 or idx >= len(common_list):
+        print(f"[Warning] Index {idx} out of range (0-{len(common_list)-1}), using idx=0")
+        idx = 0
+    
     return common_list[idx]
 
 
@@ -316,19 +424,44 @@ def generate_figure_a():
         print(f"\n[{dataset.upper()}] Loading model from {weights_path}")
         model = load_model(weights_path, DEVICE)
         
-        # Find a common sample across all degradations
-        sample_stem = get_common_sample_across_degradations(cache_root, DEGRADATION_COLS)
+        # Select sample: manual or automatic
+        manual_idx = MANUAL_SAMPLE_IDX.get(dataset)
+        
+        if manual_idx is not None:
+            # Use manually specified index
+            sample_stem = get_sample_by_index(cache_root, DEGRADATION_COLS, manual_idx)
+            print(f"[{dataset.upper()}] Using manual index: {manual_idx}")
+        else:
+            # Automatic selection using median-based algorithm
+            print(f"[{dataset.upper()}] Auto-selecting representative sample...")
+            all_errors = compute_all_errors_for_dataset(
+                model, cache_root, denorm_cfg, DEGRADATION_COLS, DEVICE
+            )
+            sample_stem = select_representative_sample(all_errors, DEGRADATION_COLS)
         
         if sample_stem is None:
-            print(f"[Warning] No common sample found for {dataset}")
+            print(f"[Warning] No sample found for {dataset}")
             for col_idx in range(n_cols):
                 axes[row_idx, col_idx].text(0.5, 0.5, "No Data", 
                                             ha='center', va='center', fontsize=10)
                 axes[row_idx, col_idx].axis('off')
             continue
         
-        selected_samples[dataset] = sample_stem
-        print(f"[{dataset.upper()}] Selected sample: {sample_stem}")
+        # Find index of selected sample for reporting
+        sample_sets = []
+        for deg in DEGRADATION_COLS:
+            deg_dir = cache_root / deg
+            if deg_dir.exists():
+                samples = {f.stem for f in deg_dir.glob("*.npy")}
+                sample_sets.append(samples)
+        common = sample_sets[0] if sample_sets else set()
+        for s in sample_sets[1:]:
+            common = common & s
+        common_list = sorted(list(common))
+        sample_idx = common_list.index(sample_stem) if sample_stem in common_list else -1
+        
+        selected_samples[dataset] = {"stem": sample_stem, "idx": sample_idx}
+        print(f"[{dataset.upper()}] Selected sample: {sample_stem} (idx={sample_idx})")
         
         for col_idx, deg_name in enumerate(DEGRADATION_COLS):
             ax = axes[row_idx, col_idx]
@@ -368,12 +501,13 @@ def generate_figure_a():
                         break
             
             if img_path.exists():
-                img = cv2.imread(str(img_path))
-                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                # Read image as BGR, convert to RGB for matplotlib
+                img_bgr = cv2.imread(str(img_path))
+                img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
                 
-                # Draw lines
-                img_with_lines = draw_horizon_lines(
-                    img.copy(), rho_gt, theta_gt, rho_pred, theta_pred, denorm_cfg
+                # Draw lines on RGB image
+                img_with_lines = draw_horizon_lines_rgb(
+                    img_rgb.copy(), rho_gt, theta_gt, rho_pred, theta_pred, denorm_cfg
                 )
                 
                 # Resize for display
@@ -399,10 +533,10 @@ def generate_figure_a():
             ax.set_xticks([])
             ax.set_yticks([])
     
-    # Add legend
+    # Add legend with correct colors (matplotlib 使用 RGB hex)
     legend_elements = [
-        mpatches.Patch(color='green', label='Ground Truth'),
-        mpatches.Patch(color='red', label='Prediction')
+        mpatches.Patch(facecolor='#00FF00', edgecolor='black', label='Ground Truth'),
+        mpatches.Patch(facecolor='#FF0000', edgecolor='black', label='Prediction')
     ]
     fig.legend(handles=legend_elements, loc='lower center', ncol=2, fontsize=10,
               bbox_to_anchor=(0.5, 0.01))
@@ -419,8 +553,8 @@ def generate_figure_a():
     
     # Print selected samples for caption
     print("\n[Selected Samples for Figure Caption]")
-    for dataset, sample in selected_samples.items():
-        print(f"  {dataset.upper()}: {sample}")
+    for dataset, info in selected_samples.items():
+        print(f"  {dataset.upper()}: {info['stem']} (idx={info['idx']})")
     
     return selected_samples
 
@@ -471,7 +605,7 @@ def generate_figure_b():
     
     if not all_top5:
         print("[Error] No evaluation data found. Please run evaluate_degraded.py first.")
-        return
+        return None
     
     # Create bar chart
     n_datasets = len(all_top5)
@@ -489,7 +623,8 @@ def generate_figure_b():
         ax = axes[ax_idx]
         top5 = all_top5[dataset]
         
-        degradations = [item[0] for item in top5]
+        # Merge rank into labels: "#1 gaussian_noise_30"
+        degradations = [f"#{i+1} {item[0]}" for i, item in enumerate(top5)]
         values = [item[1] for item in top5]
         
         y_pos = np.arange(len(degradations))
@@ -506,15 +641,14 @@ def generate_figure_b():
         ax.invert_yaxis()  # Top-1 at top
         ax.set_xlabel('ρ ≤ 10px (%)', fontsize=10)
         ax.set_title(f'{DATASET_LABELS[ax_idx]}', fontsize=11, fontweight='bold')
-        ax.set_xlim(0, max(values) * 1.2)
-        
-        # Add rank numbers
-        for i, (y, deg) in enumerate(zip(y_pos, degradations)):
-            ax.text(-1, y, f'#{i+1}', va='center', ha='right', fontsize=9, fontweight='bold')
+        ax.set_xlim(0, max(values) * 1.25)
     
     fig.suptitle('Top-5 Hardest Degradations by Dataset\n(Lower ρ≤10px% = Harder)', 
                 fontsize=12, fontweight='bold')
-    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    
+    # Adjust layout for long labels
+    fig.subplots_adjust(left=0.22)
+    plt.tight_layout(rect=[0, 0, 1, 0.93])
     
     # Save figure
     ensure_dir(OUT_DIR)
@@ -525,6 +659,90 @@ def generate_figure_b():
     print(f"\n[Saved] Figure B -> {out_path}")
     
     return all_top5
+
+
+# ----------------------------
+# Figure C: Buoy Fog Intensity Trend
+# ----------------------------
+def generate_figure_c():
+    """
+    Generate Buoy fog intensity trend chart.
+    
+    X-axis: Clean, Fog 0.3, Fog 0.5
+    Y-axis: rho≤10px(%) and theta≤2°(%)
+    """
+    print("\n" + "=" * 60)
+    print("Generating Figure C: Buoy Fog Intensity Trend")
+    print("=" * 60)
+    
+    cfg_ds = DATASET_CONFIGS["buoy"]
+    eval_csv = cfg_ds["eval_csv"]
+    
+    if not eval_csv.exists():
+        print(f"[Error] Eval CSV not found for buoy: {eval_csv}")
+        return None
+    
+    # Load evaluation results
+    df = pd.read_csv(eval_csv)
+    
+    # Get fog degradations
+    fog_levels = ["clean", "fog_0.3", "fog_0.5"]
+    fog_labels = ["Clean", "Fog 0.3", "Fog 0.5"]
+    
+    rho_values = []
+    theta_values = []
+    
+    for deg in fog_levels:
+        row = df[df["degradation"] == deg]
+        if row.empty:
+            print(f"[Warning] No data for {deg}")
+            rho_values.append(0)
+            theta_values.append(0)
+        else:
+            rho_values.append(row["rho_le_10"].values[0])
+            theta_values.append(row["theta_le_2"].values[0])
+    
+    # Print values
+    print("\n[Buoy Fog Trend Values]")
+    for i, (deg, rho, theta) in enumerate(zip(fog_labels, rho_values, theta_values)):
+        print(f"  {deg}: ρ≤10px = {rho:.1f}%, θ≤2° = {theta:.1f}%")
+    
+    # Create trend chart
+    fig, ax = plt.subplots(figsize=(6, 4))
+    
+    x = np.arange(len(fog_levels))
+    
+    # Plot lines with markers
+    ax.plot(x, rho_values, 'o-', color='#1f77b4', linewidth=2, markersize=8, label='ρ ≤ 10px (%)')
+    ax.plot(x, theta_values, 's--', color='#ff7f0e', linewidth=2, markersize=8, label='θ ≤ 2° (%)')
+    
+    # Add value annotations
+    for i, (rho, theta) in enumerate(zip(rho_values, theta_values)):
+        ax.annotate(f'{rho:.1f}%', (x[i], rho), textcoords="offset points", 
+                   xytext=(0, 10), ha='center', fontsize=9, color='#1f77b4')
+        ax.annotate(f'{theta:.1f}%', (x[i], theta), textcoords="offset points", 
+                   xytext=(0, -15), ha='center', fontsize=9, color='#ff7f0e')
+    
+    ax.set_xticks(x)
+    ax.set_xticklabels(fog_labels, fontsize=10)
+    ax.set_xlabel('Fog Intensity', fontsize=11)
+    ax.set_ylabel('Accuracy (%)', fontsize=11)
+    ax.set_ylim(0, 105)
+    ax.set_title('Buoy Dataset: Performance vs Fog Intensity', fontsize=12, fontweight='bold')
+    ax.legend(loc='lower left', fontsize=10)
+    ax.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    
+    # Save figure
+    ensure_dir(OUT_DIR)
+    out_path = OUT_DIR / "fig_buoy_fog_trend.png"
+    plt.savefig(out_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    print(f"\n[Saved] Figure C -> {out_path}")
+    
+    return {"rho_le_10": rho_values, "theta_le_2": theta_values}
 
 
 # ----------------------------
@@ -543,6 +761,8 @@ def main():
     print(f"  SEED   = {SEED}")
     print(f"  DEVICE = {DEVICE}")
     print(f"  Output = {OUT_DIR}")
+    print(f"  Manual indices: musid={MANUAL_SAMPLE_IDX['musid']}, "
+          f"smd={MANUAL_SAMPLE_IDX['smd']}, buoy={MANUAL_SAMPLE_IDX['buoy']}")
     
     # Generate Figure A (Qualitative Grid)
     selected_samples = generate_figure_a()
@@ -550,12 +770,16 @@ def main():
     # Generate Figure B (Top-5 Bar Chart)
     top5_results = generate_figure_b()
     
+    # Generate Figure C (Buoy Fog Trend)
+    trend_results = generate_figure_c()
+    
     print("\n" + "=" * 60)
     print("[Done] Paper figures generated!")
     print("=" * 60)
     print(f"\nOutput files:")
     print(f"  - {OUT_DIR / 'fig_degradation_grid.png'}")
     print(f"  - {OUT_DIR / 'fig_top5_bar.png'}")
+    print(f"  - {OUT_DIR / 'fig_buoy_fog_trend.png'}")
 
 
 if __name__ == "__main__":
