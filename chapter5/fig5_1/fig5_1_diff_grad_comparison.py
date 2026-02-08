@@ -2,28 +2,89 @@
 # -*- coding: utf-8 -*-
 """
 图5-1 差分梯度纹理抑制效果对比
+批量处理 MU-SID 测试集所有图片
 """
 
 import os
+import sys
+from pathlib import Path
+
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patheffects as pe
 
 # ========================
+# 路径配置（自动获取项目根目录）
+# ========================
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parents[1]  # chapter5/fig5_1 -> sealine_detection
+
+# ========================
 # A. 输入与输出配置
 # ========================
-restored_img_path = "PATH/TO/restored.png"
+# MU-SID 数据集路径
+IMG_DIR = PROJECT_ROOT / "Hashmani's Dataset" / "MU-SID"
+GT_CSV = PROJECT_ROOT / "splits_musid" / "GroundTruth_test.csv"
 
-# 可选：真值海天线端点（像素坐标），若没有则设为 None
-gt_line = None  # 例如: ((x1, y1), (x2, y2))
+# 输出目录
+OUTPUT_DIR = SCRIPT_DIR
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-# 输出文件
-output_path = "fig5_1_diff_grad_comparison.png"
+# 是否显示真值线
+SHOW_GT_LINE = True
 
-# 调试输出（可选）
-debug_sobel_path = "sobel_mag.png"
-debug_diffgrad_path = "diff_grad.png"
+
+def load_all_test_images(csv_path: Path):
+    """
+    从 GroundTruth CSV 文件加载所有测试集图片名和真值。
+    CSV格式: image_stem,x1,y1,x2,y2,xm,ym,angle
+    返回: [(image_stem, ((x1, y1), (x2, y2))), ...]
+    """
+    results = []
+    if not csv_path.exists():
+        print(f"[错误] 真值文件不存在: {csv_path}")
+        return results
+    
+    try:
+        with open(csv_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                parts = line.strip().split(',')
+                if len(parts) >= 5:
+                    image_stem = parts[0]
+                    try:
+                        x1, y1, x2, y2 = int(parts[1]), int(parts[2]), int(parts[3]), int(parts[4])
+                        gt_line = ((x1, y1), (x2, y2))
+                    except ValueError:
+                        gt_line = None
+                    results.append((image_stem, gt_line))
+    except Exception as e:
+        print(f"[错误] 读取真值文件失败: {e}")
+    
+    return results
+
+
+def load_gt_line(csv_path: Path, image_stem: str):
+    """
+    从 GroundTruth CSV 文件加载海天线真值。
+    CSV格式: image_stem,x1,y1,x2,y2,xm,ym,angle
+    返回: ((x1, y1), (x2, y2)) 或 None
+    """
+    if not csv_path.exists():
+        print(f"[警告] 真值文件不存在: {csv_path}")
+        return None
+    
+    try:
+        with open(csv_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                parts = line.strip().split(',')
+                if len(parts) >= 5 and parts[0] == image_stem:
+                    x1, y1, x2, y2 = int(parts[1]), int(parts[2]), int(parts[3]), int(parts[4])
+                    return ((x1, y1), (x2, y2))
+    except Exception as e:
+        print(f"[警告] 读取真值文件失败: {e}")
+    
+    return None
 
 # ========================
 # B. 处理函数
@@ -48,56 +109,60 @@ def get_label_color(img_patch):
         return "black", "white"
 
 
-def main():
-    # ========================
-    # 1) 读取复原图
-    # ========================
-    if not os.path.exists(restored_img_path):
-        raise FileNotFoundError(f"输入图像不存在: {restored_img_path}")
+def process_single_image(image_stem: str, gt_line, img_dir: Path, output_dir: Path):
+    """
+    处理单张图片，生成差分梯度对比图。
     
-    img_bgr = cv2.imread(restored_img_path, cv2.IMREAD_COLOR)
+    Args:
+        image_stem: 图片名称（不含扩展名）
+        gt_line: 真值线 ((x1, y1), (x2, y2)) 或 None
+        img_dir: 图片目录
+        output_dir: 输出目录
+    
+    Returns:
+        True 成功, False 失败
+    """
+    # 查找图片文件
+    img_path = None
+    for ext in ['.JPG', '.jpg', '.jpeg', '.png']:
+        candidate = img_dir / f"{image_stem}{ext}"
+        if candidate.exists():
+            img_path = candidate
+            break
+    
+    if img_path is None:
+        print(f"  [跳过] 图片不存在: {image_stem}")
+        return False
+    
+    # 读取图像
+    img_bgr = cv2.imread(str(img_path), cv2.IMREAD_COLOR)
     if img_bgr is None:
-        raise ValueError(f"无法读取图像: {restored_img_path}")
+        print(f"  [跳过] 无法读取图像: {img_path}")
+        return False
     
-    # ========================
-    # 2) 灰度化与归一化
-    # ========================
+    # 灰度化与归一化
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
     gray = gray.astype(np.float32) / 255.0
     
-    # ========================
-    # 3) Sobel 梯度
-    # ========================
+    # Sobel 梯度
     Gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
     Gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
     
-    # ========================
-    # 4) 普通梯度幅值图
-    # ========================
+    # 普通梯度幅值图
     M_sobel = np.sqrt(Gx * Gx + Gy * Gy)
     
-    # ========================
-    # 5) 差分梯度纹理抑制
-    # ========================
+    # 差分梯度纹理抑制
     lambda_ratio = 0.6
     M_grad = np.maximum(np.abs(Gy) - lambda_ratio * np.abs(Gx), 0)
     tau = np.percentile(M_grad, 99)
     M_grad = np.clip(M_grad, 0, tau)
     
-    # ========================
-    # 6) 显示归一化
-    # ========================
+    # 显示归一化
     M_sobel_norm = robust_norm(M_sobel, lo=1, hi=99)
     M_grad_norm = robust_norm(M_grad, lo=1, hi=99)
     
     # ========================
-    # 调试输出（可选）
-    # ========================
-    cv2.imwrite(debug_sobel_path, (M_sobel_norm * 255).astype(np.uint8))
-    cv2.imwrite(debug_diffgrad_path, (M_grad_norm * 255).astype(np.uint8))
-    
-    # ========================
-    # C. 排版与绘图
+    # 排版与绘图
     # ========================
     
     # 字体设置
@@ -159,10 +224,8 @@ def main():
             pe.Normal()
         ])
     
-    # ========================
     # 叠加真值线（可选）
-    # ========================
-    if gt_line is not None:
+    if SHOW_GT_LINE and gt_line is not None:
         (x1, y1), (x2, y2) = gt_line
         # 在 (a) 和 (c) 上叠加
         for idx in [0, 2]:
@@ -173,15 +236,50 @@ def main():
                 alpha=0.9
             )
     
-    # ========================
-    # D. 保存
-    # ========================
-    plt.savefig(output_path, dpi=600, bbox_inches="tight", pad_inches=0.02,
+    # 保存
+    output_path = output_dir / f"{image_stem}_diff_grad.png"
+    plt.savefig(str(output_path), dpi=600, bbox_inches="tight", pad_inches=0.02,
                 facecolor='white', edgecolor='none')
     plt.close(fig)
     
-    print(f"已保存: {output_path}")
-    print(f"调试输出: {debug_sobel_path}, {debug_diffgrad_path}")
+    return True
+
+
+def main():
+    """批量处理 MU-SID 测试集所有图片"""
+    print("=" * 60)
+    print("图5-1 差分梯度纹理抑制效果对比 - 批量生成")
+    print("=" * 60)
+    
+    # 加载测试集所有图片
+    test_images = load_all_test_images(GT_CSV)
+    if not test_images:
+        print("[错误] 未找到测试集图片列表")
+        return
+    
+    print(f"[信息] 共找到 {len(test_images)} 张测试集图片")
+    print(f"[信息] 输出目录: {OUTPUT_DIR}")
+    print("-" * 60)
+    
+    success_count = 0
+    fail_count = 0
+    
+    for i, (image_stem, gt_line) in enumerate(test_images, 1):
+        print(f"[{i:3d}/{len(test_images)}] 处理: {image_stem}", end=" ... ")
+        
+        try:
+            if process_single_image(image_stem, gt_line, IMG_DIR, OUTPUT_DIR):
+                print("完成")
+                success_count += 1
+            else:
+                fail_count += 1
+        except Exception as e:
+            print(f"失败: {e}")
+            fail_count += 1
+    
+    print("-" * 60)
+    print(f"[完成] 成功: {success_count}, 失败: {fail_count}")
+    print(f"[信息] 输出目录: {OUTPUT_DIR}")
 
 
 if __name__ == "__main__":
