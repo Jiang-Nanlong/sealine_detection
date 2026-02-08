@@ -157,9 +157,19 @@ def process_single_image(image_stem: str, gt_line, img_dir: Path, output_dir: Pa
     tau = np.percentile(M_grad, 99)
     M_grad = np.clip(M_grad, 0, tau)
     
-    # 显示归一化
-    M_sobel_norm = robust_norm(M_sobel, lo=1, hi=99)
-    M_grad_norm = robust_norm(M_grad, lo=1, hi=99)
+    # ========================
+    # 统一归一化：(b)(c) 使用相同的显示尺度
+    # ========================
+    # 基于 Sobel 幅值图计算统一的分位数阈值
+    combined = np.concatenate([M_sobel.flatten(), M_grad.flatten()])
+    vmin = np.percentile(combined, 1)
+    vmax = np.percentile(combined, 99)
+    if vmax <= vmin:
+        vmax = vmin + 1e-6
+    
+    # 统一归一化（共享尺度）
+    M_sobel_norm = np.clip((M_sobel - vmin) / (vmax - vmin), 0, 1).astype(np.float32)
+    M_grad_norm = np.clip((M_grad - vmin) / (vmax - vmin), 0, 1).astype(np.float32)
     
     # ========================
     # 排版与绘图
@@ -171,12 +181,12 @@ def process_single_image(image_stem: str, gt_line, img_dir: Path, output_dir: Pa
     plt.rcParams['font.size'] = 10
     plt.rcParams['font.weight'] = 'normal'
     
-    # 画布尺寸
+    # 画布尺寸：180mm 宽，600dpi -> 约 4252px
     width_in = 180 / 25.4  # 180 mm -> inches
-    height_in = 65 / 25.4  # 约 65 mm -> inches
+    height_in = 60 / 25.4  # 约 60 mm -> inches（更紧凑）
     
     fig, axes = plt.subplots(1, 3, figsize=(width_in, height_in))
-    plt.subplots_adjust(wspace=0.03, left=0.01, right=0.99, top=0.99, bottom=0.01)
+    plt.subplots_adjust(wspace=0.015, left=0.005, right=0.995, top=0.995, bottom=0.005)
     
     # 转换为 RGB 用于显示
     img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
@@ -210,7 +220,7 @@ def process_single_image(image_stem: str, gt_line, img_dir: Path, output_dir: Pa
         
         text_color, stroke_color = get_label_color(np.array([[patch]]))
         
-        # 添加标注
+        # 添加标注（字号10pt，描边细）
         txt = ax.text(
             0.02, 0.02, label,
             transform=ax.transAxes,
@@ -220,25 +230,34 @@ def process_single_image(image_stem: str, gt_line, img_dir: Path, output_dir: Pa
             horizontalalignment='left'
         )
         txt.set_path_effects([
-            pe.Stroke(linewidth=2, foreground=stroke_color),
+            pe.Stroke(linewidth=1, foreground=stroke_color),
             pe.Normal()
         ])
     
     # 叠加真值线（可选）
     if SHOW_GT_LINE and gt_line is not None:
         (x1, y1), (x2, y2) = gt_line
-        # 在 (a) 和 (c) 上叠加
+        # (a) 和 (c) 用实线，线宽2px，alpha=0.85
         for idx in [0, 2]:
             axes[idx].plot(
                 [x1, x2], [y1, y2],
                 color="red",
                 linewidth=2,
-                alpha=0.9
+                alpha=0.85,
+                linestyle='-'
             )
+        # (b) 用虚线，线宽1.5px，alpha=0.85
+        axes[1].plot(
+            [x1, x2], [y1, y2],
+            color="red",
+            linewidth=1.5,
+            alpha=0.85,
+            linestyle='--'
+        )
     
     # 保存
     output_path = output_dir / f"{image_stem}_diff_grad.png"
-    plt.savefig(str(output_path), dpi=600, bbox_inches="tight", pad_inches=0.02,
+    plt.savefig(str(output_path), dpi=600, bbox_inches="tight", pad_inches=0.01,
                 facecolor='white', edgecolor='none')
     plt.close(fig)
     
