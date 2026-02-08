@@ -44,12 +44,12 @@ if str(PROJECT_ROOT) not in sys.path:
 from cnn_model import HorizonResNet
 
 # ============================
-# PyCharm 配置区 (在这里修改)
+# PyCharm 配置�?(在这里修�?
 # ============================
 SEED = 123
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-# 要显示的退化类型（固定顺序）
+# 要显示的退化类型（固定顺序�?
 DEGRADATION_COLS = ["clean", "fog_0.5", "gaussian_noise_30", "low_light_2.5", "rain_heavy"]
 DEGRADATION_LABELS = ["Clean", "Fog 0.5", "Noise σ=30", "Low Light γ=2.5", "Rain Heavy"]
 
@@ -57,7 +57,7 @@ DEGRADATION_LABELS = ["Clean", "Fog 0.5", "Noise σ=30", "Low Light γ=2.5", "Ra
 DATASET_ROWS = ["musid", "smd", "buoy"]
 DATASET_LABELS = ["MU-SID", "SMD", "Buoy"]
 
-# 手动指定样本索引（None表示自动选择）
+# 手动指定样本索引（None表示自动选择�?
 MANUAL_SAMPLE_IDX = {
     "musid": None,
     "smd": None,
@@ -65,7 +65,7 @@ MANUAL_SAMPLE_IDX = {
 }
 # ============================
 
-# 命令行参数覆盖
+# 命令行参数覆�?
 if "--seed" in sys.argv:
     _idx = sys.argv.index("--seed")
     if _idx + 1 < len(sys.argv):
@@ -96,7 +96,7 @@ if "--buoy_idx" in sys.argv:
 # Config
 # ----------------------------
 TEST5_DIR = PROJECT_ROOT / "test5"
-TEST6_DIR = PROJECT_ROOT / "test6"
+test1_DIR = PROJECT_ROOT / "test1"
 
 # UNet input size (used for Radon label generation)
 UNET_W = 1024
@@ -104,7 +104,7 @@ UNET_H = 576
 RESIZE_H = 2240
 
 # Drawing config - RGB format (用于 matplotlib 显示)
-# cv2.line 在 RGB 图像上绘制时，颜色需要按 RGB 顺序
+# cv2.line �?RGB 图像上绘制时，颜色需要按 RGB 顺序
 COLOR_GT_RGB = (0, 255, 0)      # Green for GT (RGB)
 COLOR_PRED_RGB = (255, 0, 0)    # Red for Prediction (RGB)
 LINE_THICKNESS = 2
@@ -112,7 +112,7 @@ FONT = cv2.FONT_HERSHEY_SIMPLEX
 FONT_SCALE = 0.5
 FONT_COLOR = (255, 255, 255)
 
-# 数据集配置
+# 数据集配�?
 DATASET_CONFIGS = {
     "musid": {
         "degraded_img_dir": TEST5_DIR / "degraded_images",
@@ -126,7 +126,7 @@ DATASET_CONFIGS = {
         "degraded_img_dir": TEST5_DIR / "degraded_images_smd",
         "cache_root": TEST5_DIR / "FusionCache_Degraded_SMD",
         "eval_csv": TEST5_DIR / "eval_results_smd" / "degradation_results.csv",
-        "cnn_weights": TEST6_DIR / "weights" / "best_fusion_cnn_smd.pth",
+        "cnn_weights": test1_DIR / "weights" / "best_fusion_cnn_smd.pth",
         "orig_w": 1920,
         "orig_h": 1080,
     },
@@ -134,7 +134,7 @@ DATASET_CONFIGS = {
         "degraded_img_dir": TEST5_DIR / "degraded_images_buoy",
         "cache_root": TEST5_DIR / "FusionCache_Degraded_Buoy",
         "eval_csv": TEST5_DIR / "eval_results_buoy" / "degradation_results.csv",
-        "cnn_weights": TEST6_DIR / "weights" / "best_fusion_cnn_buoy.pth",
+        "cnn_weights": test1_DIR / "weights" / "best_fusion_cnn_buoy.pth",
         "orig_w": 800,
         "orig_h": 600,
     },
@@ -158,7 +158,7 @@ def ensure_dir(p):
 
 
 # ----------------------------
-# Utility functions (复用自 visualize_degraded.py 和 evaluate_degraded.py)
+# Utility functions (复用�?visualize_degraded.py �?evaluate_degraded.py)
 # ----------------------------
 def denorm_rho_theta(rho_norm, theta_norm, cfg: DenormConfig):
     """Convert normalized (rho, theta) to real values."""
@@ -200,8 +200,8 @@ def draw_horizon_lines_rgb(img_rgb, rho_gt, theta_gt, rho_pred, theta_pred, cfg:
     """
     Draw GT and prediction lines on RGB image.
     
-    注意：img_rgb 已经是 RGB 格式（从 BGR 转换而来）
-    cv2.line 直接按通道顺序绘制，所以传入 RGB 颜色即可
+    注意：img_rgb 已经�?RGB 格式（从 BGR 转换而来�?
+    cv2.line 直接按通道顺序绘制，所以传�?RGB 颜色即可
     """
     h, w = img_rgb.shape[:2]
     
@@ -599,7 +599,7 @@ def generate_figure_b():
         top5 = df_sorted.head(5)[["degradation", "rho_le_10"]].values.tolist()
         all_top5[dataset] = top5
         
-        print(f"\n[{dataset.upper()}] Top-5 Hardest Degradations (by ρ≤10px%):")
+        print(f"\n[{dataset.upper()}] Top-5 Hardest Degradations (by ρ�?0px%):")
         for i, (deg, val) in enumerate(top5, 1):
             print(f"  {i}. {deg}: {val:.1f}%")
     
@@ -639,11 +639,11 @@ def generate_figure_b():
         ax.set_yticks(y_pos)
         ax.set_yticklabels(degradations, fontsize=9)
         ax.invert_yaxis()  # Top-1 at top
-        ax.set_xlabel('ρ ≤ 10px (%)', fontsize=10)
+        ax.set_xlabel('ρ �?10px (%)', fontsize=10)
         ax.set_title(f'{DATASET_LABELS[ax_idx]}', fontsize=11, fontweight='bold')
         ax.set_xlim(0, max(values) * 1.25)
     
-    fig.suptitle('Top-5 Hardest Degradations by Dataset\n(Lower ρ≤10px% = Harder)', 
+    fig.suptitle('Top-5 Hardest Degradations by Dataset\n(Lower ρ�?0px% = Harder)', 
                 fontsize=12, fontweight='bold')
     
     # Adjust layout for long labels
@@ -669,7 +669,7 @@ def generate_figure_c():
     Generate Buoy fog intensity trend chart.
     
     X-axis: Clean, Fog 0.3, Fog 0.5
-    Y-axis: rho≤10px(%) and theta≤2°(%)
+    Y-axis: rho�?0px(%) and theta�?°(%)
     """
     print("\n" + "=" * 60)
     print("Generating Figure C: Buoy Fog Intensity Trend")
@@ -705,7 +705,7 @@ def generate_figure_c():
     # Print values
     print("\n[Buoy Fog Trend Values]")
     for i, (deg, rho, theta) in enumerate(zip(fog_labels, rho_values, theta_values)):
-        print(f"  {deg}: ρ≤10px = {rho:.1f}%, θ≤2° = {theta:.1f}%")
+        print(f"  {deg}: ρ�?0px = {rho:.1f}%, θ�?° = {theta:.1f}%")
     
     # Create trend chart
     fig, ax = plt.subplots(figsize=(6, 4))
@@ -713,8 +713,8 @@ def generate_figure_c():
     x = np.arange(len(fog_levels))
     
     # Plot lines with markers
-    ax.plot(x, rho_values, 'o-', color='#1f77b4', linewidth=2, markersize=8, label='ρ ≤ 10px (%)')
-    ax.plot(x, theta_values, 's--', color='#ff7f0e', linewidth=2, markersize=8, label='θ ≤ 2° (%)')
+    ax.plot(x, rho_values, 'o-', color='#1f77b4', linewidth=2, markersize=8, label='ρ �?10px (%)')
+    ax.plot(x, theta_values, 's--', color='#ff7f0e', linewidth=2, markersize=8, label='θ �?2° (%)')
     
     # Add value annotations
     for i, (rho, theta) in enumerate(zip(rho_values, theta_values)):

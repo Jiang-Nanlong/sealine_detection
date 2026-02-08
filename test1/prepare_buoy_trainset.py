@@ -1,21 +1,21 @@
 # -*- coding: utf-8 -*-
 """
-Prepare SMD dataset for Experiment 6: In-Domain Training.
+Prepare Buoy dataset for Experiment 6: In-Domain Training.
 
-This script creates train/val/test splits for SMD dataset.
+This script creates train/val/test splits for Buoy dataset.
 Split ratio: 70% train, 15% val, 15% test
 
 Inputs:
-  - test4/SMD_GroundTruth.csv    (from prepare_smd_testset.py)
-  - test4/smd_frames/            (from prepare_smd_testset.py)
+  - test4/Buoy_GroundTruth.csv   (from prepare_buoy_testset.py)
+  - test4/buoy_frames/           (from prepare_buoy_testset.py)
 
 Outputs:
-  - test6/splits_smd/train_indices.npy
-  - test6/splits_smd/val_indices.npy
-  - test6/splits_smd/test_indices.npy
+  - test1/splits_buoy/train_indices.npy
+  - test1/splits_buoy/val_indices.npy
+  - test1/splits_buoy/test_indices.npy
 
 Usage:
-  python test6/prepare_smd_trainset.py
+  python test1/prepare_buoy_trainset.py
 """
 
 import os
@@ -33,10 +33,10 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 # ============================
-# PyCharm 配置区
+# PyCharm 配置�?
 # ============================
 RANDOM_SEED = 2026
-# 与 MU-SID 保持一致的 8:1:1 划分
+# Buoy 数据集较�?~996�?，使�?80/10/10 划分以保证测试集统计可靠�?
 TRAIN_RATIO = 0.80
 VAL_RATIO = 0.10
 TEST_RATIO = 0.10
@@ -44,12 +44,11 @@ TEST_RATIO = 0.10
 
 # Paths
 TEST4_DIR = PROJECT_ROOT / "test4"
-TEST6_DIR = PROJECT_ROOT / "test6"
+test1_DIR = PROJECT_ROOT / "test1"
 
-# 使用手动筛选后的数据 (manual_review 目录)
-SMD_CSV = TEST4_DIR / "manual_review" / "SMD_GroundTruth_filtered.csv"
-SMD_FRAMES = TEST4_DIR / "manual_review" / "kept_frames"
-SPLIT_DIR = TEST6_DIR / "splits_smd"
+BUOY_CSV = TEST4_DIR / "Buoy_GroundTruth.csv"
+BUOY_FRAMES = TEST4_DIR / "buoy_frames"
+SPLIT_DIR = test1_DIR / "splits_buoy"
 
 
 def ensure_dir(p):
@@ -58,24 +57,24 @@ def ensure_dir(p):
 
 def main():
     print("=" * 60)
-    print("Prepare SMD Train/Val/Test Splits for Experiment 6")
+    print("Prepare Buoy Train/Val/Test Splits for Experiment 6")
     print("=" * 60)
 
-    # Check if SMD data exists
-    if not SMD_CSV.exists():
-        print(f"[Error] SMD CSV not found: {SMD_CSV}")
-        print("  Please run test4/manual_filter_smd_by_gt.py first to filter SMD data.")
+    # Check if Buoy data exists
+    if not BUOY_CSV.exists():
+        print(f"[Error] Buoy CSV not found: {BUOY_CSV}")
+        print("  Please run test4/prepare_buoy_testset.py first.")
         return 1
 
-    if not SMD_FRAMES.exists():
-        print(f"[Error] SMD frames not found: {SMD_FRAMES}")
-        print("  Please run test4/manual_filter_smd_by_gt.py first to filter SMD data.")
+    if not BUOY_FRAMES.exists():
+        print(f"[Error] Buoy frames not found: {BUOY_FRAMES}")
+        print("  Please run test4/prepare_buoy_testset.py first.")
         return 1
 
     # Load CSV
-    df = pd.read_csv(SMD_CSV)
+    df = pd.read_csv(BUOY_CSV)
     n_total = len(df)
-    print(f"[Load] {n_total} samples from {SMD_CSV}")
+    print(f"[Load] {n_total} samples from {BUOY_CSV}")
 
     # Shuffle indices
     np.random.seed(RANDOM_SEED)
@@ -101,15 +100,13 @@ def main():
 
     print(f"[Saved] Splits to {SPLIT_DIR}")
 
-    # Print domain distribution
-    if "domain" in df.columns:
-        print("\n[Domain distribution]")
+    # Print video distribution
+    if "video" in df.columns:
+        print("\n[Video distribution]")
         for split_name, split_idx in [("train", train_indices), ("val", val_indices), ("test", test_indices)]:
             split_df = df.iloc[split_idx]
-            domain_counts = split_df["domain"].value_counts()
-            print(f"  {split_name}:")
-            for domain, count in domain_counts.items():
-                print(f"    {domain}: {count}")
+            video_counts = split_df["video"].value_counts()
+            print(f"  {split_name}: {len(video_counts)} videos, {len(split_df)} frames")
 
     print("\n" + "=" * 60)
     print("DONE")

@@ -1,36 +1,34 @@
 # -*- coding: utf-8 -*-
 """
-Train Fusion-CNN on SMD dataset (Experiment 6: In-Domain Training).
-
-退化类型：只包含雨和雾（简单有效）
+Train Fusion-CNN on Buoy dataset with rain+fog augmentation (Experiment 6: In-Domain).
 
 Inputs:
-  - test6/FusionCache_SMD/{train,val,test}/
-  - test6/splits_smd/
+  - test1/FusionCache_Buoy/train/
+  - test1/FusionCache_Buoy/val/
+  - test1/splits_buoy/train_indices.npy
+  - test1/splits_buoy/val_indices.npy
 
 Outputs:
-  - test6/weights/best_fusion_cnn_smd.pth
-  - test6/train_log_smd.json
+  - test1/weights/best_fusion_cnn_buoy.pth
+  - test1/train_log_buoy.json
 
-PyCharm: 直接运行此文件，在下方配置区修改参数
+PyCharm: 直接运行此文�?
 """
 
 import os
 import sys
 import json
+import math
 import random
 from pathlib import Path
 
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.optim as optim
+from torch.cuda.amp import autocast, GradScaler
 from torch.utils.data import Dataset, DataLoader
-from tqdm import tqdm
 
-# ----------------------------
 # Path setup
-# ----------------------------
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -39,9 +37,9 @@ from cnn_model import HorizonResNet  # noqa: E402
 
 
 # ============================
-# PyCharm 配置区（与主训练策略对齐）
+# PyCharm 配置区（与主训练策略对齐�?
 # ============================
-SEED = 40  # 与主训练一致
+SEED = 40  # 与主训练一�?
 BATCH_SIZE = 16
 NUM_WORKERS = 4
 NUM_EPOCHS = 100
@@ -51,12 +49,12 @@ WEIGHT_DECAY = 1e-4
 # 学习率调度（与主训练一致）
 PLATEAU_PATIENCE = 10
 PLATEAU_FACTOR = 0.5
-EARLY_STOP_PATIENCE = 100  # 实际禁用早停，保证跑满
+EARLY_STOP_PATIENCE = 100  # 实际禁用早停，保证跑�?
 
 # 数据增强：船体直线干扰（与主训练一致）
 AUG_ENABLE = True
-AUG_SPURIOUS_P = 0.60          # 60%概率注入虚假峰值
-AUG_MAX_PEAKS = 3              # 每个样本最多3个虚假峰值
+AUG_SPURIOUS_P = 0.60          # 60%概率注入虚假峰�?
+AUG_MAX_PEAKS = 3              # 每个样本最�?个虚假峰�?
 AUG_AMP_MIN, AUG_AMP_MAX = 0.15, 0.60
 AUG_SIGMA_RHO = 18.0           # rho方向高斯半径
 AUG_SIGMA_THETA = 1.8          # theta方向高斯半径
@@ -68,32 +66,23 @@ GRAD_CLIP_NORM = 1.0
 # ============================
 
 # Paths
-TEST6_DIR = PROJECT_ROOT / "test6"
-CACHE_ROOT = TEST6_DIR / "FusionCache_SMD"
-SPLIT_DIR = TEST6_DIR / "splits_smd"
-WEIGHTS_DIR = TEST6_DIR / "weights"
-BEST_PATH = WEIGHTS_DIR / "best_fusion_cnn_smd.pth"
-LOG_PATH = TEST6_DIR / "train_log_smd.json"
+test1_DIR = PROJECT_ROOT / "test1"
+CACHE_TRAIN = test1_DIR / "FusionCache_Buoy" / "train"
+CACHE_VAL = test1_DIR / "FusionCache_Buoy" / "val"
+SPLIT_DIR = test1_DIR / "splits_buoy"
+WEIGHTS_DIR = test1_DIR / "weights"
+WEIGHTS_PATH = WEIGHTS_DIR / "best_fusion_cnn_buoy.pth"
+LOG_PATH = test1_DIR / "train_log_buoy.json"
 
-FALLBACK_SHAPE = (4, 2240, 180)
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-
-def seed_everything(seed: int):
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-
-
-def ensure_dir(p):
-    os.makedirs(p, exist_ok=True)
+# Sinogram size
+SINO_H, SINO_W = 2240, 180
 
 
 # =========================
 # Data augmentation (ship-line / spurious straight-line interference)
-# 与主训练代码完全一致
+# 与主训练代码完全一�?
 # =========================
 def _inject_gaussian_peak(x: torch.Tensor, ch: int, rho0: int, th0: int, amp: float,
                           sigma_rho: float, sigma_th: float) -> None:
@@ -141,7 +130,7 @@ def augment_fusion_tensor(x: torch.Tensor) -> torch.Tensor:
 # ============================
 # Dataset
 # ============================
-class SMDCacheDataset(Dataset):
+class BuoyCacheDataset(Dataset):
     def __init__(self, cache_dir: str, indices: list, augment: bool = False):
         self.cache_dir = cache_dir
         self.indices = list(indices)
@@ -153,56 +142,47 @@ class SMDCacheDataset(Dataset):
     def __getitem__(self, i: int):
         idx = int(self.indices[i])
         path = os.path.join(self.cache_dir, f"{idx}.npy")
-        
-        if not os.path.exists(path):
-            # Fallback
-            x = torch.zeros(FALLBACK_SHAPE, dtype=torch.float32)
-            y = torch.zeros(2, dtype=torch.float32)
-            return x, y
-
         data = np.load(path, allow_pickle=True).item()
-        x = torch.from_numpy(data["input"]).float()
-        y = torch.from_numpy(data["label"]).float()
-        
+        x = torch.from_numpy(data["input"].astype(np.float32))
+        y = torch.from_numpy(data["label"].astype(np.float32))
+
         if self.augment:
             x = augment_fusion_tensor(x)
-        
+
         return x, y
 
 
 def load_split_indices(split_dir):
-    return {
-        "train": np.load(os.path.join(split_dir, "train_indices.npy")).astype(np.int64).tolist(),
-        "val": np.load(os.path.join(split_dir, "val_indices.npy")).astype(np.int64).tolist(),
-        "test": np.load(os.path.join(split_dir, "test_indices.npy")).astype(np.int64).tolist(),
-    }
+    train_idx = np.load(os.path.join(split_dir, "train_indices.npy")).astype(np.int64)
+    val_idx = np.load(os.path.join(split_dir, "val_indices.npy")).astype(np.int64)
+    return train_idx.tolist(), val_idx.tolist()
 
 
 # ============================
-# Loss
+# Loss Function（与主训练代码对齐）
 # ============================
 class HorizonPeriodicLoss(nn.Module):
-    def __init__(self, rho_weight=1.0, theta_weight=2.0):
+    def __init__(self, rho_weight=1.0, theta_weight=2.0, rho_beta=0.02, theta_beta=0.02):
         super().__init__()
-        self.rho_weight = rho_weight
-        self.theta_weight = theta_weight
-        self.rho_loss = nn.SmoothL1Loss(beta=0.02)
-        self.theta_loss = nn.SmoothL1Loss(beta=0.02)
+        self.rho_weight = float(rho_weight)
+        self.theta_weight = float(theta_weight)
+        self.rho_loss = nn.SmoothL1Loss(beta=rho_beta)
+        self.theta_loss = nn.SmoothL1Loss(beta=theta_beta)
 
     def forward(self, preds, targets):
         loss_rho = self.rho_loss(preds[:, 0], targets[:, 0])
-        
+
         theta_p = preds[:, 1] * np.pi
         theta_t = targets[:, 1] * np.pi
         sin_p, cos_p = torch.sin(theta_p), torch.cos(theta_p)
         sin_t, cos_t = torch.sin(theta_t), torch.cos(theta_t)
-        
+
         loss_theta = self.theta_loss(sin_p, sin_t) + self.theta_loss(cos_p, cos_t)
         return self.rho_weight * loss_rho + self.theta_weight * loss_theta
 
 
 # ============================
-# AMP helpers
+# Training（与主训练代码对齐）
 # ============================
 def autocast_ctx():
     if not USE_AMP or not DEVICE.startswith("cuda"):
@@ -217,9 +197,6 @@ def make_scaler():
     return torch.amp.GradScaler(device="cuda", enabled=True)
 
 
-# ============================
-# Train / Eval
-# ============================
 @torch.no_grad()
 def evaluate(model, loader, criterion):
     model.eval()
@@ -237,6 +214,7 @@ def evaluate(model, loader, criterion):
 
 
 def train_one_epoch(model, loader, optimizer, scaler, criterion):
+    from tqdm import tqdm
     model.train()
     total_loss = 0.0
     n = 0
@@ -271,51 +249,39 @@ def train_one_epoch(model, loader, optimizer, scaler, criterion):
     return total_loss / max(1, n)
 
 
-# ============================
-# Main
-# ============================
 def main():
-    seed_everything(SEED)
-    ensure_dir(WEIGHTS_DIR)
+    random.seed(SEED)
+    np.random.seed(SEED)
+    torch.manual_seed(SEED)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(SEED)
 
     print("=" * 60)
-    print("Train Fusion-CNN on SMD (Experiment 6)")
+    print("Train Fusion-CNN on Buoy Dataset (Experiment 6)")
     print("=" * 60)
 
-    # Check cache
-    train_cache = CACHE_ROOT / "train"
-    val_cache = CACHE_ROOT / "val"
-    test_cache = CACHE_ROOT / "test"
-
-    if not train_cache.exists():
-        print(f"[Error] Train cache not found: {train_cache}")
-        print("  Please run make_fusion_cache_smd_train.py first.")
+    if not CACHE_TRAIN.exists() or not CACHE_VAL.exists():
+        print("[Error] Cache not found. Run make_fusion_cache_buoy_train.py first.")
         return 1
 
-    # Load splits
-    splits = load_split_indices(SPLIT_DIR)
-    print(f"[Splits] train={len(splits['train'])}, val={len(splits['val'])}, test={len(splits['test'])}")
+    train_idx, val_idx = load_split_indices(SPLIT_DIR)
+    print(f"[Splits] train={len(train_idx)}, val={len(val_idx)}")
 
-    # Datasets
-    train_ds = SMDCacheDataset(str(train_cache), splits["train"], augment=True)
-    val_ds = SMDCacheDataset(str(val_cache), splits["val"], augment=False)
-    test_ds = SMDCacheDataset(str(test_cache), splits["test"], augment=False)
+    ds_train = BuoyCacheDataset(str(CACHE_TRAIN), train_idx, augment=True)
+    ds_val = BuoyCacheDataset(str(CACHE_VAL), val_idx, augment=False)
 
     pin = DEVICE.startswith("cuda")
-    train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True,
-                              num_workers=NUM_WORKERS, pin_memory=pin, drop_last=True)
-    val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False,
-                            num_workers=NUM_WORKERS, pin_memory=pin)
-    test_loader = DataLoader(test_ds, batch_size=BATCH_SIZE, shuffle=False,
-                             num_workers=NUM_WORKERS, pin_memory=pin)
+    dl_train = DataLoader(ds_train, batch_size=BATCH_SIZE, shuffle=True,
+                          num_workers=NUM_WORKERS, pin_memory=pin, drop_last=True)
+    dl_val = DataLoader(ds_val, batch_size=BATCH_SIZE, shuffle=False,
+                        num_workers=NUM_WORKERS, pin_memory=pin)
 
-    # Model
     model = HorizonResNet(in_channels=4).to(DEVICE)
     criterion = HorizonPeriodicLoss()
-    optimizer = optim.AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
     scaler = make_scaler()
 
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode="min", factor=PLATEAU_FACTOR, patience=PLATEAU_PATIENCE, verbose=True
     )
 
@@ -325,14 +291,15 @@ def main():
     history = []
 
     print(f"[Device] {DEVICE}")
-    print(f"[Train] {len(train_ds)} samples")
-    print(f"[Val]   {len(val_ds)} samples")
-    print(f"[Test]  {len(test_ds)} samples")
+    print(f"[Train] {len(ds_train)} samples")
+    print(f"[Val]   {len(ds_val)} samples")
     print("")
 
+    WEIGHTS_DIR.mkdir(parents=True, exist_ok=True)
+
     for epoch in range(1, NUM_EPOCHS + 1):
-        tr_loss = train_one_epoch(model, train_loader, optimizer, scaler, criterion)
-        va_loss = evaluate(model, val_loader, criterion)
+        tr_loss = train_one_epoch(model, dl_train, optimizer, scaler, criterion)
+        va_loss = evaluate(model, dl_val, criterion)
 
         lr_now = optimizer.param_groups[0]["lr"]
         print(f"Epoch [{epoch:03d}/{NUM_EPOCHS}] lr={lr_now:.2e} train={tr_loss:.6f} val={va_loss:.6f}")
@@ -344,7 +311,7 @@ def main():
             best_val = va_loss
             best_epoch = epoch
             bad_epochs = 0
-            torch.save(model.state_dict(), BEST_PATH)
+            torch.save(model.state_dict(), WEIGHTS_PATH)
             print(f"  -> best updated: {best_val:.6f} (epoch={best_epoch})")
         else:
             bad_epochs += 1
@@ -352,29 +319,28 @@ def main():
                 print(f"[Early Stop] no improvement for {EARLY_STOP_PATIENCE} epochs")
                 break
 
-    # Final test
+    # Final evaluation
     print("\n" + "=" * 60)
-    print("Final Evaluation on Test Set")
+    print("Training Complete")
     print("=" * 60)
-
-    model.load_state_dict(torch.load(BEST_PATH, map_location=DEVICE))
-    test_loss = evaluate(model, test_loader, criterion)
-    print(f"[Test Loss] {test_loss:.6f}")
 
     # Save log
     payload = {
-        "dataset": "SMD",
+        "dataset": "Buoy",
         "best_val_loss": best_val,
         "best_epoch": best_epoch,
-        "test_loss": test_loss,
         "history": history,
     }
     with open(LOG_PATH, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
     print(f"[Saved] Log -> {LOG_PATH}")
-    print(f"[Saved] Weights -> {BEST_PATH}")
+    print(f"[Saved] Weights -> {WEIGHTS_PATH}")
 
     return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
 
 
 if __name__ == "__main__":

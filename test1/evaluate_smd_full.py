@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Full Pipeline Evaluation for Buoy Test Set (Experiment 6: In-Domain).
+Full Pipeline Evaluation for SMD Test Set (Experiment 6: In-Domain).
 
 与主评估代码 evaluate_full_pipeline.py 完全对齐的指标：
   - rho error (UNet空间 + 原图尺寸)
@@ -11,16 +11,16 @@ Full Pipeline Evaluation for Buoy Test Set (Experiment 6: In-Domain).
   - AE (Angular Error) - 角度误差
 
 Inputs:
-  - test6/FusionCache_Buoy/test/
-  - test6/weights/best_fusion_cnn_buoy.pth (CNN)
-  - test6/weights_buoy/buoy_rghnet_best_seg_c2.pth (UNet)
-  - test6/splits_buoy/test_indices.npy
+  - test1/FusionCache_SMD/test/
+  - test1/weights/best_fusion_cnn_smd.pth (CNN)
+  - test1/weights_smd/smd_rghnet_best_seg_c2.pth (UNet)
+  - test1/splits_smd/test_indices.npy
 
 Outputs:
-  - test6/eval_buoy_full_outputs/full_eval_buoy_test.csv
-  - 终端输出统计信息 (与 evaluate_full_pipeline.py 格式一致)
+  - test1/eval_smd_full.csv
+  - 终端输出统计信息 (�?evaluate_full_pipeline.py 格式一�?
 
-PyCharm: 直接运行此文件
+PyCharm: 直接运行此文�?
 """
 
 import os
@@ -54,22 +54,22 @@ NUM_WORKERS = 4
 SEED = 40
 
 # Model paths
-TEST6_DIR = PROJECT_ROOT / "test6"
-CACHE_DIR = TEST6_DIR / "FusionCache_Buoy" / "test"
-SPLIT_DIR = TEST6_DIR / "splits_buoy"
-CNN_WEIGHTS_PATH = TEST6_DIR / "weights" / "best_fusion_cnn_buoy.pth"
-UNET_WEIGHTS_PATH = TEST6_DIR / "weights_buoy" / "buoy_rghnet_best_seg_c2.pth"
+test1_DIR = PROJECT_ROOT / "test1"
+CACHE_DIR = test1_DIR / "FusionCache_SMD" / "test"
+SPLIT_DIR = test1_DIR / "splits_smd"
+CNN_WEIGHTS_PATH = test1_DIR / "weights" / "best_fusion_cnn_smd.pth"
+UNET_WEIGHTS_PATH = test1_DIR / "weights_smd" / "smd_rghnet_best_seg_c2.pth"
 DCE_WEIGHTS_PATH = PROJECT_ROOT / "weights" / "Epoch99.pth"
 
 # Output
-OUT_DIR = TEST6_DIR / "eval_buoy_full_outputs"
-OUT_CSV = OUT_DIR / "full_eval_buoy_test.csv"
-SUMMARY_CSV = OUT_DIR / "eval_summary_buoy.csv"
+OUT_DIR = test1_DIR / "eval_smd_full_outputs"
+OUT_CSV = OUT_DIR / "full_eval_smd_test.csv"
+SUMMARY_CSV = OUT_DIR / "eval_summary_smd.csv"
 
 # Device
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-# Denorm config (与主评估代码一致)
+# Denorm config (与主评估代码一�?
 UNET_W, UNET_H = 1024, 576
 RESIZE_H = 2240
 ANGLE_RANGE_DEG = 180.0
@@ -85,9 +85,9 @@ BOUNDARY_SMOOTH_MEDIAN_K = 11
 CONFIDENCE_GATE_LO = 0.4
 CONFIDENCE_GATE_HI = 0.5
 
-# Scale vars (Buoy images are typically 800x600)
-DEFAULT_ORIG_W = 800
-DEFAULT_ORIG_H = 600
+# Scale vars (SMD images are typically 1920x1080)
+DEFAULT_ORIG_W = 1920
+DEFAULT_ORIG_H = 1080
 
 
 # ============================
@@ -223,6 +223,7 @@ def line_intersections_in_image(rho: float, theta_deg: float, w: int, h: int) ->
     eps = 1e-9
     
     # Line equation: (x-cx)*cos + (y-cy)*sin = rho
+    # y = 0: x = rho/cos + cx - (0-cy)*tan  if cos != 0
     if abs(cos_t) > eps:
         x_top = (rho - (0 - cy) * sin_t) / cos_t + cx
         if 0 <= x_top <= w:
@@ -278,6 +279,7 @@ def mean_point_to_line_distance(rho: float, theta_deg: float, rho_gt: float, the
     theta = math.radians(theta_deg)
     cos_t, sin_t = math.cos(theta), math.sin(theta)
     
+    # Evaluate distance from GT line endpoints to predicted line
     def dist(x, y):
         return abs((x - cx) * cos_t + (y - cy) * sin_t - rho)
     
@@ -312,7 +314,7 @@ def compute_VE(rho: float, theta_deg: float, rho_gt: float, theta_gt_deg: float,
                w: int, h: int) -> float:
     """
     Vertical Error (VE): 在图像中心列 xc = (W-1)/2 处，预测线与GT线的y值差
-    返回带符号的 Δy（用于计算 std），取 abs 得到 VE
+    返回带符号的 Δy（用于计�?std），�?abs 得到 VE
     """
     xc = (w - 1.0) / 2.0
     cx, cy = w / 2.0, h / 2.0
@@ -320,15 +322,15 @@ def compute_VE(rho: float, theta_deg: float, rho_gt: float, theta_gt_deg: float,
     y_gt = edge_y_at_x(rho_gt, theta_gt_deg, xc, cx, cy)
     if math.isnan(y_pred) or math.isnan(y_gt):
         return float('nan')
-    return y_pred - y_gt  # 带符号
+    return y_pred - y_gt  # 带符�?
 
 
 def compute_AE(rho: float, theta_deg: float, rho_gt: float, theta_gt_deg: float,
                w: int, h: int) -> float:
     """
-    Angular Error (AE): 预测线与GT线的角度差
+    Angular Error (AE): 预测线与GT线的角度�?
     使用端点计算角度: α = arctan2(y2-y1, x2-x1) * 180/π
-    返回带符号的 Δα（用于计算 std），取 abs + wrap 得到 AE
+    返回带符号的 Δα（用于计�?std），�?abs + wrap 得到 AE
     """
     cx, cy = w / 2.0, h / 2.0
     ypl = edge_y_at_x(rho, theta_deg, 0.0, cx, cy)
@@ -343,18 +345,18 @@ def compute_AE(rho: float, theta_deg: float, rho_gt: float, theta_gt_deg: float,
         return float('nan')
     alpha_gt = math.degrees(math.atan2(ygr - ygl, (w - 1.0)))
 
-    return float(alpha_pred - alpha_gt)  # 带符号
+    return float(alpha_pred - alpha_gt)  # 带符�?
 
 
 def wrap_ae(da: float) -> float:
-    """将角度差 wrap 到 [-90, 90]: da_w = ((da + 90) % 180) - 90"""
+    """将角度差 wrap �?[-90, 90]: da_w = ((da + 90) % 180) - 90"""
     if math.isnan(da):
         return float('nan')
     return ((da + 90.0) % 180.0) - 90.0
 
 
 def safe_std(arr: np.ndarray, ddof: int = 1) -> float:
-    """安全计算标准差，样本数<=1时返回0.0"""
+    """安全计算标准差，样本�?=1时返�?.0"""
     arr = np.asarray(arr, dtype=np.float64)
     valid = arr[np.isfinite(arr)]
     if len(valid) <= 1:
@@ -527,6 +529,16 @@ def load_unet():
 
 
 # ============================
+# Gate logic
+# ============================
+def compute_gate_confidence(cnn_output: np.ndarray) -> float:
+    """Extract confidence from CNN output (if available)."""
+    # CNN outputs [rho, theta] - no explicit confidence
+    # Use a placeholder; could be enhanced with sigmoid gate output
+    return 0.5
+
+
+# ============================
 # Main evaluation
 # ============================
 def main():
@@ -536,7 +548,7 @@ def main():
         torch.cuda.manual_seed_all(SEED)
 
     print("=" * 70)
-    print("Full Pipeline Evaluation for Buoy Test Set (In-Domain)")
+    print("Full Pipeline Evaluation for SMD Test Set (In-Domain)")
     print("=" * 70)
 
     # Create output directory
@@ -598,6 +610,15 @@ def main():
             cnn_out = cnn_model(xb).cpu().numpy()
             gt = yb.numpy()
             
+            # UNet prediction (for boundary refinement)
+            seg_masks = None
+            if unet_model is not None:
+                # Get original image from cache input (channels 0:3 are restored image)
+                # UNet expects raw image, but we can use restored image for seg
+                # Actually need to run UNet on the image - but we have fusion cache
+                # For now, skip UNet boundary refinement since cache was built with UNet already
+                pass
+            
             for i in range(len(xb)):
                 # Denormalize predictions
                 rho_c, theta_c = denorm_rho_theta(cnn_out[i, 0], cnn_out[i, 1])
@@ -619,19 +640,19 @@ def main():
                 if not math.isnan(ve_c):
                     ve_signed_cnn.append(ve_c)
                 if not math.isnan(ae_c_w):
-                    ae_signed_cnn.append(ae_c_w)  # 已 wrap 到 [-90, 90]
+                    ae_signed_cnn.append(ae_c_w)  # �?wrap �?[-90, 90]
                 
                 rho_err_cnn.append(rho_abs_c)
                 theta_err_cnn.append(theta_abs_c)
                 
-                # Final metrics (same as CNN for now)
+                # Final metrics (same as CNN for now, no RANSAC refinement without raw images)
                 rho_f, theta_f = rho_c, theta_c
                 rho_abs_f = rho_abs_c
                 theta_abs_f = theta_abs_c
                 ld_f = ld_c
                 ey_f = ey_c
                 ve_f = ve_c
-                ae_f_w = ae_c_w  # 已 wrap
+                ae_f_w = ae_c_w  # �?wrap
                 
                 rho_err_final.append(rho_abs_f)
                 theta_err_final.append(theta_abs_f)
@@ -685,7 +706,7 @@ def main():
     ve_signed_final = np.array(ve_signed_final, dtype=np.float64)
     ae_signed_final = np.array(ae_signed_final, dtype=np.float64)
 
-    # ae_signed_cnn/ae_signed_final 已在采样时通过 wrap_ae 处理到 [-90, 90]
+    # ae_signed_cnn/ae_signed_final 已在采样时通过 wrap_ae 处理�?[-90, 90]
     # Absolute values
     ve_abs_cnn = np.abs(ve_signed_cnn)
     ae_abs_cnn = np.abs(ae_signed_cnn)
@@ -722,7 +743,7 @@ def main():
 
     # Paper summary
     print("=" * 60)
-    print("论文表格汇总 (Final, orig-scale, mean ± std)")
+    print("论文表格汇�?(Final, orig-scale, mean ± std)")
     print("=" * 60)
     ve_orig_f = ve_abs_final * scale_y
     ve_signed_orig_f = ve_signed_final * scale_y
@@ -781,7 +802,7 @@ def main():
 
     # Save summary
     summary = {
-        "dataset": "Buoy",
+        "dataset": "SMD",
         "n_samples": len(rows),
         "VE_mean_px": float(np.mean(ve_orig_f)),
         "VE_std_px": safe_std(ve_signed_orig_f),

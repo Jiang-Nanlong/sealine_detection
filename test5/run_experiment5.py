@@ -13,7 +13,7 @@ This script orchestrates:
 
 PyCharm: 直接运行此文件，在下方配置区修改参数
 
-注意：运行前请确保 generate_degraded_images.py、make_fusion_cache_degraded.py、
+注意：运行前请确�?generate_degraded_images.py、make_fusion_cache_degraded.py�?
       evaluate_degraded.py、summarize_degraded_results.py 中的 DATASET 变量
       与本文件中的 DATASET 一致！
 """
@@ -28,21 +28,21 @@ from pathlib import Path
 # ----------------------------
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TEST5_DIR = PROJECT_ROOT / "test5"
-TEST6_DIR = PROJECT_ROOT / "test6"
+test1_DIR = PROJECT_ROOT / "test1"
 TEST4_DIR = PROJECT_ROOT / "test4"
 
 # ============================
-# PyCharm 配置区 (在这里修改)
+# PyCharm 配置�?(在这里修�?
 # ============================
-SKIP_GENERATE = False   # True: 跳过生成退化图像步骤
+SKIP_GENERATE = False   # True: 跳过生成退化图像步�?
 SKIP_CACHE = False      # True: 跳过缓存生成步骤
-SKIP_VIS = False        # True: 跳过可视化步骤
-# 选择数据集: "musid", "smd", "buoy"
+SKIP_VIS = False        # True: 跳过可视化步�?
+# 选择数据�? "musid", "smd", "buoy"
 DATASET = "musid"
-GLOBAL_SEED = 42        # 全局种子（传递给 generate_degraded_images.py）
+GLOBAL_SEED = 42        # 全局种子（传递给 generate_degraded_images.py�?
 # ============================
 
-# 命令行参数覆盖
+# 命令行参数覆�?
 if "--dataset" in sys.argv:
     _idx = sys.argv.index("--dataset")
     if _idx + 1 < len(sys.argv):
@@ -53,7 +53,7 @@ if "--seed" in sys.argv:
     if _idx + 1 < len(sys.argv):
         GLOBAL_SEED = int(sys.argv[_idx + 1])
 
-# 数据集配置
+# 数据集配�?
 DATASET_CONFIGS = {
     "musid": {
         "cnn_weights": PROJECT_ROOT / "weights" / "best_fusion_cnn_1024x576.pth",
@@ -66,20 +66,20 @@ DATASET_CONFIGS = {
         "results_dir": TEST5_DIR / "experiment5_results",
     },
     "smd": {
-        "cnn_weights": TEST6_DIR / "weights" / "best_fusion_cnn_smd.pth",
-        "unet_weights": TEST6_DIR / "weights_smd" / "smd_rghnet_best_seg_c2.pth",
+        "cnn_weights": test1_DIR / "weights" / "best_fusion_cnn_smd.pth",
+        "unet_weights": test1_DIR / "weights_smd" / "smd_rghnet_best_seg_c2.pth",
         "img_dir": TEST4_DIR / "manual_review" / "kept_frames",
-        "splits_dir": TEST6_DIR / "splits_smd",
+        "splits_dir": test1_DIR / "splits_smd",
         "degraded_dir": TEST5_DIR / "degraded_images_smd",
         "cache_dir": TEST5_DIR / "FusionCache_Degraded_SMD",
         "eval_dir": TEST5_DIR / "eval_results_smd",
         "results_dir": TEST5_DIR / "experiment5_results_smd",
     },
     "buoy": {
-        "cnn_weights": TEST6_DIR / "weights" / "best_fusion_cnn_buoy.pth",
-        "unet_weights": TEST6_DIR / "weights_buoy" / "buoy_rghnet_best_seg_c2.pth",
+        "cnn_weights": test1_DIR / "weights" / "best_fusion_cnn_buoy.pth",
+        "unet_weights": test1_DIR / "weights_buoy" / "buoy_rghnet_best_seg_c2.pth",
         "img_dir": TEST4_DIR / "buoy_frames",
-        "splits_dir": TEST6_DIR / "splits_buoy",
+        "splits_dir": test1_DIR / "splits_buoy",
         "degraded_dir": TEST5_DIR / "degraded_images_buoy",
         "cache_dir": TEST5_DIR / "FusionCache_Degraded_Buoy",
         "eval_dir": TEST5_DIR / "eval_results_buoy",
@@ -151,7 +151,7 @@ def main():
     print(f"  SKIP_GENERATE = {SKIP_GENERATE}")
     print(f"  SKIP_CACHE    = {SKIP_CACHE}")
     print(f"  SKIP_VIS      = {SKIP_VIS}")
-    print(f"\n[Info] 将自动传递 --dataset {DATASET} --seed {GLOBAL_SEED} 给 generate_degraded_images.py")
+    print(f"\n[Info] 将自动传�?--dataset {DATASET} --seed {GLOBAL_SEED} �?generate_degraded_images.py")
     
     # Check prerequisites
     issues = check_prerequisites()
@@ -214,7 +214,7 @@ def main():
     print(f"  - Degraded images: {degraded_dir}")
     print(f"  - Evaluation results: {cfg['eval_dir']}")
     print(f"  - Summary tables: {cfg['results_dir']}")
-    print(f"\n如需运行其他数据集，请修改本文件及各子脚本中的 DATASET 变量。")
+    print(f"\n如需运行其他数据集，请修改本文件及各子脚本中�?DATASET 变量�?)
 
 
 if __name__ == "__main__":

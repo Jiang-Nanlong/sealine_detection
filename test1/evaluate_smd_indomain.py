@@ -1,23 +1,23 @@
 # -*- coding: utf-8 -*-
 """
-Evaluate Fusion-CNN on Buoy test set (Experiment 6: In-Domain).
+Evaluate Fusion-CNN on SMD test set (Experiment 6: In-Domain).
 
 海天线统一评价指标:
-  - VE (Vertical Error): 中心列垂直误差 mean(abs(dy))
+  - VE (Vertical Error): 中心列垂直误�?mean(abs(dy))
   - SVE: std(dy, ddof=1)
   - AE (Angular Error): 角度误差 mean(abs(da_w))
   - SA: std(da_w, ddof=1)
 
 Inputs:
-  - test6/FusionCache_Buoy/test/
-  - test6/weights/best_fusion_cnn_buoy.pth
-  - test6/splits_buoy/test_indices.npy
+  - test1/FusionCache_SMD/test/
+  - test1/weights/best_fusion_cnn_smd.pth
+  - test1/splits_smd/test_indices.npy
 
 Outputs:
-  - test6/eval_buoy_indomain.csv
+  - test1/eval_smd_indomain.csv
   - 终端输出统计信息
 
-PyCharm: 直接运行此文件
+PyCharm: 直接运行此文�?
 """
 
 import os
@@ -42,7 +42,7 @@ from cnn_model import HorizonResNet  # noqa: E402
 
 
 # ============================
-# PyCharm 配置区
+# PyCharm 配置�?
 # ============================
 BATCH_SIZE = 64
 NUM_WORKERS = 4
@@ -50,15 +50,15 @@ SEED = 40
 # ============================
 
 # Paths
-TEST6_DIR = PROJECT_ROOT / "test6"
-CACHE_DIR = TEST6_DIR / "FusionCache_Buoy" / "test"
-SPLIT_DIR = TEST6_DIR / "splits_buoy"
-WEIGHTS_PATH = TEST6_DIR / "weights" / "best_fusion_cnn_buoy.pth"
-OUT_CSV = TEST6_DIR / "eval_buoy_indomain.csv"
+test1_DIR = PROJECT_ROOT / "test1"
+CACHE_DIR = test1_DIR / "FusionCache_SMD" / "test"
+SPLIT_DIR = test1_DIR / "splits_smd"
+WEIGHTS_PATH = test1_DIR / "weights" / "best_fusion_cnn_smd.pth"
+OUT_CSV = test1_DIR / "eval_smd_indomain.csv"
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-# Denorm config (与主评估代码一致)
+# Denorm config (与主评估代码一�?
 UNET_W, UNET_H = 1024, 576
 RESIZE_H = 2240
 ANGLE_RANGE_DEG = 180.0
@@ -82,8 +82,8 @@ class TestCacheDataset(Dataset):
         x = torch.from_numpy(data["input"]).float()
         y = torch.from_numpy(data["label"]).float()
         img_name = str(data.get("img_name", f"{idx}.jpg"))
-        orig_w = int(data.get("orig_w", 800))   # Buoy: 800x600
-        orig_h = int(data.get("orig_h", 600))
+        orig_w = int(data.get("orig_w", 1920))
+        orig_h = int(data.get("orig_h", 1080))
         return x, y, idx, img_name, orig_w, orig_h
 
 
@@ -98,7 +98,7 @@ def load_split_indices(split_dir):
 # Metrics (海天线统一评价指标)
 # ============================
 def denorm_rho_theta(rho_norm, theta_norm):
-    """将归一化的 (rho, theta) 转换为实际值"""
+    """将归一化的 (rho, theta) 转换为实际�?""
     diag = math.sqrt(UNET_W ** 2 + UNET_H ** 2)
     pad_top = (RESIZE_H - diag) / 2.0
     
@@ -137,7 +137,7 @@ def compute_AE(rho_pred: float, theta_pred_deg: float,
                rho_gt: float, theta_gt_deg: float,
                w: int, h: int) -> float:
     """
-    Angular Error (AE): 预测线与GT线的角度差
+    Angular Error (AE): 预测线与GT线的角度�?
     使用端点计算角度: α = atan2(y2-y1, x2-x1) * 180/π
     返回带符号的 Δα
     """
@@ -153,12 +153,12 @@ def compute_AE(rho_pred: float, theta_pred_deg: float,
 
 
 def wrap_ae(da: float) -> float:
-    """将角度差 wrap 到 [-90, 90]: da_w = ((da + 90) % 180) - 90"""
+    """将角度差 wrap �?[-90, 90]: da_w = ((da + 90) % 180) - 90"""
     return ((da + 90.0) % 180.0) - 90.0
 
 
 def safe_std(arr: np.ndarray, ddof: int = 1) -> float:
-    """安全计算标准差，样本数<=1时返回0.0"""
+    """安全计算标准差，样本�?=1时返�?.0"""
     arr = np.asarray(arr, dtype=np.float64)
     valid = arr[np.isfinite(arr)]
     if len(valid) <= 1:
@@ -167,7 +167,7 @@ def safe_std(arr: np.ndarray, ddof: int = 1) -> float:
 
 
 def pct_le(arr, thr):
-    """计算小于等于阈值的样本百分比"""
+    """计算小于等于阈值的样本百分�?""
     if len(arr) == 0:
         return 0.0
     return 100.0 * float(np.mean(arr <= thr))
@@ -184,18 +184,18 @@ def main():
         torch.cuda.manual_seed_all(SEED)
 
     print("=" * 70)
-    print("Evaluate Fusion-CNN on Buoy Test Set (In-Domain)")
+    print("Evaluate Fusion-CNN on SMD Test Set (In-Domain)")
     print("=" * 70)
 
     # Check files
     if not CACHE_DIR.exists():
         print(f"[Error] Cache not found: {CACHE_DIR}")
-        print("  Please run make_fusion_cache_buoy_train.py first.")
+        print("  Please run make_fusion_cache_smd_train.py first.")
         return 1
 
     if not WEIGHTS_PATH.exists():
         print(f"[Error] Weights not found: {WEIGHTS_PATH}")
-        print("  Please run train_fusion_cnn_buoy.py first.")
+        print("  Please run train_fusion_cnn_smd.py first.")
         return 1
 
     # Load data
@@ -218,8 +218,8 @@ def main():
     da_wrapped = []  # AE wrapped signed
     rows = []
 
-    # Scale factors (Buoy: 800x600)
-    DEFAULT_ORIG_W, DEFAULT_ORIG_H = 800, 600
+    # Scale factors (SMD: 1920x1080)
+    DEFAULT_ORIG_W, DEFAULT_ORIG_H = 1920, 1080
     scale_y = DEFAULT_ORIG_H / UNET_H
 
     print("\n[Evaluating...]")
@@ -286,7 +286,7 @@ def main():
     print(f"AE (deg):  {AE_mean:.2f}    SA:  {SA:.2f}    P95: {AE_p95:.2f}")
     
     print("\n" + "=" * 60)
-    print("论文表格汇总 (mean ± std)")
+    print("论文表格汇�?(mean ± std)")
     print("=" * 60)
     print(f"VE (px):  {VE_mean:.2f} ± {SVE:.2f}")
     print(f"AE (deg): {AE_mean:.2f} ± {SA:.2f}")

@@ -1,25 +1,25 @@
 # -*- coding: utf-8 -*-
 """
-Experiment 6: In-Domain Training on SMD and Buoy Datasets.
+Experiment 1: In-Domain Training on SMD and Buoy Datasets.
 
-目的: 分别在 SMD 和 Buoy 数据集上训练 UNet + CNN，测试在各自数据集上的效果
+目的: 分别�?SMD �?Buoy 数据集上训练 UNet + CNN，测试在各自数据集上的效�?
 
 完整执行流程:
   SMD:
-    1. 准备 SMD 数据集划分 (prepare_smd_trainset.py)
+    1. 准备 SMD 数据集划�?(prepare_smd_trainset.py)
     2. 训练 SMD UNet - 5阶段自动运行: A→B→C1→B2→C2
     3. 生成 SMD 训练缓存 (make_fusion_cache_smd_train.py)
     4. 训练 SMD CNN (train_fusion_cnn_smd.py)
-    5. 评估 SMD 模型 (evaluate_smd_full.py) - 完整指标与 evaluate_full_pipeline.py 对齐
+    5. 评估 SMD 模型 (evaluate_smd_full.py) - 完整指标�?evaluate_full_pipeline.py 对齐
   
   Buoy:
-    6. 准备 Buoy 数据集划分 (prepare_buoy_trainset.py)
+    6. 准备 Buoy 数据集划�?(prepare_buoy_trainset.py)
     7. 训练 Buoy UNet - 5阶段自动运行: A→B→C1→B2→C2
     8. 生成 Buoy 训练缓存 (make_fusion_cache_buoy_train.py)
     9. 训练 Buoy CNN (train_fusion_cnn_buoy.py)
-    10. 评估 Buoy 模型 (evaluate_buoy_full.py) - 完整指标与 evaluate_full_pipeline.py 对齐
+    10. 评估 Buoy 模型 (evaluate_buoy_full.py) - 完整指标�?evaluate_full_pipeline.py 对齐
 
-PyCharm: 直接运行此文件
+PyCharm: 直接运行此文�?
 """
 
 import sys
@@ -27,7 +27,7 @@ import subprocess
 from pathlib import Path
 
 # ============================
-# PyCharm 配置区 - 控制执行步骤
+# PyCharm 配置�?- 控制执行步骤
 # ============================
 # SMD 完整流程
 RUN_SMD_PIPELINE = True       # 运行完整 SMD 流程
@@ -35,15 +35,15 @@ RUN_SMD_PIPELINE = True       # 运行完整 SMD 流程
 # Buoy 完整流程
 RUN_BUOY_PIPELINE = False     # 运行完整 Buoy 流程
 
-# 细粒度控制（仅当上面对应的 PIPELINE 为 True 时生效）
+# 细粒度控制（仅当上面对应�?PIPELINE �?True 时生效）
 SKIP_PREPARE = False           # 跳过数据准备（如果已运行过）
-SKIP_UNET = False             # 跳过 UNet 训练（如果已训练完成）
+SKIP_UNET = False             # 跳过 UNet 训练（如果已训练完成�?
 SKIP_CACHE = False            # 跳过缓存生成
 SKIP_CNN = False              # 跳过 CNN 训练
 SKIP_EVAL = False             # 跳过评估
 # ============================
 
-TEST6_DIR = Path(__file__).resolve().parent
+test1_DIR = Path(__file__).resolve().parent
 UNET_STAGES = ["A", "B", "C1", "B2", "C2"]
 
 
@@ -75,7 +75,7 @@ def run_script(name: str, script_path: Path, extra_args: list = None):
 def run_unet_all_stages(dataset: str):
     """Run UNet training for all 5 stages."""
     script_name = f"train_unet_{dataset}.py"
-    script_path = TEST6_DIR / script_name
+    script_path = test1_DIR / script_name
     
     print("\n" + "=" * 70)
     print(f"[UNet Training] {dataset.upper()} - 5 Stages")
@@ -105,7 +105,7 @@ def run_pipeline(dataset: str):
     if not SKIP_PREPARE:
         if not run_script(
             f"Prepare {dataset.upper()} trainset",
-            TEST6_DIR / f"prepare_{dataset}_trainset.py"
+            test1_DIR / f"prepare_{dataset}_trainset.py"
         ):
             failed.append(f"Prepare {dataset}")
     
@@ -119,7 +119,7 @@ def run_pipeline(dataset: str):
     if not SKIP_CACHE:
         if not run_script(
             f"Generate {dataset.upper()} cache",
-            TEST6_DIR / f"make_fusion_cache_{dataset}_train.py"
+            test1_DIR / f"make_fusion_cache_{dataset}_train.py"
         ):
             failed.append(f"Cache {dataset}")
     
@@ -127,7 +127,7 @@ def run_pipeline(dataset: str):
     if not SKIP_CNN:
         if not run_script(
             f"Train {dataset.upper()} CNN",
-            TEST6_DIR / f"train_fusion_cnn_{dataset}.py"
+            test1_DIR / f"train_fusion_cnn_{dataset}.py"
         ):
             failed.append(f"CNN {dataset}")
     
@@ -135,7 +135,7 @@ def run_pipeline(dataset: str):
     if not SKIP_EVAL:
         if not run_script(
             f"Evaluate {dataset.upper()} model (full metrics)",
-            TEST6_DIR / f"evaluate_{dataset}_full.py"
+            test1_DIR / f"evaluate_{dataset}_full.py"
         ):
             failed.append(f"Eval {dataset}")
     
@@ -144,7 +144,7 @@ def run_pipeline(dataset: str):
 
 def main():
     print("=" * 70)
-    print("Experiment 6: In-Domain Training (UNet + CNN)")
+    print("Experiment 1: In-Domain Training (UNet + CNN)")
     print("=" * 70)
     
     all_failed = []
@@ -165,7 +165,7 @@ def main():
 
     # Summary
     print("\n" + "=" * 70)
-    print("Experiment 6 Complete")
+    print("Experiment 1 Complete")
     print("=" * 70)
     
     if all_failed:
@@ -178,18 +178,18 @@ def main():
     print("\n[Outputs]")
     outputs = [
         # SMD outputs
-        TEST6_DIR / "weights_smd" / "smd_rghnet_best_seg_c2.pth",
-        TEST6_DIR / "weights" / "best_fusion_cnn_smd.pth",
-        TEST6_DIR / "eval_smd_full_outputs" / "full_eval_smd_test.csv",
-        TEST6_DIR / "eval_smd_full_outputs" / "eval_summary_smd.csv",
+        test1_DIR / "weights_smd" / "smd_rghnet_best_seg_c2.pth",
+        test1_DIR / "weights" / "best_fusion_cnn_smd.pth",
+        test1_DIR / "eval_smd_full_outputs" / "full_eval_smd_test.csv",
+        test1_DIR / "eval_smd_full_outputs" / "eval_summary_smd.csv",
         # Buoy outputs
-        TEST6_DIR / "weights_buoy" / "buoy_rghnet_best_seg_c2.pth",
-        TEST6_DIR / "weights" / "best_fusion_cnn_buoy.pth",
-        TEST6_DIR / "eval_buoy_full_outputs" / "full_eval_buoy_test.csv",
-        TEST6_DIR / "eval_buoy_full_outputs" / "eval_summary_buoy.csv",
+        test1_DIR / "weights_buoy" / "buoy_rghnet_best_seg_c2.pth",
+        test1_DIR / "weights" / "best_fusion_cnn_buoy.pth",
+        test1_DIR / "eval_buoy_full_outputs" / "full_eval_buoy_test.csv",
+        test1_DIR / "eval_buoy_full_outputs" / "eval_summary_buoy.csv",
     ]
     for o in outputs:
-        status = "✓" if o.exists() else "✗"
+        status = "�? if o.exists() else "�?
         print(f"  {status} {o}")
 
     return 0 if not all_failed else 1

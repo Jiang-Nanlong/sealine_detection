@@ -29,10 +29,10 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 # ============================
-# PyCharm 配置区 (在这里修改)
+# PyCharm 配置�?(在这里修�?
 # ============================
-N_SAMPLES = 5                   # 每种退化可视化样本数
-SELECTED_DEGRADATIONS = [       # 选择要可视化的退化类型（海洋特有）
+N_SAMPLES = 5                   # 每种退化可视化样本�?
+SELECTED_DEGRADATIONS = [       # 选择要可视化的退化类型（海洋特有�?
     "rain_medium",
     "glare_heavy",
     "jpeg_q10",
@@ -40,11 +40,11 @@ SELECTED_DEGRADATIONS = [       # 选择要可视化的退化类型（海洋特�
     "fog_0.5",
 ]
 SEED = 42
-# 选择数据集: "musid", "smd", "buoy"
+# 选择数据�? "musid", "smd", "buoy"
 DATASET = "musid"
 # ============================
 
-# 命令行参数覆盖 (支持 run_experiment5.py 一键调用)
+# 命令行参数覆�?(支持 run_experiment5.py 一键调�?
 if "--dataset" in sys.argv:
     _idx = sys.argv.index("--dataset")
     if _idx + 1 < len(sys.argv):
@@ -54,9 +54,9 @@ if "--dataset" in sys.argv:
 # Config
 # ----------------------------
 TEST5_DIR = PROJECT_ROOT / "test5"
-TEST6_DIR = PROJECT_ROOT / "test6"
+test1_DIR = PROJECT_ROOT / "test1"
 
-# 数据集配置
+# 数据集配�?
 DATASET_CONFIGS = {
     "musid": {
         "degraded_img_dir": TEST5_DIR / "degraded_images",
@@ -68,13 +68,13 @@ DATASET_CONFIGS = {
         "degraded_img_dir": TEST5_DIR / "degraded_images_smd",
         "cache_root": TEST5_DIR / "FusionCache_Degraded_SMD",
         "out_dir": TEST5_DIR / "visualization_smd",
-        "cnn_weights": "test6/weights/best_fusion_cnn_smd.pth",
+        "cnn_weights": "test1/weights/best_fusion_cnn_smd.pth",
     },
     "buoy": {
         "degraded_img_dir": TEST5_DIR / "degraded_images_buoy",
         "cache_root": TEST5_DIR / "FusionCache_Degraded_Buoy",
         "out_dir": TEST5_DIR / "visualization_buoy",
-        "cnn_weights": "test6/weights/best_fusion_cnn_buoy.pth",
+        "cnn_weights": "test1/weights/best_fusion_cnn_buoy.pth",
     },
 }
 

@@ -9,7 +9,7 @@ Produces:
   2. Grouped analysis (by degradation type: noise, blur, light, etc.)
   3. Markdown and LaTeX formatted outputs for thesis
 
-PyCharm: 直接运行此文件
+PyCharm: 直接运行此文�?
 """
 
 import os
@@ -26,19 +26,19 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TEST5_DIR = PROJECT_ROOT / "test5"
 
 # ============================
-# PyCharm 配置区 (在这里修改)
+# PyCharm 配置�?(在这里修�?
 # ============================
-# 选择数据集: "musid", "smd", "buoy"
+# 选择数据�? "musid", "smd", "buoy"
 DATASET = "musid"
 # ============================
 
-# 命令行参数覆盖 (支持 run_experiment5.py 一键调用)
+# 命令行参数覆�?(支持 run_experiment5.py 一键调�?
 if "--dataset" in sys.argv:
     _idx = sys.argv.index("--dataset")
     if _idx + 1 < len(sys.argv):
         DATASET = sys.argv[_idx + 1]
 
-# 数据集配置
+# 数据集配�?
 DATASET_CONFIGS = {
     "musid": {
         "eval_csv": TEST5_DIR / "eval_results" / "degradation_results.csv",
@@ -68,7 +68,7 @@ def ensure_dir(p):
 # Degradation type grouping - 海洋场景分组
 DEGRADATION_GROUPS = {
     "clean": "Baseline",
-    # 基础退化
+    # 基础退�?
     "gaussian_noise_15": "Sensor Noise",
     "gaussian_noise_30": "Sensor Noise",
     "motion_blur_15": "Motion Blur",
@@ -77,7 +77,7 @@ DEGRADATION_GROUPS = {
     "low_light_2.5": "Low Light",
     "fog_0.3": "Fog/Haze",
     "fog_0.5": "Fog/Haze",
-    # 海洋特有退化
+    # 海洋特有退�?
     "rain_light": "Rain",
     "rain_medium": "Rain",
     "rain_heavy": "Rain",
@@ -89,24 +89,24 @@ DEGRADATION_GROUPS = {
     "lowres_0.25x": "Low Resolution",
 }
 
-# Display names - 中英文对照
+# Display names - 中英文对�?
 DISPLAY_NAMES = {
     "clean": "Clean (基准)",
-    # 基础退化
+    # 基础退�?
     "gaussian_noise_15": "噪声 σ=15",
     "gaussian_noise_30": "噪声 σ=30",
     "motion_blur_15": "运动模糊 k=15",
     "motion_blur_25": "运动模糊 k=25",
-    "low_light_2.0": "低光照 γ=2.0",
-    "low_light_2.5": "低光照 γ=2.5",
+    "low_light_2.0": "低光�?γ=2.0",
+    "low_light_2.5": "低光�?γ=2.5",
     "fog_0.3": "海雾 30%",
     "fog_0.5": "海雾 50%",
-    # 海洋特有退化
+    # 海洋特有退�?
     "rain_light": "小雨",
     "rain_medium": "中雨",
     "rain_heavy": "大雨",
     "glare_light": "轻度反光",
-    "glare_heavy": "强反光",
+    "glare_heavy": "强反�?,
     "jpeg_q20": "压缩 Q=20",
     "jpeg_q10": "压缩 Q=10",
     "lowres_0.5x": "低清 0.5x",
@@ -152,7 +152,7 @@ def generate_markdown(df: pd.DataFrame) -> str:
     
     # Overall table
     lines.append("## Performance Under Various Degradations\n")
-    lines.append("| Degradation | N | ρ Mean (px) | ρ≤10px (%) | Δρ | θ Mean (°) | θ≤2° (%) | Δθ |")
+    lines.append("| Degradation | N | ρ Mean (px) | ρ�?0px (%) | Δρ | θ Mean (°) | θ�?° (%) | Δθ |")
     lines.append("|-------------|---|-------------|------------|-----|------------|----------|-----|")
     
     for _, row in df.iterrows():
@@ -183,7 +183,7 @@ def generate_markdown(df: pd.DataFrame) -> str:
             groups[group] = []
         groups[group].append(row)
     
-    lines.append("| Type | Avg ρ≤10px (%) | Avg θ≤2° (%) | Robustness |")
+    lines.append("| Type | Avg ρ�?0px (%) | Avg θ�?° (%) | Robustness |")
     lines.append("|------|----------------|--------------|------------|")
     
     for group_name in ["Baseline", "Gaussian Noise", "Motion Blur", "Gaussian Blur", "Low Light", "Fog/Haze", "Salt & Pepper"]:
@@ -196,13 +196,13 @@ def generate_markdown(df: pd.DataFrame) -> str:
         if baseline_rho is not None and group_name != "Baseline":
             drop_rho = baseline_rho - avg_rho
             if drop_rho < 5:
-                robust = "✅ Excellent"
+                robust = "�?Excellent"
             elif drop_rho < 15:
-                robust = "✅ Good"
+                robust = "�?Good"
             elif drop_rho < 30:
                 robust = "⚠️ Moderate"
             else:
-                robust = "❌ Poor"
+                robust = "�?Poor"
         else:
             robust = "-"
         
@@ -216,15 +216,15 @@ def generate_markdown(df: pd.DataFrame) -> str:
         worst = df[df["degradation"] != "clean"].sort_values("rho_le_10").iloc[0]
         best = df[df["degradation"] != "clean"].sort_values("rho_le_10", ascending=False).iloc[0]
         
-        lines.append(f"- **Baseline (Clean)**: ρ≤10px = {baseline_rho:.1f}%, θ≤2° = {baseline_theta:.1f}%")
+        lines.append(f"- **Baseline (Clean)**: ρ�?0px = {baseline_rho:.1f}%, θ�?° = {baseline_theta:.1f}%")
         lines.append(f"- **Most Robust Against**: {DISPLAY_NAMES.get(best['degradation'], best['degradation'])} "
-                    f"(ρ≤10px = {best['rho_le_10']:.1f}%, drop = {baseline_rho - best['rho_le_10']:.1f}%)")
+                    f"(ρ�?0px = {best['rho_le_10']:.1f}%, drop = {baseline_rho - best['rho_le_10']:.1f}%)")
         lines.append(f"- **Most Challenging**: {DISPLAY_NAMES.get(worst['degradation'], worst['degradation'])} "
-                    f"(ρ≤10px = {worst['rho_le_10']:.1f}%, drop = {baseline_rho - worst['rho_le_10']:.1f}%)")
+                    f"(ρ�?0px = {worst['rho_le_10']:.1f}%, drop = {baseline_rho - worst['rho_le_10']:.1f}%)")
         
         # Angle robustness
         avg_theta_drop = baseline_theta - df[df["degradation"] != "clean"]["theta_le_2"].mean()
-        lines.append(f"- **Angle Robustness**: Average θ≤2° drop = {avg_theta_drop:.1f}% (highly robust)")
+        lines.append(f"- **Angle Robustness**: Average θ�?° drop = {avg_theta_drop:.1f}% (highly robust)")
     
     return "\n".join(lines)
 

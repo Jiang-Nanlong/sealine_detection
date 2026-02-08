@@ -2,15 +2,15 @@
 """
 Dataset loader for external datasets (SMD, Buoy) - Experiment 6.
 
-用于在SMD和Buoy数据集上训练UNet和CNN。
-与主训练代码的数据加载策略保持一致。
+用于在SMD和Buoy数据集上训练UNet和CNN�?
+与主训练代码的数据加载策略保持一致�?
 
-支持两种模式：
+支持两种模式�?
   - joint: 返回 (degraded_img, clean_img, seg_mask) 用于联合训练
   - segmentation: 返回 (clean_img, seg_mask) 用于分割训练
 
-注意：由于SMD和Buoy数据集本身就包含各种退化（雾、雨等），
-所以这里的"clean"图像实际上就是原图，退化合成比例较低。
+注意：由于SMD和Buoy数据集本身就包含各种退化（雾、雨等）�?
+所以这里的"clean"图像实际上就是原图，退化合成比例较低�?
 """
 
 import os
@@ -38,7 +38,7 @@ class ExternalDataset(Dataset):
         img_size: Tuple[int, int] = (576, 1024),  # (H, W)
         mode: str = "joint",  # "joint" or "segmentation"
         augment: bool = False,
-        p_clean: float = 0.35,  # 保持干净的概率
+        p_clean: float = 0.35,  # 保持干净的概�?
     ):
         self.csv_path = csv_path
         self.img_dir = img_dir
@@ -51,7 +51,7 @@ class ExternalDataset(Dataset):
         self.df = pd.read_csv(csv_path)
         self.n_samples = len(self.df)
         
-        # 退化类型（与主代码一致：rain, fog, dark）
+        # 退化类型（与主代码一致：rain, fog, dark�?
         self.degradation_types = ["rain", "fog", "dark"]
     
     def __len__(self):
@@ -65,7 +65,7 @@ class ExternalDataset(Dataset):
         img_path = os.path.join(self.img_dir, img_name)
         bgr = cv2.imread(img_path, cv2.IMREAD_COLOR)
         if bgr is None:
-            # 返回空数据
+            # 返回空数�?
             h, w = self.img_size
             if self.mode == "segmentation":
                 return torch.zeros(3, h, w), torch.zeros(h, w, dtype=torch.long)
@@ -74,11 +74,11 @@ class ExternalDataset(Dataset):
         
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         
-        # Resize到目标尺寸
+        # Resize到目标尺�?
         h, w = self.img_size
         rgb_resized = cv2.resize(rgb, (w, h), interpolation=cv2.INTER_AREA)
         
-        # 获取GT坐标并缩放
+        # 获取GT坐标并缩�?
         h_orig, w_orig = bgr.shape[:2]
         x1 = float(row["x1"]) * w / w_orig
         y1 = float(row["y1"]) * h / h_orig
@@ -92,20 +92,20 @@ class ExternalDataset(Dataset):
         if self.augment:
             rgb_resized, mask = self._augment(rgb_resized, mask)
         
-        # 归一化
+        # 归一�?
         clean_tensor = torch.from_numpy(rgb_resized.astype(np.float32) / 255.0).permute(2, 0, 1)
         mask_tensor = torch.from_numpy(mask.astype(np.int64))
         
         if self.mode == "segmentation":
-            # 分割模式：返回 (clean, mask)
+            # 分割模式：返�?(clean, mask)
             return clean_tensor, mask_tensor
         else:
-            # Joint模式：返回 (degraded, clean, mask)
+            # Joint模式：返�?(degraded, clean, mask)
             if random.random() < self.p_clean:
                 # 保持干净
                 input_tensor = clean_tensor.clone()
             else:
-                # 应用退化
+                # 应用退�?
                 input_tensor = self._apply_degradation(clean_tensor)
             
             return input_tensor, clean_tensor, mask_tensor
@@ -116,13 +116,13 @@ class ExternalDataset(Dataset):
         
         # 计算直线方程：y = k*x + b
         if abs(x2 - x1) < 1e-6:
-            # 垂直线（不太可能是水平线）
+            # 垂直线（不太可能是水平线�?
             return mask
         
         k = (y2 - y1) / (x2 - x1)
         b = y1 - k * x1
         
-        # 对每一列x，计算y值，上方设为1（sky）
+        # 对每一列x，计算y值，上方设为1（sky�?
         for x in range(w):
             y_line = int(k * x + b)
             y_line = max(0, min(h - 1, y_line))
@@ -131,7 +131,7 @@ class ExternalDataset(Dataset):
         return mask
     
     def _augment(self, img: np.ndarray, mask: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        """简单的数据增强：水平翻转"""
+        """简单的数据增强：水平翻�?""
         if random.random() > 0.5:
             img = np.fliplr(img).copy()
             mask = np.fliplr(mask).copy()
@@ -153,7 +153,7 @@ class ExternalDataset(Dataset):
         return torch.from_numpy(img_np.astype(np.float32) / 255.0).permute(2, 0, 1)
     
     def _add_rain(self, img: np.ndarray) -> np.ndarray:
-        """添加雨效果"""
+        """添加雨效�?""
         h, w = img.shape[:2]
         rain = np.zeros((h, w), dtype=np.float32)
         
@@ -181,11 +181,11 @@ class ExternalDataset(Dataset):
         return result
     
     def _add_fog(self, img: np.ndarray) -> np.ndarray:
-        """添加雾效果"""
+        """添加雾效�?""
         h, w = img.shape[:2]
         fog_intensity = random.uniform(0.2, 0.5)
         
-        # 渐变雾（从上到下逐渐减弱）
+        # 渐变雾（从上到下逐渐减弱�?
         fog = np.linspace(fog_intensity, fog_intensity * 0.3, h).reshape(-1, 1)
         fog = np.tile(fog, (1, w))
         
@@ -193,7 +193,7 @@ class ExternalDataset(Dataset):
         noise = np.random.randn(h, w) * 0.05
         fog = np.clip(fog + noise, 0, 1).astype(np.float32)
         
-        # 雾色（灰白色）
+        # 雾色（灰白色�?
         fog_color = np.array([200, 200, 200], dtype=np.float32)
         
         result = img.astype(np.float32) * (1 - fog[:, :, None]) + fog_color * fog[:, :, None]

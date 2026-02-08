@@ -33,16 +33,16 @@ if str(PROJECT_ROOT) not in sys.path:
 from cnn_model import HorizonResNet
 
 # ============================
-# PyCharm 配置区 (在这里修改)
+# PyCharm 配置�?(在这里修�?
 # ============================
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 BATCH_SIZE = 64
 NUM_WORKERS = 0
-# 选择数据集: "musid", "smd", "buoy"
+# 选择数据�? "musid", "smd", "buoy"
 DATASET = "musid"
 # ============================
 
-# 命令行参数覆盖 (支持 run_experiment5.py 一键调用)
+# 命令行参数覆�?(支持 run_experiment5.py 一键调�?
 if "--dataset" in sys.argv:
     _idx = sys.argv.index("--dataset")
     if _idx + 1 < len(sys.argv):
@@ -52,9 +52,9 @@ if "--dataset" in sys.argv:
 # Config
 # ----------------------------
 TEST5_DIR = PROJECT_ROOT / "test5"
-TEST6_DIR = PROJECT_ROOT / "test6"
+test1_DIR = PROJECT_ROOT / "test1"
 
-# 数据集配置
+# 数据集配�?
 DATASET_CONFIGS = {
     "musid": {
         "cache_root": TEST5_DIR / "FusionCache_Degraded",
@@ -65,14 +65,14 @@ DATASET_CONFIGS = {
     },
     "smd": {
         "cache_root": TEST5_DIR / "FusionCache_Degraded_SMD",
-        "weights_path": TEST6_DIR / "weights" / "best_fusion_cnn_smd.pth",
+        "weights_path": test1_DIR / "weights" / "best_fusion_cnn_smd.pth",
         "out_dir": TEST5_DIR / "eval_results_smd",
         "orig_w": 1920,
         "orig_h": 1080,
     },
     "buoy": {
         "cache_root": TEST5_DIR / "FusionCache_Degraded_Buoy",
-        "weights_path": TEST6_DIR / "weights" / "best_fusion_cnn_buoy.pth",
+        "weights_path": test1_DIR / "weights" / "best_fusion_cnn_buoy.pth",
         "out_dir": TEST5_DIR / "eval_results_buoy",
         "orig_w": 800,
         "orig_h": 600,
@@ -253,8 +253,8 @@ def main():
             degraded_metrics_list.append(metrics)
         
         print(f"\n[{deg_name}] N={metrics['n']}")
-        print(f"  ρ: mean={metrics['rho_mean']:.2f}px, ≤5px={metrics['rho_le_5']:.1f}%, ≤10px={metrics['rho_le_10']:.1f}%, ≤20px={metrics['rho_le_20']:.1f}%")
-        print(f"  θ: mean={metrics['theta_mean']:.3f}°, ≤1°={metrics['theta_le_1']:.1f}%, ≤2°={metrics['theta_le_2']:.1f}%")
+        print(f"  ρ: mean={metrics['rho_mean']:.2f}px, �?px={metrics['rho_le_5']:.1f}%, �?0px={metrics['rho_le_10']:.1f}%, �?0px={metrics['rho_le_20']:.1f}%")
+        print(f"  θ: mean={metrics['theta_mean']:.3f}°, �?°={metrics['theta_le_1']:.1f}%, �?°={metrics['theta_le_2']:.1f}%")
     
     # Print clean vs degraded comparison
     if clean_metrics and degraded_metrics_list:

@@ -3,14 +3,14 @@
 train_unet_buoy.py - Train UNet on Buoy Dataset (In-Domain Training)
 
 与主训练策略完全一致：
-- 5阶段训练: A → B → C1 → B2 → C2
+- 5阶段训练: A �?B �?C1 �?B2 �?C2
 - C2阶段 seg_w=1.0
 - P_CLEAN=0.35
 - IMG_SIZE=(576, 1024)
 
 Usage:
     修改 STAGE 变量后运行：
-    python test6/train_unet_buoy.py
+    python test1/train_unet_buoy.py
 """
 import os
 import sys
@@ -36,7 +36,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from unet_model import RestorationGuidedHorizonNet
-from test6.dataset_loader_external import ExternalDataset
+from test1.dataset_loader_external import ExternalDataset
 
 # =========================
 # Config
@@ -45,17 +45,17 @@ from test6.dataset_loader_external import ExternalDataset
 TEST4_DIR = PROJECT_ROOT / "test4"
 BUOY_CSV = str(TEST4_DIR / "Buoy_GroundTruth.csv")
 BUOY_IMG_DIR = str(TEST4_DIR / "buoy_frames")
-SPLIT_DIR = str(PROJECT_ROOT / "test6" / "splits_buoy")
+SPLIT_DIR = str(PROJECT_ROOT / "test1" / "splits_buoy")
 
 # Weights
 DCE_WEIGHTS = str(PROJECT_ROOT / "weights" / "Epoch99.pth")
-WEIGHTS_DIR = str(PROJECT_ROOT / "test6" / "weights_buoy")
+WEIGHTS_DIR = str(PROJECT_ROOT / "test1" / "weights_buoy")
 
 # 当前运行阶段: 'A' -> 'B' -> 'C1' -> 'B2' -> 'C2'
-# 可通过命令行参数覆盖: python train_unet_buoy.py --stage B
+# 可通过命令行参数覆�? python train_unet_buoy.py --stage B
 STAGE = "A"
 
-# ✅ 核心配置 - 与主训练一致
+# �?核心配置 - 与主训练一�?
 IMG_SIZE = (576, 1024)
 BATCH_SIZE = 4
 P_CLEAN = 0.35
@@ -124,7 +124,7 @@ def load_split_indices() -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     if not all(os.path.exists(p) for p in [train_path, val_path, test_path]):
         raise FileNotFoundError(
             f"Split files not found in {SPLIT_DIR}. "
-            "Please run test6/prepare_buoy_trainset.py first."
+            "Please run test1/prepare_buoy_trainset.py first."
         )
     
     tr = np.load(train_path).astype(np.int64)
@@ -206,7 +206,7 @@ def load_checkpoint_smart(model, current_stage: str, device: str):
 
 
 # =========================
-# Losses & Metrics (与 train_unet_smd.py 相同)
+# Losses & Metrics (�?train_unet_smd.py 相同)
 # =========================
 class CharbonnierLoss(nn.Module):
     def __init__(self, eps=1e-3):
@@ -267,7 +267,7 @@ class HybridRestorationLoss(nn.Module):
 
 
 def build_optimizer(model, stage: str, lr: float):
-    """构建优化器"""
+    """构建优化�?""
     restoration_names = [
         "rest_lat2", "rest_lat3", "rest_lat4", "rest_lat5",
         "ca2", "ca3", "ca4", "ca5",

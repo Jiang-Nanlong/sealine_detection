@@ -5,23 +5,23 @@ generate_degraded_images.py
 Generate degraded versions of MU-SID test images for robustness evaluation.
 
 Degradation types (海洋场景相关):
-  === 基础退化 ===
-  1. Gaussian noise (σ = 15, 30) - 传感器噪声
+  === 基础退�?===
+  1. Gaussian noise (σ = 15, 30) - 传感器噪�?
   2. Motion blur (kernel = 15, 25) - 船体晃动（随机角度）
   3. Low light (γ = 2.0, 2.5) - 黄昏/阴天
   4. Fog/haze (30%, 50%) - 海雾
   
-  === 海洋特有退化 ===
-  5. Rain (轻/中/重) - 海上降雨
-  6. Sun glare / 强反光 (轻/重) - 阳光海面反射
-  7. JPEG compression (Q=20, 10) - 压缩伪影/低码率
-  8. Resolution downscale (0.5x, 0.25x) - 远距离/低清监控
+  === 海洋特有退�?===
+  5. Rain (�?�?�? - 海上降雨
+  6. Sun glare / 强反�?(�?�? - 阳光海面反射
+  7. JPEG compression (Q=20, 10) - 压缩伪影/低码�?
+  8. Resolution downscale (0.5x, 0.25x) - 远距�?低清监控
 
 PyCharm: 直接运行此文件，在下方配置区修改参数
 
 注意事项:
-  - Clean 基线使用 shutil.copy2 原样复制，避免重新编码
-  - 随机退化使用 (img_name + deg_name) 作为种子，保证顺序无关的可复现性
+  - Clean 基线使用 shutil.copy2 原样复制，避免重新编�?
+  - 随机退化使�?(img_name + deg_name) 作为种子，保证顺序无关的可复现�?
   - 运动模糊采用随机角度，更符合实际船载场景
 """
 
@@ -43,14 +43,14 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 # ============================
-# PyCharm 配置区 (在这里修改)
+# PyCharm 配置�?(在这里修�?
 # ============================
 GLOBAL_SEED = 42  # 全局种子基数
-# 选择数据集: "musid", "smd", "buoy"
+# 选择数据�? "musid", "smd", "buoy"
 DATASET = "musid"
 # ============================
 
-# 命令行参数覆盖 (支持 run_experiment5.py 一键调用)
+# 命令行参数覆�?(支持 run_experiment5.py 一键调�?
 if "--dataset" in sys.argv:
     _idx = sys.argv.index("--dataset")
     if _idx + 1 < len(sys.argv):
@@ -66,9 +66,9 @@ if "--seed" in sys.argv:
 # ----------------------------
 TEST5_DIR = PROJECT_ROOT / "test5"
 TEST4_DIR = PROJECT_ROOT / "test4"
-TEST6_DIR = PROJECT_ROOT / "test6"
+test1_DIR = PROJECT_ROOT / "test1"
 
-# 数据集配置
+# 数据集配�?
 DATASET_CONFIGS = {
     "musid": {
         "img_dir": PROJECT_ROOT / "Hashmani's Dataset" / "MU-SID",
@@ -82,18 +82,18 @@ DATASET_CONFIGS = {
     "smd": {
         "img_dir": TEST4_DIR / "manual_review" / "kept_frames",
         "gt_csv": TEST4_DIR / "manual_review" / "SMD_GroundTruth_filtered.csv",
-        "split_dir": TEST6_DIR / "splits_smd",
+        "split_dir": test1_DIR / "splits_smd",
         "has_header": True,
-        "use_indices": True,  # SMD 需要 test_indices.npy 过滤
+        "use_indices": True,  # SMD 需�?test_indices.npy 过滤
         "img_ext": ".jpg",
         "out_dir": TEST5_DIR / "degraded_images_smd",
     },
     "buoy": {
         "img_dir": TEST4_DIR / "buoy_frames",
         "gt_csv": TEST4_DIR / "Buoy_GroundTruth.csv",
-        "split_dir": TEST6_DIR / "splits_buoy",
+        "split_dir": test1_DIR / "splits_buoy",
         "has_header": True,
-        "use_indices": True,  # Buoy 需要 test_indices.npy 过滤
+        "use_indices": True,  # Buoy 需�?test_indices.npy 过滤
         "img_ext": ".jpg",
         "out_dir": TEST5_DIR / "degraded_images_buoy",
     },
@@ -106,10 +106,10 @@ SPLITS_DIR = PROJECT_ROOT / "splits_musid"
 
 OUT_DIR = TEST5_DIR / "degraded_images"
 
-# Degradation configurations - 更贴合海洋场景
+# Degradation configurations - 更贴合海洋场�?
 DEGRADATIONS = {
-    # ========== 基础退化 ==========
-    # Gaussian noise - 传感器噪声
+    # ========== 基础退�?==========
+    # Gaussian noise - 传感器噪�?
     "gaussian_noise_15": {"type": "gaussian_noise", "sigma": 15},
     "gaussian_noise_30": {"type": "gaussian_noise", "sigma": 30},
     
@@ -125,21 +125,21 @@ DEGRADATIONS = {
     "fog_0.3": {"type": "fog", "intensity": 0.3},
     "fog_0.5": {"type": "fog", "intensity": 0.5},
     
-    # ========== 海洋特有退化 ==========
-    # Rain - 海上降雨（雨滴+雾气）
+    # ========== 海洋特有退�?==========
+    # Rain - 海上降雨（雨�?雾气�?
     "rain_light": {"type": "rain", "intensity": "light"},
     "rain_medium": {"type": "rain", "intensity": "medium"},
     "rain_heavy": {"type": "rain", "intensity": "heavy"},
     
-    # Sun glare / 强反光 - 阳光海面反射
+    # Sun glare / 强反�?- 阳光海面反射
     "glare_light": {"type": "glare", "intensity": 0.3},
     "glare_heavy": {"type": "glare", "intensity": 0.6},
     
-    # JPEG compression artifacts - 压缩伪影/低码率视频
+    # JPEG compression artifacts - 压缩伪影/低码率视�?
     "jpeg_q20": {"type": "jpeg", "quality": 20},
     "jpeg_q10": {"type": "jpeg", "quality": 10},
     
-    # Resolution downscale - 远距离/低清监控
+    # Resolution downscale - 远距�?低清监控
     "lowres_0.5x": {"type": "downscale", "scale": 0.5},
     "lowres_0.25x": {"type": "downscale", "scale": 0.25},
 }
@@ -151,14 +151,14 @@ def ensure_dir(p):
 
 def get_deterministic_seed(img_name: str, deg_name: str) -> int:
     """
-    生成基于 (img_name + deg_name) 的确定性种子。
-    保证：
-      1. 同一张图 + 同一种退化 -> 总是相同的随机结果
+    生成基于 (img_name + deg_name) 的确定性种子�?
+    保证�?
+      1. 同一张图 + 同一种退�?-> 总是相同的随机结�?
       2. 与遍历顺序无关（顺序无关可复现性）
     """
     key = f"{img_name}_{deg_name}_{GLOBAL_SEED}"
     hash_val = hashlib.md5(key.encode()).hexdigest()
-    return int(hash_val[:8], 16)  # 取前 8 位 hex，转成 int
+    return int(hash_val[:8], 16)  # 取前 8 �?hex，转�?int
 
 
 def add_gaussian_noise(img, sigma, rng: np.random.Generator):
@@ -172,12 +172,12 @@ def add_motion_blur(img, kernel_size, rng: np.random.Generator):
     """
     Add motion blur with random angle.
     
-    随机角度模拟船载场景的多方向抖动（横摇、俯仰、偏航）。
+    随机角度模拟船载场景的多方向抖动（横摇、俯仰、偏航）�?
     """
-    # 随机角度：0-180度（覆盖所有方向，180-360与0-180对称）
+    # 随机角度�?-180度（覆盖所有方向，180-360�?-180对称�?
     angle = rng.uniform(0, 180)
     
-    # 创建运动模糊核
+    # 创建运动模糊�?
     kernel = np.zeros((kernel_size, kernel_size), dtype=np.float32)
     center = kernel_size // 2
     
@@ -186,12 +186,12 @@ def add_motion_blur(img, kernel_size, rng: np.random.Generator):
     dx = np.cos(angle_rad) * center
     dy = np.sin(angle_rad) * center
     
-    # 绘制运动模糊线
+    # 绘制运动模糊�?
     x1, y1 = int(center - dx), int(center - dy)
     x2, y2 = int(center + dx), int(center + dy)
     cv2.line(kernel, (x1, y1), (x2, y2), 1.0, thickness=1)
     
-    # 归一化
+    # 归一�?
     kernel = kernel / kernel.sum()
     
     return cv2.filter2D(img, -1, kernel)
@@ -412,7 +412,7 @@ def load_test_split():
             if line.strip():
                 # First column is image name
                 name = line.strip().split(",")[0]
-                # 检查是否已经有扩展名
+                # 检查是否已经有扩展�?
                 if not any(name.lower().endswith(ext) for ext in [".jpg", ".jpeg", ".png", ".bmp"]):
                     name = f"{name}{img_ext}"
                 all_names.append(name)

@@ -8,13 +8,13 @@ Uses MU-SID pretrained UNet weights for feature extraction.
 Inputs:
   - test4/Buoy_GroundTruth.csv
   - test4/buoy_frames/
-  - test6/splits_buoy/
+  - test1/splits_buoy/
 
 Outputs:
-  - test6/FusionCache_Buoy/{train,val,test}/<idx>.npy
+  - test1/FusionCache_Buoy/{train,val,test}/<idx>.npy
 
 Usage:
-  python test6/make_fusion_cache_buoy_train.py
+  python test1/make_fusion_cache_buoy_train.py
 """
 
 import os
@@ -39,16 +39,16 @@ from unet_model import RestorationGuidedHorizonNet  # noqa: E402
 from gradient_radon import TextureSuppressedMuSCoWERT  # noqa: E402
 
 # ============================
-# PyCharm 配置区
+# PyCharm 配置�?
 # ============================
-# 使用 test4 中已准备的 Buoy 数据
+# 使用 test4 中已准备�?Buoy 数据
 CSV_PATH = str(PROJECT_ROOT / "test4" / "Buoy_GroundTruth.csv")
 IMG_DIR = str(PROJECT_ROOT / "test4" / "buoy_frames")
-SPLIT_DIR = str(PROJECT_ROOT / "test6" / "splits_buoy")
-SAVE_ROOT = str(PROJECT_ROOT / "test6" / "FusionCache_Buoy")
+SPLIT_DIR = str(PROJECT_ROOT / "test1" / "splits_buoy")
+SAVE_ROOT = str(PROJECT_ROOT / "test1" / "FusionCache_Buoy")
 
-# ✅ 使用 Buoy 本地训练的 UNet 权重 (In-Domain Training)
-RGHNET_CKPT = str(PROJECT_ROOT / "test6" / "weights_buoy" / "buoy_rghnet_best_seg_c2.pth")
+# �?使用 Buoy 本地训练�?UNet 权重 (In-Domain Training)
+RGHNET_CKPT = str(PROJECT_ROOT / "test1" / "weights_buoy" / "buoy_rghnet_best_seg_c2.pth")
 DCE_WEIGHTS = str(PROJECT_ROOT / "weights" / "Epoch99.pth")
 # ============================
 
@@ -269,7 +269,7 @@ def main():
 
     if not os.path.isdir(SPLIT_DIR):
         print(f"[Error] Split directory not found: {SPLIT_DIR}")
-        print("  Please run test6/prepare_buoy_trainset.py first.")
+        print("  Please run test1/prepare_buoy_trainset.py first.")
         return 1
 
     splits = _load_split_indices(SPLIT_DIR)
