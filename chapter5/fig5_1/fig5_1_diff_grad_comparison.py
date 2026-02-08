@@ -237,21 +237,21 @@ def process_single_image(image_stem: str, gt_line, img_dir: Path, output_dir: Pa
     # 叠加真值线（可选）
     if SHOW_GT_LINE and gt_line is not None:
         (x1, y1), (x2, y2) = gt_line
-        # (a) 和 (c) 用实线，线宽2px，alpha=0.85
+        # (a) 和 (c) 用实线，线宽1px，alpha=0.9
         for idx in [0, 2]:
             axes[idx].plot(
                 [x1, x2], [y1, y2],
                 color="red",
-                linewidth=2,
-                alpha=0.85,
+                linewidth=1,
+                alpha=0.9,
                 linestyle='-'
             )
-        # (b) 用虚线，线宽1.5px，alpha=0.85
+        # (b) 用虚线，线宽0.8px，alpha=0.9
         axes[1].plot(
             [x1, x2], [y1, y2],
             color="red",
-            linewidth=1.5,
-            alpha=0.85,
+            linewidth=0.8,
+            alpha=0.9,
             linestyle='--'
         )
     
