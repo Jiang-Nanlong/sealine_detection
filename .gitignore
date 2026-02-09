@@ -2,9 +2,37 @@
 venv/
 __pycache__/
 weights/
+weights_new/
 test4/FusionCache_SMD_1024x576/
 Hashmani's Dataset/FusionCache_1024x576/
 Hashmani's Dataset/OfflineCache/
 Singapore Maritime Dataset/
 paper_figures_4panels/
 test4/manual_review/
+test5/degraded_images/
+test5/degraded_images_buoy/
+test5/degraded_images_smd/
+test5/FusionCache_Degraded/
+test5/FusionCache_Degraded_Buoy/
+test5/FusionCache_Degraded_SMD/
+test4/buoy_frames
+test4/FusionCache_Buoy
+test4/smd_frames
+test4/visualization/
+Hashmani's Dataset/
+ignore/
+Buoy
+eval_full_outputs
+eval_outputs
+eval_sweep_topk
+test_2/
+test5/visualization
+test5/visualization_buoy
+test5/visualization_smd
+test1/FusionCache_Buoy
+test1/FusionCache_SMD
+test1/weights
+test1/weights_smd
+test1/weights_buoy
+
+

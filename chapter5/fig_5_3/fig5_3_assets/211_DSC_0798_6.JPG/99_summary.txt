@@ -1,0 +1,7 @@
+cache: F:\code_manager\Menglong Cao\sealine_detection\Hashmani's Dataset\FusionCache_new_1024x576\test\211.npy
+img_name: DSC_0798_6.JPG
+resolved_img: DSC_0798_6.JPG
+UNet size: 1024x576
+Sino size(proc): 2240x180
+GT label (rho_idx, theta_idx): [0.42579767 0.50580186]
+Stage-2 pred (rho_norm, theta_norm or raw): [0.42877012 0.5072445 ]

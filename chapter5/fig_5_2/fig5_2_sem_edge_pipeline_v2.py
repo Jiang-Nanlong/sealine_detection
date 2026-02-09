@@ -31,7 +31,7 @@ contour_thickness = 2
 
 IMG_SIZE = 1024
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-RANDOM_SEED = 42
+RANDOM_SEED = 100
 
 output_dir = Path(__file__).parent
 output_dir.mkdir(parents=True, exist_ok=True)
