@@ -10,7 +10,6 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 import cv2
 import numpy as np
-import pandas as pd
 import torch
 import matplotlib.pyplot as plt
 import matplotlib.patheffects as pe
@@ -48,8 +47,18 @@ def load_all_test_images():
     if not GT_CSV.exists():
         raise FileNotFoundError(f"Ground truth CSV not found: {GT_CSV}")
     
-    df = pd.read_csv(GT_CSV)
-    image_stems = df['image_stem'].unique()
+    image_stems = []
+    try:
+        with open(GT_CSV, 'r', encoding='utf-8') as f:
+            for line in f:
+                parts = line.strip().split(',')
+                if len(parts) >= 1:
+                    image_stems.append(parts[0])
+    except Exception as e:
+        raise RuntimeError(f"读取CSV失败: {e}")
+    
+    # 去重
+    image_stems = sorted(set(image_stems))
     
     image_paths = []
     for stem in image_stems:
