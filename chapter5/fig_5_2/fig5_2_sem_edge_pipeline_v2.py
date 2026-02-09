@@ -26,8 +26,9 @@ threshold = 0.5
 ksize = 7
 edge_dilate_iter = 2
 prob_channel = 0
-contour_color = (255, 0, 0)
-contour_thickness = 2
+topk_contours = 2
+thickness_outline = 4
+thickness_inner = 2
 
 IMG_SIZE = 1024
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -35,7 +36,7 @@ RANDOM_SEED = 42
 
 output_dir = Path(__file__).parent
 output_dir.mkdir(parents=True, exist_ok=True)
-output_fig = output_dir / "fig5_2_sem_edge_pipeline_2x5_final.png"
+output_fig = output_dir / "fig5_2_sem_edge_pipeline_2x5_overlay.png"
 
 
 def load_all_test_images():
@@ -95,13 +96,51 @@ def get_prob_map_from_unet(model, img_bgr):
     return prob_resized.astype(np.float32)
 
 
-def robust_norm(x, lo=1, hi=99):
-    a = np.percentile(x, lo)
-    b = np.percentile(x, hi)
-    if b <= a:
-        return np.zeros_like(x)
-    y = np.clip((x - a) / (b - a), 0, 1)
-    return y
+def apply_gamma_display(prob, gamma=0.7):
+    """概率图gamma显示增强"""
+    return np.clip(prob, 0, 1) ** gamma
+
+
+def select_top_k_contours(M_sem_clean, topk=2):
+    """选择前K条最像海天线的轮廓"""
+    H, W = M_sem_clean.shape
+    contours, _ = cv2.findContours(M_sem_clean, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    
+    if len(contours) == 0:
+        return []
+    
+    scored_contours = []
+    
+    for contour in contours:
+        if len(contour) < 10:
+            continue
+        
+        points = contour.squeeze()
+        if points.ndim == 1:
+            continue
+        
+        x_coords = points[:, 0]
+        y_coords = points[:, 1]
+        
+        mean_y = np.mean(y_coords)
+        std_y = np.std(y_coords)
+        length = len(contour)
+        coverage_x = (np.max(x_coords) - np.min(x_coords)) / W
+        
+        if mean_y < 0.10 * H or mean_y > 0.95 * H:
+            continue
+        
+        score = length * (0.5 + 0.5 * coverage_x) / (std_y + 1e-6)
+        
+        scored_contours.append((score, contour))
+    
+    if len(scored_contours) == 0:
+        return []
+    
+    scored_contours.sort(key=lambda x: x[0], reverse=True)
+    top_contours = [c[1] for c in scored_contours[:topk]]
+    
+    return top_contours
 
 
 def remove_border_connected_components(M_sem, border_margin):
@@ -127,45 +166,6 @@ def remove_border_connected_components(M_sem, border_margin):
             M_clean[mask] = 1
     
     return M_clean
-
-
-def select_best_horizon_contour(M_sem_clean):
-    """选择最像海天线的最佳轮廓"""
-    H, W = M_sem_clean.shape
-    contours, _ = cv2.findContours(M_sem_clean, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-    
-    if len(contours) == 0:
-        return None
-    
-    best_contour = None
-    best_score = -1
-    
-    for contour in contours:
-        if len(contour) < 10:
-            continue
-        
-        points = contour.squeeze()
-        if points.ndim == 1:
-            continue
-        
-        x_coords = points[:, 0]
-        y_coords = points[:, 1]
-        
-        mean_y = np.mean(y_coords)
-        std_y = np.std(y_coords)
-        length = len(contour)
-        coverage_x = (np.max(x_coords) - np.min(x_coords)) / W
-        
-        if mean_y < 0.15 * H or mean_y > 0.90 * H:
-            continue
-        
-        score = length * coverage_x / (std_y + 1e-6)
-        
-        if score > best_score:
-            best_score = score
-            best_contour = contour
-    
-    return best_contour
 
 
 def semantic_edge_pipeline(prob, threshold, ksize, edge_dilate_iter):
@@ -195,16 +195,19 @@ def semantic_edge_pipeline(prob, threshold, ksize, edge_dilate_iter):
     
     M_sem_clean = remove_border_connected_components(M_sem, border_margin)
     
-    best_contour = select_best_horizon_contour(M_sem_clean)
+    top_contours = select_top_k_contours(M_sem_clean, topk=topk_contours)
     
-    return M_bin, G_morph, M_sem_clean, best_contour
+    return M_bin, G_morph, M_sem_clean, top_contours
 
 
-def create_contour_overlay(img_rgb, best_contour, color=(255, 0, 0), thickness=2):
-    """在原图上叠加最佳轮廓"""
+def create_contour_overlay(img_rgb, top_contours):
+    """在原图上叠加轮廓（白线+黑描边）"""
     overlay = img_rgb.copy()
-    if best_contour is not None:
-        cv2.drawContours(overlay, [best_contour], -1, color, thickness)
+    if len(top_contours) > 0:
+        for contour in top_contours:
+            cv2.drawContours(overlay, [contour], -1, (0, 0, 0), thickness_outline)
+        for contour in top_contours:
+            cv2.drawContours(overlay, [contour], -1, (255, 255, 255), thickness_inner)
     return overlay
 
 
@@ -231,10 +234,10 @@ def process_image_data(model, img_path):
     if prob.shape[:2] != (h_orig, w_orig):
         prob = cv2.resize(prob, (w_orig, h_orig), interpolation=cv2.INTER_LINEAR)
     
-    M_bin, G_morph, M_sem_clean, best_contour = semantic_edge_pipeline(prob, threshold, ksize, edge_dilate_iter)
+    M_bin, G_morph, M_sem_clean, top_contours = semantic_edge_pipeline(prob, threshold, ksize, edge_dilate_iter)
     
-    prob_vis = robust_norm(prob)
-    overlay = create_contour_overlay(img_rgb, best_contour, color=contour_color, thickness=contour_thickness)
+    prob_vis = apply_gamma_display(prob, gamma=0.7)
+    overlay = create_contour_overlay(img_rgb, top_contours)
     
     return img_rgb, prob_vis, M_bin, G_morph, overlay
 
@@ -304,7 +307,7 @@ def generate_figure(data_list, output_path):
 
 def main():
     print("=" * 70)
-    print("图5-2 语义流边缘提取流程图（2行×5列，两组样例）终稿版")
+    print("图5-2 语义流边缘提取流程图（2行×5列，方案1：叠加显示）")
     print("=" * 70)
     
     if not UNET_WEIGHTS.exists():
