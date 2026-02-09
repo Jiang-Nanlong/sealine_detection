@@ -1,19 +1,29 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-图5-2 语义流边缘提取流程图
+图5-2 语义流边缘提取流程图 - 批处理MU-SID测试集
 """
+import sys
+from pathlib import Path
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
 import cv2
 import numpy as np
+import pandas as pd
+import torch
 import matplotlib.pyplot as plt
 import matplotlib.patheffects as pe
-from pathlib import Path
+from unet_model import RestorationGuidedHorizonNet
+from dataset_loader import letterbox_rgb_u8
 
 # ============================================================================
-# 输入配置（请修改路径）
+# 路径配置
 # ============================================================================
-prob_path = "PATH/TO/prob.png"  # 或 .npy
-prob_channel = 0  # 如果输入是H×W×2，则取第几通道（0或1）；单通道时忽略
+DATASET_ROOT = PROJECT_ROOT / "Hashmani's Dataset" / "MU-SID"
+GT_CSV = PROJECT_ROOT / "splits_musid" / "GroundTruth_test.csv"
+UNET_WEIGHTS = PROJECT_ROOT / "weights" / "rghnet_best_c2.pth"  # 请根据实际修改
+DCE_WEIGHTS = PROJECT_ROOT / "weights" / "Epoch99.pth"
 
 # ============================================================================
 # 算法参数
@@ -21,62 +31,83 @@ prob_channel = 0  # 如果输入是H×W×2，则取第几通道（0或1）；单
 threshold = 0.5        # 二值化阈值
 ksize = 7              # 形态学结构元素大小（奇数）
 edge_dilate_iter = 2   # 语义边缘膨胀次数
+prob_channel = 0       # 使用第0通道（天空）或第1通道（海面）
+
+IMG_SIZE = 1024        # UNet输入尺寸
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # ============================================================================
 # 输出配置
 # ============================================================================
 output_dir = Path(__file__).parent
-output_fig = output_dir / "fig5_2_sem_edge_pipeline.png"
-
-# 可选：保存中间结果用于调试
-SAVE_DEBUG = True
-debug_prob = output_dir / "prob_vis.png"
-debug_bin = output_dir / "mask_bin.png"
-debug_morph = output_dir / "morph_grad.png"
-debug_sem = output_dir / "mask_sem.png"
+output_dir.mkdir(parents=True, exist_ok=True)
 
 
-def load_prob_map(path: Path, channel: int = 0):
+def load_all_test_images():
+    """加载所有MU-SID测试集图像路径"""
+    if not GT_CSV.exists():
+        raise FileNotFoundError(f"Ground truth CSV not found: {GT_CSV}")
+    
+    df = pd.read_csv(GT_CSV)
+    image_stems = df['image_stem'].unique()
+    
+    image_paths = []
+    for stem in image_stems:
+        img_path = DATASET_ROOT / f"{stem}.JPG"
+        if img_path.exists():
+            image_paths.append(img_path)
+    
+    print(f"[INFO] 找到 {len(image_paths)} 张测试集图像")
+    return sorted(image_paths)
+
+
+def tensor_to_numpy(tensor):
+    """将tensor转换为numpy数组 (H×W×C)"""
+    img = tensor.squeeze().detach().cpu().float().clamp(0, 1).numpy()
+    if img.ndim == 3:
+        img = np.transpose(img, (1, 2, 0))
+    return img
+
+
+def get_prob_map_from_unet(model, img_bgr):
     """
-    加载概率图
+    使用UNet模型推理得到概率图
     
     Args:
-        path: 概率图路径（.npy 或图像文件）
-        channel: 如果是多通道，取第几通道
+        model: UNet模型
+        img_bgr: BGR图像
     
     Returns:
-        prob: float32数组，范围[0,1]，形状H×W
+        prob: float32数组，范围[0,1]，形状H×W×2（通道0=天空，通道1=海面）
     """
-    if not path.exists():
-        raise FileNotFoundError(f"概率图不存在: {path}")
+    rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+    rgb_resized, meta = letterbox_rgb_u8(rgb, IMG_SIZE, pad_value=0)
     
-    if path.suffix == '.npy':
-        prob = np.load(str(path))
-    else:
-        img = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
-        if img is None:
-            raise ValueError(f"无法读取图像: {path}")
-        if img.dtype == np.uint8:
-            prob = img.astype(np.float32) / 255.0
-        else:
-            prob = img.astype(np.float32)
+    # 转换为tensor
+    inp_tensor = torch.from_numpy(rgb_resized.astype(np.float32) / 255.0)
+    inp_tensor = inp_tensor.permute(2, 0, 1).unsqueeze(0).to(DEVICE)
     
-    # 处理维度
-    if prob.ndim == 3:
-        if prob.shape[2] == 2:
-            prob = prob[:, :, channel]
-        elif prob.shape[2] == 1:
-            prob = prob[:, :, 0]
-        else:
-            raise ValueError(f"不支持的通道数: {prob.shape[2]}，期望1或2")
-    elif prob.ndim == 2:
-        pass
-    else:
-        raise ValueError(f"不支持的维度: {prob.ndim}，期望2或3")
+    # UNet推理
+    with torch.no_grad():
+        _, seg_logits, _ = model(inp_tensor, enable_restoration=False, enable_segmentation=True)
+        prob_tensor = torch.softmax(seg_logits, dim=1)  # (1, 2, H, W)
     
-    # 确保范围[0,1]
-    prob = np.clip(prob, 0, 1)
-    return prob.astype(np.float32)
+    # 转换为numpy
+    prob = tensor_to_numpy(prob_tensor)  # (H, W, 2)
+    
+    # 裁剪到原始ROI（去掉padding）
+    h_orig, w_orig = img_bgr.shape[:2]
+    pad_top = int(meta['pad_top'])
+    pad_left = int(meta['pad_left'])
+    new_h = int(meta['new_h'])
+    new_w = int(meta['new_w'])
+    
+    prob_roi = prob[pad_top:pad_top+new_h, pad_left:pad_left+new_w]
+    
+    # 调整回原始尺寸
+    prob_resized = cv2.resize(prob_roi, (w_orig, h_orig), interpolation=cv2.INTER_LINEAR)
+    
+    return prob_resized.astype(np.float32)
 
 
 def semantic_edge_pipeline(prob, threshold, ksize, edge_dilate_iter):
@@ -183,47 +214,104 @@ def generate_figure(prob, M_bin, G_morph, M_sem, output_path: Path):
     plt.savefig(str(output_path), dpi=600, bbox_inches="tight", pad_inches=0.02,
                 facecolor='white', edgecolor='none')
     plt.close(fig)
-    print(f"[完成] 已保存图5-2: {output_path}")
+
+
+def process_single_image(model, img_path: Path, output_path: Path):
+    """
+    处理单张图像并生成语义边缘提取流程图
+    
+    Args:
+        model: UNet模型
+        img_path: 输入图像路径
+        output_path: 输出图像路径
+    """
+    # 1) 读取图像
+    img_bgr = cv2.imread(str(img_path))
+    if img_bgr is None:
+        print(f"[错误] 无法读取图像: {img_path}")
+        return False
+    
+    # 2) UNet推理得到概率图
+    prob_map = get_prob_map_from_unet(model, img_bgr)  # (H, W, 2)
+    prob = prob_map[:, :, prob_channel]  # 取指定通道
+    prob = np.clip(prob, 0, 1)
+    
+    # 3) 执行语义边缘提取流程
+    M_bin, G_morph, M_sem = semantic_edge_pipeline(prob, threshold, ksize, edge_dilate_iter)
+    
+    # 4) 生成流程图
+    generate_figure(prob, M_bin, G_morph, M_sem, output_path)
+    
+    return True
 
 
 def main():
-    # 检查输入路径
-    prob_path_obj = Path(prob_path)
-    if not prob_path_obj.exists() or str(prob_path_obj) == "PATH/TO/prob.png":
-        print("[警告] 请先修改 prob_path 为实际的概率图路径")
-        print(f"当前路径: {prob_path}")
+    print("=" * 70)
+    print("图5-2 语义流边缘提取流程图 - 批处理MU-SID测试集")
+    print("=" * 70)
+    
+    # 1) 检查UNet权重
+    if not UNET_WEIGHTS.exists():
+        print(f"[错误] UNet权重文件不存在: {UNET_WEIGHTS}")
+        print("请修改脚本中的 UNET_WEIGHTS 路径")
         return
     
-    # 创建输出目录
-    output_dir.mkdir(parents=True, exist_ok=True)
+    # 2) 加载UNet模型
+    print(f"\n[步骤1] 加载UNet模型")
+    print(f"  权重: {UNET_WEIGHTS}")
+    print(f"  设备: {DEVICE}")
     
-    # 1) 加载概率图
-    print(f"[步骤1] 加载概率图: {prob_path_obj}")
-    prob = load_prob_map(prob_path_obj, prob_channel)
-    print(f"  形状: {prob.shape}, 范围: [{prob.min():.3f}, {prob.max():.3f}]")
+    model = RestorationGuidedHorizonNet(num_classes=2, dce_weights_path=str(DCE_WEIGHTS))
+    model = model.to(DEVICE)
     
-    # 2) 执行语义边缘提取流程
-    print(f"[步骤2] 执行语义边缘提取")
-    print(f"  参数: threshold={threshold}, ksize={ksize}, edge_dilate_iter={edge_dilate_iter}")
-    M_bin, G_morph, M_sem = semantic_edge_pipeline(prob, threshold, ksize, edge_dilate_iter)
+    try:
+        state = torch.load(str(UNET_WEIGHTS), map_location=DEVICE)
+        model.load_state_dict(state, strict=False)
+        print("  ✓ 模型加载成功")
+    except Exception as e:
+        print(f"  ✗ 模型加载失败: {e}")
+        return
     
-    # 3) 生成图5-2
-    print(f"[步骤3] 生成图5-2流程图")
-    generate_figure(prob, M_bin, G_morph, M_sem, output_fig)
+    model.eval()
     
-    # 4) 可选：保存调试图像
-    if SAVE_DEBUG:
-        print(f"[步骤4] 保存调试图像")
-        cv2.imwrite(str(debug_prob), (prob * 255).astype(np.uint8))
-        cv2.imwrite(str(debug_bin), M_bin * 255)
-        cv2.imwrite(str(debug_morph), G_morph * 255)
-        cv2.imwrite(str(debug_sem), M_sem * 255)
-        print(f"  prob_vis.png: {debug_prob}")
-        print(f"  mask_bin.png: {debug_bin}")
-        print(f"  morph_grad.png: {debug_morph}")
-        print(f"  mask_sem.png: {debug_sem}")
+    # 3) 加载测试集图像列表
+    print(f"\n[步骤2] 加载测试集图像列表")
+    try:
+        image_paths = load_all_test_images()
+    except Exception as e:
+        print(f"  ✗ 加载失败: {e}")
+        return
     
-    print("\n[全部完成]")
+    if len(image_paths) == 0:
+        print("  ✗ 没有找到测试集图像")
+        return
+    
+    # 4) 批处理所有图像
+    print(f"\n[步骤3] 批处理 {len(image_paths)} 张图像")
+    print(f"  参数: threshold={threshold}, ksize={ksize}, edge_dilate_iter={edge_dilate_iter}, channel={prob_channel}")
+    print(f"  输出目录: {output_dir}")
+    
+    success_count = 0
+    for idx, img_path in enumerate(image_paths, 1):
+        img_stem = img_path.stem
+        output_path = output_dir / f"{img_stem}_sem_edge.png"
+        
+        print(f"  [{idx}/{len(image_paths)}] {img_stem} ... ", end="", flush=True)
+        
+        try:
+            if process_single_image(model, img_path, output_path):
+                success_count += 1
+                print("✓")
+            else:
+                print("✗")
+        except Exception as e:
+            print(f"✗ {e}")
+    
+    # 5) 完成
+    print("\n" + "=" * 70)
+    print(f"[完成] 成功处理 {success_count}/{len(image_paths)} 张图像")
+    print(f"输出目录: {output_dir}")
+    print("=" * 70)
 
 
 if __name__ == "__main__":
