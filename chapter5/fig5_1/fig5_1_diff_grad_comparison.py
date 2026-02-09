@@ -345,13 +345,14 @@ def generate_combined_figure(image_data_list, output_path: Path):
     
     # 间距比例（统一使用这个值）
     gap_ratio = 0.015
+    margin = 0.025  # 左右边距
     
     # 画布宽度固定180mm
     width_in = 180 / 25.4  # 180 mm -> inches
     
     # 计算每个子图的实际宽度和高度
     # 考虑左右边距和列间距后的可用宽度
-    usable_width = width_in * (1 - 2 * gap_ratio - 2 * gap_ratio)  # left + right + 2个wspace
+    usable_width = width_in * (1 - 2 * margin - 2 * gap_ratio)  # left + right + 2个wspace
     cell_width = usable_width / 3
     cell_height = cell_width / img_aspect
     
@@ -360,8 +361,9 @@ def generate_combined_figure(image_data_list, output_path: Path):
     height_in = usable_height / (1 - 2 * gap_ratio - gap_ratio)  # top + bottom + hspace
     
     fig, axes = plt.subplots(2, 3, figsize=(width_in, height_in))
+    # left/right边距需要更大才能视觉上匹配列间距
     plt.subplots_adjust(wspace=gap_ratio, hspace=gap_ratio, 
-                        left=gap_ratio, right=1-gap_ratio, top=1-gap_ratio, bottom=gap_ratio)
+                        left=margin, right=1-margin, top=1-gap_ratio, bottom=gap_ratio)
     
     # 标注：第一行 (a)(b)(c)，第二行 (d)(e)(f)
     labels_row1 = ["(a)", "(b)", "(c)"]
