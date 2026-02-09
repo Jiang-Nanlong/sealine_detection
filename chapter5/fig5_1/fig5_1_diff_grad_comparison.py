@@ -339,13 +339,29 @@ def generate_combined_figure(image_data_list, output_path: Path):
     plt.rcParams['font.size'] = 10
     plt.rcParams['font.weight'] = 'normal'
     
-    # 画布尺寸：180mm 宽，2行高度
+    # 获取图像尺寸来计算正确的figsize
+    img_h, img_w = image_data_list[0][0].shape[:2]
+    img_aspect = img_w / img_h  # 图像宽高比（约1.78 for 1920x1080）
+    
+    # 间距比例（统一使用这个值）
+    gap_ratio = 0.015
+    
+    # 画布宽度固定180mm
     width_in = 180 / 25.4  # 180 mm -> inches
-    height_in = 110 / 25.4  # 约 110 mm -> inches（2行，更紧凑）
+    
+    # 计算每个子图的实际宽度和高度
+    # 考虑左右边距和列间距后的可用宽度
+    usable_width = width_in * (1 - 2 * gap_ratio - 2 * gap_ratio)  # left + right + 2个wspace
+    cell_width = usable_width / 3
+    cell_height = cell_width / img_aspect
+    
+    # 总高度 = 2行子图 + 行间距 + 上下边距
+    usable_height = 2 * cell_height
+    height_in = usable_height / (1 - 2 * gap_ratio - gap_ratio)  # top + bottom + hspace
     
     fig, axes = plt.subplots(2, 3, figsize=(width_in, height_in))
-    plt.subplots_adjust(wspace=0.015, hspace=0.015, 
-                        left=0.015, right=0.995, top=0.995, bottom=0.005)
+    plt.subplots_adjust(wspace=gap_ratio, hspace=gap_ratio, 
+                        left=gap_ratio, right=1-gap_ratio, top=1-gap_ratio, bottom=gap_ratio)
     
     # 标注：第一行 (a)(b)(c)，第二行 (d)(e)(f)
     labels_row1 = ["(a)", "(b)", "(c)"]
