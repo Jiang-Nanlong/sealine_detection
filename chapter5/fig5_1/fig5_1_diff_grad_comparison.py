@@ -341,11 +341,11 @@ def generate_combined_figure(image_data_list, output_path: Path):
     
     # 画布尺寸：180mm 宽，2行高度
     width_in = 180 / 25.4  # 180 mm -> inches
-    height_in = 120 / 25.4  # 约 120 mm -> inches（2行）
+    height_in = 110 / 25.4  # 约 110 mm -> inches（2行，更紧凑）
     
     fig, axes = plt.subplots(2, 3, figsize=(width_in, height_in))
     plt.subplots_adjust(wspace=0.015, hspace=0.015, 
-                        left=0.005, right=0.995, top=0.995, bottom=0.005)
+                        left=0.015, right=0.995, top=0.995, bottom=0.005)
     
     # 标注：第一行 (a)(b)(c)，第二行 (d)(e)(f)
     labels_row1 = ["(a)", "(b)", "(c)"]
