@@ -2,11 +2,12 @@
 # -*- coding: utf-8 -*-
 """
 图5-1 差分梯度纹理抑制效果对比
-批量处理 MU-SID 测试集所有图片
+随机选择2张图片，生成2行3列组合图
 """
 
 import os
 import sys
+import random
 from pathlib import Path
 
 import cv2
@@ -33,6 +34,9 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # 是否显示真值线
 SHOW_GT_LINE = True
+
+# 随机种子（可修改以获得不同图片组合）
+RANDOM_SEED = 42
 
 
 def load_all_test_images(csv_path: Path):
@@ -264,11 +268,155 @@ def process_single_image(image_stem: str, gt_line, img_dir: Path, output_dir: Pa
     return True
 
 
+def process_image_data(image_stem: str, gt_line, img_dir: Path):
+    """
+    处理单张图片，返回处理后的数据（不保存）。
+    
+    Returns:
+        (img_rgb_norm, M_sobel_norm, M_grad_norm, gt_line) 或 None
+    """
+    # 查找图片文件
+    img_path = None
+    for ext in ['.JPG', '.jpg', '.jpeg', '.png']:
+        candidate = img_dir / f"{image_stem}{ext}"
+        if candidate.exists():
+            img_path = candidate
+            break
+    
+    if img_path is None:
+        return None
+    
+    # 读取图像
+    img_bgr = cv2.imread(str(img_path), cv2.IMREAD_COLOR)
+    if img_bgr is None:
+        return None
+    
+    # 灰度化与归一化
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+    gray = gray.astype(np.float32) / 255.0
+    
+    # Sobel 梯度
+    Gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+    Gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+    
+    # 普通梯度幅值图
+    M_sobel = np.sqrt(Gx * Gx + Gy * Gy)
+    
+    # 差分梯度纹理抑制
+    lambda_ratio = 0.6
+    M_grad = np.maximum(np.abs(Gy) - lambda_ratio * np.abs(Gx), 0)
+    tau = np.percentile(M_grad, 99)
+    M_grad = np.clip(M_grad, 0, tau)
+    
+    # 统一归一化
+    combined = np.concatenate([M_sobel.flatten(), M_grad.flatten()])
+    vmin = np.percentile(combined, 1)
+    vmax = np.percentile(combined, 99)
+    if vmax <= vmin:
+        vmax = vmin + 1e-6
+    
+    M_sobel_norm = np.clip((M_sobel - vmin) / (vmax - vmin), 0, 1).astype(np.float32)
+    M_grad_norm = np.clip((M_grad - vmin) / (vmax - vmin), 0, 1).astype(np.float32)
+    
+    # 转换为 RGB
+    img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+    img_rgb_norm = img_rgb.astype(np.float32) / 255.0
+    
+    return (img_rgb_norm, M_sobel_norm, M_grad_norm, gt_line)
+
+
+def generate_combined_figure(image_data_list, output_path: Path):
+    """
+    生成2行3列的组合图。
+    
+    Args:
+        image_data_list: [(img_rgb, sobel, diffgrad, gt_line), ...]，长度为2
+        output_path: 输出路径
+    """
+    # 字体设置
+    plt.rcParams['font.family'] = 'serif'
+    plt.rcParams['font.serif'] = ['Times New Roman', 'DejaVu Serif']
+    plt.rcParams['font.size'] = 10
+    plt.rcParams['font.weight'] = 'normal'
+    
+    # 画布尺寸：180mm 宽，2行高度
+    width_in = 180 / 25.4  # 180 mm -> inches
+    height_in = 120 / 25.4  # 约 120 mm -> inches（2行）
+    
+    fig, axes = plt.subplots(2, 3, figsize=(width_in, height_in))
+    plt.subplots_adjust(wspace=0.015, hspace=0.015, 
+                        left=0.005, right=0.995, top=0.995, bottom=0.005)
+    
+    # 标注：第一行 (a)(b)(c)，第二行 (d)(e)(f)
+    labels_row1 = ["(a)", "(b)", "(c)"]
+    labels_row2 = ["(d)", "(e)", "(f)"]
+    cmaps = [None, "gray", "gray"]  # 第1列RGB，第2/3列灰度
+    
+    for row_idx, (img_rgb, sobel, diffgrad, gt_line) in enumerate(image_data_list):
+        display_imgs = [img_rgb, sobel, diffgrad]
+        labels = labels_row1 if row_idx == 0 else labels_row2
+        
+        h, w = sobel.shape[:2]
+        patch_h = int(h * 0.1)
+        patch_w = int(w * 0.1)
+        
+        for col_idx, (img_disp, label, cmap) in enumerate(zip(display_imgs, labels, cmaps)):
+            ax = axes[row_idx, col_idx]
+            
+            if cmap is None:
+                ax.imshow(img_disp)
+            else:
+                ax.imshow(img_disp, cmap=cmap, vmin=0, vmax=1)
+            ax.set_axis_off()
+            
+            # 计算左下角区域亮度以确定标注颜色
+            if len(img_disp.shape) == 3:
+                patch = np.mean(img_disp[-patch_h:, :patch_w, :])
+            else:
+                patch = np.mean(img_disp[-patch_h:, :patch_w])
+            
+            text_color, stroke_color = get_label_color(np.array([[patch]]))
+            
+            # 添加标注
+            txt = ax.text(
+                0.02, 0.02, label,
+                transform=ax.transAxes,
+                fontsize=10,
+                color=text_color,
+                verticalalignment='bottom',
+                horizontalalignment='left'
+            )
+            txt.set_path_effects([
+                pe.Stroke(linewidth=1, foreground=stroke_color),
+                pe.Normal()
+            ])
+            
+            # 叠加真值线
+            if SHOW_GT_LINE and gt_line is not None:
+                (x1, y1), (x2, y2) = gt_line
+                ax.plot(
+                    [x1, x2], [y1, y2],
+                    color="red",
+                    linewidth=0.8,
+                    alpha=0.9,
+                    linestyle='--' if col_idx == 1 else '-'
+                )
+    
+    # 保存
+    plt.savefig(str(output_path), dpi=600, bbox_inches="tight", pad_inches=0.01,
+                facecolor='white', edgecolor='none')
+    plt.close(fig)
+    print(f"[完成] 已保存组合图: {output_path}")
+
+
 def main():
-    """批量处理 MU-SID 测试集所有图片"""
+    """随机选择2张图片，生成2行3列组合图"""
     print("=" * 60)
-    print("图5-1 差分梯度纹理抑制效果对比 - 批量生成")
+    print("图5-1 差分梯度纹理抑制效果对比 - 组合图生成")
     print("=" * 60)
+    
+    # 设置随机种子
+    random.seed(RANDOM_SEED)
     
     # 加载测试集所有图片
     test_images = load_all_test_images(GT_CSV)
@@ -277,28 +425,42 @@ def main():
         return
     
     print(f"[信息] 共找到 {len(test_images)} 张测试集图片")
-    print(f"[信息] 输出目录: {OUTPUT_DIR}")
+    print(f"[信息] 随机种子: {RANDOM_SEED}")
     print("-" * 60)
     
-    success_count = 0
-    fail_count = 0
+    # 随机选择2张图片
+    selected = random.sample(test_images, 2)
+    print(f"[选择] 第1行图片: {selected[0][0]}")
+    print(f"[选择] 第2行图片: {selected[1][0]}")
     
-    for i, (image_stem, gt_line) in enumerate(test_images, 1):
-        print(f"[{i:3d}/{len(test_images)}] 处理: {image_stem}", end=" ... ")
-        
-        try:
-            if process_single_image(image_stem, gt_line, IMG_DIR, OUTPUT_DIR):
-                print("完成")
-                success_count += 1
-            else:
-                fail_count += 1
-        except Exception as e:
-            print(f"失败: {e}")
-            fail_count += 1
+    # 处理选中的图片
+    image_data_list = []
+    for image_stem, gt_line in selected:
+        print(f"[处理] {image_stem} ...", end=" ")
+        data = process_image_data(image_stem, gt_line, IMG_DIR)
+        if data is not None:
+            image_data_list.append(data)
+            print("完成")
+        else:
+            print("失败")
+    
+    if len(image_data_list) != 2:
+        print("[错误] 未能成功处理2张图片")
+        return
+    
+    # 生成组合图
+    output_path = OUTPUT_DIR / "fig5_1_diff_grad_comparison.png"
+    generate_combined_figure(image_data_list, output_path)
+    
+    # 同时输出包含图片名称的版本
+    names = [selected[0][0], selected[1][0]]
+    output_path_named = OUTPUT_DIR / f"fig5_1_{names[0]}_{names[1]}.png"
+    generate_combined_figure(image_data_list, output_path_named)
     
     print("-" * 60)
-    print(f"[完成] 成功: {success_count}, 失败: {fail_count}")
-    print(f"[信息] 输出目录: {OUTPUT_DIR}")
+    print(f"[完成] 输出文件: {output_path}")
+    print(f"[完成] 带名称版本: {output_path_named}")
+    print(f"[提示] 修改 RANDOM_SEED 可获得不同图片组合")
 
 
 if __name__ == "__main__":
