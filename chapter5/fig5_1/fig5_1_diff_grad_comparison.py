@@ -417,7 +417,7 @@ def generate_combined_figure(image_data_list, output_path: Path):
                     color="red",
                     linewidth=0.8,
                     alpha=0.9,
-                    linestyle='--' if col_idx == 1 else '-'
+                    linestyle='--'
                 )
     
     # 保存
