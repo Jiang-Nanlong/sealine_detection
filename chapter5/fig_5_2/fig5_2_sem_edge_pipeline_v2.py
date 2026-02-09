@@ -13,7 +13,6 @@ import numpy as np
 import torch
 import random
 import matplotlib.pyplot as plt
-import matplotlib.patheffects as pe
 from unet_model import RestorationGuidedHorizonNet
 from dataset_loader import letterbox_rgb_u8
 
@@ -26,9 +25,9 @@ threshold = 0.5
 ksize = 7
 edge_dilate_iter = 2
 prob_channel = 0
-topk_contours = 2
-thickness_outline = 4
-thickness_inner = 2
+border_margin = 6
+contour_color = (255, 0, 0)
+contour_thickness = 2
 
 IMG_SIZE = 1024
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -36,7 +35,7 @@ RANDOM_SEED = 42
 
 output_dir = Path(__file__).parent
 output_dir.mkdir(parents=True, exist_ok=True)
-output_fig = output_dir / "fig5_2_sem_edge_pipeline_2x5_overlay.png"
+output_fig = output_dir / "fig5_2_sem_edge_pipeline_2x5.png"
 
 
 def load_all_test_images():
@@ -96,79 +95,36 @@ def get_prob_map_from_unet(model, img_bgr):
     return prob_resized.astype(np.float32)
 
 
-def apply_gamma_display(prob, gamma=0.7):
-    """概率图gamma显示增强"""
-    return np.clip(prob, 0, 1) ** gamma
+def robust_norm(x, lo=1, hi=99):
+    """稳健归一化：基于百分位数"""
+    a = np.percentile(x, lo)
+    b = np.percentile(x, hi)
+    if b <= a:
+        b = a + 1e-6
+    y = np.clip((x - a) / (b - a), 0, 1)
+    return y
 
 
-def select_top_k_contours(M_sem_clean, topk=2):
-    """选择前K条最像海天线的轮廓"""
-    H, W = M_sem_clean.shape
-    contours, _ = cv2.findContours(M_sem_clean, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-    
-    if len(contours) == 0:
-        return []
-    
-    scored_contours = []
-    
-    for contour in contours:
-        if len(contour) < 10:
-            continue
-        
-        points = contour.squeeze()
-        if points.ndim == 1:
-            continue
-        
-        x_coords = points[:, 0]
-        y_coords = points[:, 1]
-        
-        mean_y = np.mean(y_coords)
-        std_y = np.std(y_coords)
-        length = len(contour)
-        coverage_x = (np.max(x_coords) - np.min(x_coords)) / W
-        
-        if mean_y < 0.10 * H or mean_y > 0.95 * H:
-            continue
-        
-        score = length * (0.5 + 0.5 * coverage_x) / (std_y + 1e-6)
-        
-        scored_contours.append((score, contour))
-    
-    if len(scored_contours) == 0:
-        return []
-    
-    scored_contours.sort(key=lambda x: x[0], reverse=True)
-    top_contours = [c[1] for c in scored_contours[:topk]]
-    
-    return top_contours
-
-
-def remove_border_connected_components(M_sem, border_margin):
-    """删除触边或近边的连通域（用外接框判断）"""
+def remove_border_connected_components(M_sem):
+    """删除与图像边界相连的连通域"""
     H, W = M_sem.shape
     num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(M_sem, connectivity=8)
     
     M_clean = np.zeros_like(M_sem)
     
     for label in range(1, num_labels):
-        x = stats[label, cv2.CC_STAT_LEFT]
-        y = stats[label, cv2.CC_STAT_TOP]
-        w = stats[label, cv2.CC_STAT_WIDTH]
-        h = stats[label, cv2.CC_STAT_HEIGHT]
+        mask = (labels == label).astype(np.uint8)
+        ys, xs = np.where(mask > 0)
         
-        touches_or_near_border = (x <= border_margin or 
-                                   y <= border_margin or 
-                                   (x + w) >= (W - border_margin) or 
-                                   (y + h) >= (H - border_margin))
+        touches_border = np.any(xs == 0) or np.any(xs == W-1) or np.any(ys == 0) or np.any(ys == H-1)
         
-        if not touches_or_near_border:
-            mask = (labels == label)
-            M_clean[mask] = 1
+        if not touches_border:
+            M_clean[mask > 0] = 1
     
     return M_clean
 
 
-def semantic_edge_pipeline(prob, threshold, ksize, edge_dilate_iter):
+def semantic_edge_pipeline(prob, threshold, ksize, edge_dilate_iter, border_margin):
     """语义边缘提取流程"""
     prob = np.nan_to_num(prob, nan=0.0)
     prob = np.clip(prob, 0, 1)
@@ -186,37 +142,22 @@ def semantic_edge_pipeline(prob, threshold, ksize, edge_dilate_iter):
     M_sem = cv2.dilate(G_morph, kernel, iterations=edge_dilate_iter).astype(np.uint8)
     
     H, W = M_sem.shape
-    border_margin = max(20, 3 * ksize)
-    
     M_sem[:border_margin, :] = 0
     M_sem[-border_margin:, :] = 0
     M_sem[:, :border_margin] = 0
     M_sem[:, -border_margin:] = 0
     
-    M_sem_clean = remove_border_connected_components(M_sem, border_margin)
+    M_sem_clean = remove_border_connected_components(M_sem)
     
-    top_contours = select_top_k_contours(M_sem_clean, topk=topk_contours)
-    
-    return M_bin, G_morph, M_sem_clean, top_contours
+    return M_bin, G_morph, M_sem_clean
 
 
-def create_contour_overlay(img_rgb, top_contours):
-    """在原图上叠加轮廓（白线+黑描边）"""
+def create_contour_overlay(img_rgb, M_sem_clean, color=(255, 0, 0), thickness=2):
+    """在原图上叠加语义边缘轮廓"""
     overlay = img_rgb.copy()
-    if len(top_contours) > 0:
-        for contour in top_contours:
-            cv2.drawContours(overlay, [contour], -1, (0, 0, 0), thickness_outline)
-        for contour in top_contours:
-            cv2.drawContours(overlay, [contour], -1, (255, 255, 255), thickness_inner)
+    contours, _ = cv2.findContours(M_sem_clean, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    cv2.drawContours(overlay, contours, -1, color, thickness)
     return overlay
-
-
-def get_label_color(img_patch):
-    mean_val = np.mean(img_patch)
-    if mean_val < 0.4:
-        return 'white', 'black'
-    else:
-        return 'black', 'white'
 
 
 def process_image_data(model, img_path):
@@ -234,15 +175,16 @@ def process_image_data(model, img_path):
     if prob.shape[:2] != (h_orig, w_orig):
         prob = cv2.resize(prob, (w_orig, h_orig), interpolation=cv2.INTER_LINEAR)
     
-    M_bin, G_morph, M_sem_clean, top_contours = semantic_edge_pipeline(prob, threshold, ksize, edge_dilate_iter)
+    M_bin, G_morph, M_sem_clean = semantic_edge_pipeline(prob, threshold, ksize, edge_dilate_iter, border_margin)
     
-    prob_vis = apply_gamma_display(prob, gamma=0.7)
-    overlay = create_contour_overlay(img_rgb, top_contours)
+    prob_vis = robust_norm(prob)
+    overlay = create_contour_overlay(img_rgb, M_sem_clean, color=contour_color, thickness=contour_thickness)
     
     return img_rgb, prob_vis, M_bin, G_morph, overlay
 
 
 def generate_figure(data_list, output_path):
+    """生成2行5列的流程图（无标注）"""
     plt.rcParams['font.family'] = 'serif'
     plt.rcParams['font.serif'] = ['Times New Roman', 'DejaVu Serif']
     plt.rcParams['font.size'] = 11
@@ -252,9 +194,6 @@ def generate_figure(data_list, output_path):
     plt.subplots_adjust(wspace=0.025, hspace=0.04, 
                         left=0.01, right=0.99, top=0.99, bottom=0.01)
     
-    labels_list = [["(a)", "(b)", "(c)", "(d)", "(e)"],
-                   ["(f)", "(g)", "(h)", "(i)", "(j)"]]
-    
     for row_idx, (img_rgb, prob_vis, M_bin, G_morph, overlay) in enumerate(data_list):
         images = [img_rgb / 255.0 if img_rgb.dtype == np.uint8 else img_rgb,
                   prob_vis,
@@ -262,13 +201,8 @@ def generate_figure(data_list, output_path):
                   G_morph,
                   overlay / 255.0 if overlay.dtype == np.uint8 else overlay]
         cmaps = [None, "gray", "gray", "gray", None]
-        labels = labels_list[row_idx]
         
-        h, w = prob_vis.shape[:2]
-        patch_h = int(h * 0.1)
-        patch_w = int(w * 0.1)
-        
-        for col_idx, (img, cmap, label) in enumerate(zip(images, cmaps, labels)):
+        for col_idx, (img, cmap) in enumerate(zip(images, cmaps)):
             ax = axes[row_idx, col_idx]
             
             if cmap is None:
@@ -279,26 +213,6 @@ def generate_figure(data_list, output_path):
                 ax.imshow(img, cmap=cmap, vmin=0, vmax=1)
             
             ax.set_axis_off()
-            
-            if len(img.shape) == 3:
-                patch = np.mean(img[-patch_h:, :patch_w, :])
-            else:
-                patch = np.mean(img[-patch_h:, :patch_w])
-            
-            text_color, stroke_color = get_label_color(np.array([[patch]]))
-            
-            txt = ax.text(
-                0.02, 0.02, label,
-                transform=ax.transAxes,
-                fontsize=11,
-                color=text_color,
-                verticalalignment='bottom',
-                horizontalalignment='left'
-            )
-            txt.set_path_effects([
-                pe.Stroke(linewidth=1.5, foreground=stroke_color),
-                pe.Normal()
-            ])
     
     plt.savefig(str(output_path), dpi=600, bbox_inches="tight", pad_inches=0.02,
                 facecolor='white', edgecolor='none')
@@ -307,7 +221,7 @@ def generate_figure(data_list, output_path):
 
 def main():
     print("=" * 70)
-    print("图5-2 语义流边缘提取流程图（2行×5列，方案1：叠加显示）")
+    print("图5-2 语义流边缘提取流程图（2行×5列，无标注）")
     print("=" * 70)
     
     if not UNET_WEIGHTS.exists():
