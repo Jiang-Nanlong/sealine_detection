@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-图5-2 语义流边缘提取流程图（方案B，1×5）- 批处理MU-SID测试集
+图5-2 语义流边缘提取流程图（2行×5列，两组样例）
 """
 import sys
 from pathlib import Path
@@ -11,41 +11,35 @@ sys.path.insert(0, str(PROJECT_ROOT))
 import cv2
 import numpy as np
 import torch
+import random
 import matplotlib.pyplot as plt
 import matplotlib.patheffects as pe
 from unet_model import RestorationGuidedHorizonNet
 from dataset_loader import letterbox_rgb_u8
 
-# ============================================================================
-# 路径配置
-# ============================================================================
 DATASET_ROOT = PROJECT_ROOT / "Hashmani's Dataset" / "MU-SID"
 GT_CSV = PROJECT_ROOT / "splits_musid" / "GroundTruth_test.csv"
 UNET_WEIGHTS = PROJECT_ROOT / "weights" / "rghnet_best_c2.pth"
 DCE_WEIGHTS = PROJECT_ROOT / "weights" / "Epoch99.pth"
 
-# ============================================================================
-# 算法参数
-# ============================================================================
 threshold = 0.5
 ksize = 7
 edge_dilate_iter = 2
 prob_channel = 0
-overlay_color = (255, 0, 0)  # BGR: 红色
-overlay_alpha = 0.85
+border_margin = 6
+contour_color = (255, 0, 0)
+contour_thickness = 2
 
 IMG_SIZE = 1024
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+RANDOM_SEED = 42
 
-# ============================================================================
-# 输出配置
-# ============================================================================
 output_dir = Path(__file__).parent
 output_dir.mkdir(parents=True, exist_ok=True)
+output_fig = output_dir / "fig5_2_sem_edge_pipeline_2x5.png"
 
 
 def load_all_test_images():
-    """加载所有MU-SID测试集图像路径"""
     if not GT_CSV.exists():
         raise FileNotFoundError(f"Ground truth CSV not found: {GT_CSV}")
     
@@ -67,12 +61,10 @@ def load_all_test_images():
         if img_path.exists():
             image_paths.append(img_path)
     
-    print(f"[INFO] 找到 {len(image_paths)} 张测试集图像")
     return sorted(image_paths)
 
 
 def tensor_to_numpy(tensor):
-    """将tensor转换为numpy数组 (H×W×C)"""
     img = tensor.squeeze().detach().cpu().float().clamp(0, 1).numpy()
     if img.ndim == 3:
         img = np.transpose(img, (1, 2, 0))
@@ -80,7 +72,6 @@ def tensor_to_numpy(tensor):
 
 
 def get_prob_map_from_unet(model, img_bgr):
-    """使用UNet模型推理得到概率图"""
     rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
     rgb_resized, meta = letterbox_rgb_u8(rgb, IMG_SIZE, pad_value=0)
     
@@ -106,17 +97,33 @@ def get_prob_map_from_unet(model, img_bgr):
 
 
 def robust_norm(x, lo=1, hi=99):
-    """稳健归一化：基于百分位数"""
     a = np.percentile(x, lo)
     b = np.percentile(x, hi)
     if b <= a:
-        b = a + 1e-6
+        return np.zeros_like(x)
     y = np.clip((x - a) / (b - a), 0, 1)
     return y
 
 
-def semantic_edge_pipeline(prob, threshold, ksize, edge_dilate_iter):
-    """语义边缘提取流程"""
+def remove_border_connected_components(M_sem):
+    H, W = M_sem.shape
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(M_sem, connectivity=8)
+    
+    M_clean = np.zeros_like(M_sem)
+    
+    for label in range(1, num_labels):
+        mask = (labels == label).astype(np.uint8)
+        ys, xs = np.where(mask > 0)
+        
+        touches_border = np.any(xs == 0) or np.any(xs == W-1) or np.any(ys == 0) or np.any(ys == H-1)
+        
+        if not touches_border:
+            M_clean[mask > 0] = 1
+    
+    return M_clean
+
+
+def semantic_edge_pipeline(prob, threshold, ksize, edge_dilate_iter, border_margin):
     prob = np.nan_to_num(prob, nan=0.0)
     prob = np.clip(prob, 0, 1)
     
@@ -132,19 +139,25 @@ def semantic_edge_pipeline(prob, threshold, ksize, edge_dilate_iter):
     
     M_sem = cv2.dilate(G_morph, kernel, iterations=edge_dilate_iter).astype(np.uint8)
     
-    return M_bin, G_morph, M_sem
+    H, W = M_sem.shape
+    M_sem[:border_margin, :] = 0
+    M_sem[-border_margin:, :] = 0
+    M_sem[:, :border_margin] = 0
+    M_sem[:, -border_margin:] = 0
+    
+    M_sem_clean = remove_border_connected_components(M_sem)
+    
+    return M_bin, G_morph, M_sem_clean
 
 
-def create_overlay(img_rgb, M_sem, color=(255, 0, 0), alpha=0.85):
-    """在原图上叠加语义边缘"""
+def create_contour_overlay(img_rgb, M_sem_clean, color=(255, 0, 0), thickness=2):
     overlay = img_rgb.copy()
-    mask = M_sem > 0
-    overlay[mask] = (overlay[mask] * (1 - alpha) + np.array(color) * alpha).astype(np.uint8)
+    contours, _ = cv2.findContours(M_sem_clean, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    cv2.drawContours(overlay, contours, -1, color, thickness)
     return overlay
 
 
 def get_label_color(img_patch):
-    """根据图像块亮度确定标注文字和描边颜色"""
     mean_val = np.mean(img_patch)
     if mean_val < 0.4:
         return 'white', 'black'
@@ -152,68 +165,10 @@ def get_label_color(img_patch):
         return 'black', 'white'
 
 
-def generate_figure(img_rgb, prob, M_bin, G_morph, M_sem, output_path: Path):
-    """生成1行5列的流程图"""
-    plt.rcParams['font.family'] = 'serif'
-    plt.rcParams['font.serif'] = ['Times New Roman', 'DejaVu Serif']
-    plt.rcParams['font.size'] = 11
-    plt.rcParams['font.weight'] = 'normal'
-    
-    prob_vis = robust_norm(prob)
-    overlay = create_overlay(img_rgb, M_sem, color=overlay_color, alpha=overlay_alpha)
-    
-    fig, axes = plt.subplots(1, 5, figsize=(15, 3))
-    plt.subplots_adjust(wspace=0.025, hspace=0.0, 
-                        left=0.01, right=0.99, top=0.99, bottom=0.01)
-    
-    images = [img_rgb / 255.0 if img_rgb.dtype == np.uint8 else img_rgb,
-              prob_vis, M_bin, G_morph, 
-              overlay / 255.0 if overlay.dtype == np.uint8 else overlay]
-    labels = ["(a)", "(b)", "(c)", "(d)", "(e)"]
-    cmaps = [None, "gray", "gray", "gray", None]
-    
-    h, w = prob.shape[:2]
-    patch_h = int(h * 0.1)
-    patch_w = int(w * 0.1)
-    
-    for ax, img, label, cmap in zip(axes, images, labels, cmaps):
-        if cmap is None:
-            ax.imshow(img)
-        else:
-            ax.imshow(img, cmap=cmap, vmin=0, vmax=1)
-        ax.set_axis_off()
-        
-        if len(img.shape) == 3:
-            patch = np.mean(img[-patch_h:, :patch_w, :])
-        else:
-            patch = np.mean(img[-patch_h:, :patch_w])
-        
-        text_color, stroke_color = get_label_color(np.array([[patch]]))
-        
-        txt = ax.text(
-            0.02, 0.02, label,
-            transform=ax.transAxes,
-            fontsize=11,
-            color=text_color,
-            verticalalignment='bottom',
-            horizontalalignment='left'
-        )
-        txt.set_path_effects([
-            pe.Stroke(linewidth=1.5, foreground=stroke_color),
-            pe.Normal()
-        ])
-    
-    plt.savefig(str(output_path), dpi=600, bbox_inches="tight", pad_inches=0.02,
-                facecolor='white', edgecolor='none')
-    plt.close(fig)
-
-
-def process_single_image(model, img_path: Path, output_path: Path):
-    """处理单张图像并生成语义边缘提取流程图"""
+def process_image_data(model, img_path):
     img_bgr = cv2.imread(str(img_path))
     if img_bgr is None:
-        print(f"[错误] 无法读取图像: {img_path}")
-        return False
+        raise ValueError(f"无法读取图像: {img_path}")
     
     img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
     
@@ -224,16 +179,80 @@ def process_single_image(model, img_path: Path, output_path: Path):
     if prob.shape[:2] != (h_orig, w_orig):
         prob = cv2.resize(prob, (w_orig, h_orig), interpolation=cv2.INTER_LINEAR)
     
-    M_bin, G_morph, M_sem = semantic_edge_pipeline(prob, threshold, ksize, edge_dilate_iter)
+    M_bin, G_morph, M_sem_clean = semantic_edge_pipeline(prob, threshold, ksize, edge_dilate_iter, border_margin)
     
-    generate_figure(img_rgb, prob, M_bin, G_morph, M_sem, output_path)
+    prob_vis = robust_norm(prob)
+    overlay = create_contour_overlay(img_rgb, M_sem_clean, color=contour_color, thickness=contour_thickness)
     
-    return True
+    return img_rgb, prob_vis, M_bin, G_morph, overlay
+
+
+def generate_figure(data_list, output_path):
+    plt.rcParams['font.family'] = 'serif'
+    plt.rcParams['font.serif'] = ['Times New Roman', 'DejaVu Serif']
+    plt.rcParams['font.size'] = 11
+    plt.rcParams['font.weight'] = 'normal'
+    
+    fig, axes = plt.subplots(2, 5, figsize=(15, 6))
+    plt.subplots_adjust(wspace=0.025, hspace=0.04, 
+                        left=0.01, right=0.99, top=0.99, bottom=0.01)
+    
+    labels_list = [["(a)", "(b)", "(c)", "(d)", "(e)"],
+                   ["(f)", "(g)", "(h)", "(i)", "(j)"]]
+    
+    for row_idx, (img_rgb, prob_vis, M_bin, G_morph, overlay) in enumerate(data_list):
+        images = [img_rgb / 255.0 if img_rgb.dtype == np.uint8 else img_rgb,
+                  prob_vis,
+                  M_bin,
+                  G_morph,
+                  overlay / 255.0 if overlay.dtype == np.uint8 else overlay]
+        cmaps = [None, "gray", "gray", "gray", None]
+        labels = labels_list[row_idx]
+        
+        h, w = prob_vis.shape[:2]
+        patch_h = int(h * 0.1)
+        patch_w = int(w * 0.1)
+        
+        for col_idx, (img, cmap, label) in enumerate(zip(images, cmaps, labels)):
+            ax = axes[row_idx, col_idx]
+            
+            if cmap is None:
+                ax.imshow(img)
+            elif cmap == "gray" and img.dtype == np.uint8 and np.max(img) <= 1:
+                ax.imshow(img * 255, cmap=cmap, vmin=0, vmax=255)
+            else:
+                ax.imshow(img, cmap=cmap, vmin=0, vmax=1)
+            
+            ax.set_axis_off()
+            
+            if len(img.shape) == 3:
+                patch = np.mean(img[-patch_h:, :patch_w, :])
+            else:
+                patch = np.mean(img[-patch_h:, :patch_w])
+            
+            text_color, stroke_color = get_label_color(np.array([[patch]]))
+            
+            txt = ax.text(
+                0.02, 0.02, label,
+                transform=ax.transAxes,
+                fontsize=11,
+                color=text_color,
+                verticalalignment='bottom',
+                horizontalalignment='left'
+            )
+            txt.set_path_effects([
+                pe.Stroke(linewidth=1.5, foreground=stroke_color),
+                pe.Normal()
+            ])
+    
+    plt.savefig(str(output_path), dpi=600, bbox_inches="tight", pad_inches=0.02,
+                facecolor='white', edgecolor='none')
+    plt.close(fig)
 
 
 def main():
     print("=" * 70)
-    print("图5-2 语义流边缘提取流程图（方案B，1×5）- 批处理MU-SID测试集")
+    print("图5-2 语义流边缘提取流程图（2行×5列，两组样例）")
     print("=" * 70)
     
     if not UNET_WEIGHTS.exists():
@@ -241,9 +260,6 @@ def main():
         return
     
     print(f"\n[步骤1] 加载UNet模型")
-    print(f"  权重: {UNET_WEIGHTS}")
-    print(f"  设备: {DEVICE}")
-    
     model = RestorationGuidedHorizonNet(num_classes=2, dce_weights_path=str(DCE_WEIGHTS))
     model = model.to(DEVICE)
     
@@ -257,40 +273,41 @@ def main():
     
     model.eval()
     
-    print(f"\n[步骤2] 加载测试集图像列表")
+    print(f"\n[步骤2] 加载测试集并随机选择2张图像")
     try:
         image_paths = load_all_test_images()
     except Exception as e:
         print(f"  ✗ 加载失败: {e}")
         return
     
-    if len(image_paths) == 0:
-        print("  ✗ 没有找到测试集图像")
+    if len(image_paths) < 2:
+        print("  ✗ 测试集图像数量不足")
         return
     
-    print(f"\n[步骤3] 批处理 {len(image_paths)} 张图像")
-    print(f"  参数: threshold={threshold}, ksize={ksize}, edge_dilate_iter={edge_dilate_iter}, channel={prob_channel}")
-    print(f"  输出目录: {output_dir}")
+    random.seed(RANDOM_SEED)
+    selected_paths = random.sample(image_paths, 2)
     
-    success_count = 0
-    for idx, img_path in enumerate(image_paths, 1):
-        img_stem = img_path.stem
-        output_path = output_dir / f"{img_stem}_sem_edge_1x5.png"
-        
-        print(f"  [{idx}/{len(image_paths)}] {img_stem} ... ", end="", flush=True)
-        
+    print(f"  样例1: {selected_paths[0].name}")
+    print(f"  样例2: {selected_paths[1].name}")
+    
+    print(f"\n[步骤3] 处理图像并生成流程图")
+    data_list = []
+    for idx, img_path in enumerate(selected_paths, 1):
+        print(f"  处理样例{idx} ... ", end="", flush=True)
         try:
-            if process_single_image(model, img_path, output_path):
-                success_count += 1
-                print("✓")
-            else:
-                print("✗")
+            data = process_image_data(model, img_path)
+            data_list.append(data)
+            print("✓")
         except Exception as e:
             print(f"✗ {e}")
+            return
+    
+    print(f"\n[步骤4] 生成2×5布局图")
+    generate_figure(data_list, output_fig)
+    print(f"  ✓ 已保存: {output_fig}")
     
     print("\n" + "=" * 70)
-    print(f"[完成] 成功处理 {success_count}/{len(image_paths)} 张图像")
-    print(f"输出目录: {output_dir}")
+    print("[完成]")
     print("=" * 70)
 
 
