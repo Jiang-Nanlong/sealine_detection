@@ -131,41 +131,28 @@ def generate_heatmap_figure(logits, prob, T, output_dir):
     plt.rcParams['font.size'] = 11
 
     hf, wf = logits.shape
+    FIG_DPI = 300
 
     # ---- (a) CNN 原始热力图 (logits) ----
-    fig_a, ax_a = plt.subplots(1, 1, figsize=(5, 8))
-    im_a = ax_a.imshow(logits, aspect='auto', cmap='hot', interpolation='bilinear')
-    ax_a.set_title('(a) CNN output heatmap (logits)', fontsize=12, pad=8)
-    ax_a.set_xlabel('θ (feature bins)', fontsize=10)
-    ax_a.set_ylabel('ρ (feature bins)', fontsize=10)
-    fig_a.colorbar(im_a, ax=ax_a, fraction=0.025, pad=0.04)
-    fig_a.tight_layout()
+    plt.figure(figsize=(4.0, 2.4))
+    plt.imshow(logits, aspect="auto")
+    plt.title("(a) Raw heatmap (logits)")
+    plt.axis("off")
+    plt.tight_layout(pad=0)
     path_a = output_dir / "fig5_7a_cnn_heatmap.png"
-    fig_a.savefig(str(path_a), dpi=300, bbox_inches='tight',
-                  facecolor='white', edgecolor='none')
-    plt.close(fig_a)
+    plt.savefig(str(path_a), dpi=FIG_DPI)
+    plt.close()
     print(f"  ✓ 已保存: {path_a}")
 
     # ---- (b) Softmax 概率图 ----
-    fig_b, ax_b = plt.subplots(1, 1, figsize=(5, 8))
-    im_b = ax_b.imshow(prob, aspect='auto', cmap='hot', interpolation='bilinear')
-    ax_b.set_title(f'(b) Probability map  softmax(logits / T)\nT = {T:.4f}',
-                   fontsize=12, pad=8)
-    ax_b.set_xlabel('θ (feature bins)', fontsize=10)
-    ax_b.set_ylabel('ρ (feature bins)', fontsize=10)
-
-    # 标注概率最大点
-    r_max, c_max = np.unravel_index(np.argmax(prob), prob.shape)
-    ax_b.scatter([c_max], [r_max], s=80, marker='x', color='cyan', linewidths=2,
-                 label=f'peak ({r_max}, {c_max})')
-    ax_b.legend(loc='upper right', fontsize=9)
-
-    fig_b.colorbar(im_b, ax=ax_b, fraction=0.025, pad=0.04)
-    fig_b.tight_layout()
+    plt.figure(figsize=(4.0, 2.4))
+    plt.imshow(prob, aspect="auto")
+    plt.title(f"(b) Probability map  softmax(logits / T),  T={T:.4f}")
+    plt.axis("off")
+    plt.tight_layout(pad=0)
     path_b = output_dir / "fig5_7b_softmax_prob.png"
-    fig_b.savefig(str(path_b), dpi=300, bbox_inches='tight',
-                  facecolor='white', edgecolor='none')
-    plt.close(fig_b)
+    plt.savefig(str(path_b), dpi=FIG_DPI)
+    plt.close()
     print(f"  ✓ 已保存: {path_b}")
 
 
