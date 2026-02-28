@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-图5-5 双流互补性可视化（2行×3列）
-第一行：输入对比（a梯度流 b语义流 c融合输入）
-第二行：正弦图域对比（d梯度正弦图 e语义正弦图 f融合正弦图）
+图5-5 双流互补性可视化（2行×4列）
+第一行：(1)原图 (2)梯度流输入 (3)语义流输入 (4)融合输入
+第二行：(5)留空 (6)梯度流正弦图 (7)语义流正弦图 (8)融合正弦图
 """
 import sys
 from pathlib import Path
@@ -233,51 +233,61 @@ def add_sinogram_axes_labels(ax, title):
     ax.set_title(title, fontsize=10, pad=5)
 
 
-def generate_figure(grad_feature, grad_maps, sem_edges, grad_sino, sem_sino, fusion_sino, output_path):
-    """生成2×3对比图"""
+def generate_figure(original_rgb, grad_feature, grad_maps, sem_edges, grad_sino, sem_sino, fusion_sino, output_path):
+    """生成2×4对比图"""
     plt.rcParams['font.family'] = 'serif'
     plt.rcParams['font.serif'] = ['Times New Roman', 'DejaVu Serif']
     plt.rcParams['font.size'] = 10
     
-    fig, axes = plt.subplots(2, 3, figsize=(12, 8))
+    fig, axes = plt.subplots(2, 4, figsize=(16, 8))
     plt.subplots_adjust(wspace=0.15, hspace=0.25, 
                         left=0.05, right=0.95, top=0.95, bottom=0.05)
     
-    # 第一行：输入对比
-    # (a) 梯度流输入
+    # 第一行：原图 + 三种输入对比
+    # (1) 原图
     ax = axes[0, 0]
-    ax.imshow(grad_feature, cmap='gray')
-    ax.set_title('(a) Gradient stream input', fontsize=10, pad=5)
+    ax.imshow(original_rgb)
+    ax.set_title('(1) Original image', fontsize=10, pad=5)
     ax.axis('off')
     
-    # (b) 语义流输入
+    # (2) 梯度流输入
     ax = axes[0, 1]
-    ax.imshow(sem_edges, cmap='gray')
-    ax.set_title('(b) Semantic stream input', fontsize=10, pad=5)
+    ax.imshow(grad_feature, cmap='gray')
+    ax.set_title('(2) Gradient stream input', fontsize=10, pad=5)
     ax.axis('off')
     
-    # (c) 融合输入（4通道示意）
+    # (3) 语义流输入
     ax = axes[0, 2]
+    ax.imshow(sem_edges, cmap='gray')
+    ax.set_title('(3) Semantic stream input', fontsize=10, pad=5)
+    ax.axis('off')
+    
+    # (4) 融合输入（4通道示意）
+    ax = axes[0, 3]
     fusion_vis = create_fusion_input_visualization(grad_maps, sem_edges)
     ax.imshow(fusion_vis, cmap='gray')
-    ax.set_title('(c) Fusion input (4-ch)', fontsize=10, pad=5)
+    ax.set_title('(4) Fusion input (4-ch)', fontsize=10, pad=5)
     ax.axis('off')
     
     # 第二行：正弦图域对比（使用热力图）
-    # (d) 梯度流正弦图
+    # (5) 留空（对应原图）
     ax = axes[1, 0]
-    im = ax.imshow(grad_sino, aspect='auto', cmap='hot', interpolation='bilinear')
-    add_sinogram_axes_labels(ax, '(d) Gradient sinogram Sg(ρ,θ)')
+    ax.axis('off')
     
-    # (e) 语义流正弦图
+    # (6) 梯度流正弦图（对应梯度流输入）
     ax = axes[1, 1]
-    im = ax.imshow(sem_sino, aspect='auto', cmap='hot', interpolation='bilinear')
-    add_sinogram_axes_labels(ax, '(e) Semantic sinogram Ss(ρ,θ)')
+    im = ax.imshow(grad_sino, aspect='auto', cmap='hot', interpolation='bilinear')
+    add_sinogram_axes_labels(ax, '(6) Gradient sinogram Sg(ρ,θ)')
     
-    # (f) 融合正弦图
+    # (7) 语义流正弦图（对应语义流输入）
     ax = axes[1, 2]
+    im = ax.imshow(sem_sino, aspect='auto', cmap='hot', interpolation='bilinear')
+    add_sinogram_axes_labels(ax, '(7) Semantic sinogram Ss(ρ,θ)')
+    
+    # (8) 融合正弦图（对应融合输入）
+    ax = axes[1, 3]
     im = ax.imshow(fusion_sino, aspect='auto', cmap='hot', interpolation='bilinear')
-    add_sinogram_axes_labels(ax, '(f) Fused sinogram Sf(ρ,θ)')
+    add_sinogram_axes_labels(ax, '(8) Fused sinogram Sf(ρ,θ)')
     
     plt.savefig(str(output_path), dpi=300, bbox_inches='tight', 
                 facecolor='white', edgecolor='none')
@@ -286,7 +296,7 @@ def generate_figure(grad_feature, grad_maps, sem_edges, grad_sino, sem_sino, fus
 
 def main():
     print("=" * 70)
-    print("图5-5 双流互补性可视化（2行×3列）")
+    print("图5-5 双流互补性可视化（2行×4列）")
     print("=" * 70)
     
     # 加载模型
@@ -313,6 +323,9 @@ def main():
         print(f"无法读取图像: {img_path}")
         return
     
+    # 保存原图RGB（用于显示）
+    original_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+    
     # Stage-1处理
     print("\n[步骤3] Stage-1处理（复原+分割）")
     restored_rgb, mask = run_stage1(model, img_bgr)
@@ -336,7 +349,7 @@ def main():
     
     # 生成图5-5
     print("\n[步骤7] 生成图5-5")
-    generate_figure(grad_feature, grad_maps, sem_edges, 
+    generate_figure(original_rgb, grad_feature, grad_maps, sem_edges, 
                    grad_sino, sem_sino, fusion_sino, output_fig)
     print(f"  ✓ 已保存: {output_fig}")
     
