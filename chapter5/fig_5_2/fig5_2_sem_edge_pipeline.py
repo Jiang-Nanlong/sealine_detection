@@ -98,7 +98,7 @@ def get_prob_map_from_unet(model, img_bgr):
     
     # UNet推理
     with torch.no_grad():
-        _, seg_logits, _, _ = model(inp_tensor, enable_restoration=False, enable_segmentation=True)
+        _, seg_logits, _, _, _ = model(inp_tensor, enable_restoration=False, enable_segmentation=True)
         prob_tensor = torch.softmax(seg_logits, dim=1)  # (1, 2, H, W)
     
     # 转换为numpy

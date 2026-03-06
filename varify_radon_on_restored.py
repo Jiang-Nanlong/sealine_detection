@@ -123,7 +123,7 @@ def main():
         
         # 3. UNet 推理
         with torch.no_grad():
-            restored_tensor, _, _, _ = model(inp_tensor, enable_restoration=True, enable_segmentation=False)
+            restored_tensor, _, _, _, _ = model(inp_tensor, enable_restoration=True, enable_segmentation=False)
         
         restored_bgr = tensor_to_bgr_uint8(restored_tensor)
         input_bgr = tensor_to_bgr_uint8(inp_tensor)

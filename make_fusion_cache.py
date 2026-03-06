@@ -182,7 +182,7 @@ def build_cache_for_split(df, indices, out_dir, seg_model, detector, theta_scan)
         with torch.no_grad():
             # NOTE: use the actual device type to avoid autocast warnings/errors on CPU.
             with amp.autocast(device_type=DEVICE_TYPE, enabled=(DEVICE == "cuda")):
-                restored_t, seg_logits, _, bridge_feats = seg_model(inp, None, True, True)
+                restored_t, seg_logits, _, bridge_feats, film_params = seg_model(inp, None, True, True)
 
         restored_np = (restored_t[0].permute(1, 2, 0).cpu().float().numpy() * 255.0).astype(np.uint8)
         restored_bgr = cv2.cvtColor(restored_np, cv2.COLOR_RGB2BGR)
@@ -243,6 +243,7 @@ def build_cache_for_split(df, indices, out_dir, seg_model, detector, theta_scan)
         np.save(
             os.path.join(out_dir, f"{idx}.npy"),
             {"input": combined_input, "label": label,
+             "film_params": film_params[0].detach().cpu().float().numpy(),  # (256,) FiLM 参数
              "img_name": str(img_filename) if img_filename else str(img_name) + ".JPG"},
         )
 

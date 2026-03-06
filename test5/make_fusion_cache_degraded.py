@@ -269,7 +269,7 @@ def build_cache_for_degradation(df, deg_folder, out_dir, model, detector, theta_
         # 2. UNet 推理
         with torch.no_grad():
             with amp.autocast(device_type=DEVICE_TYPE, enabled=(DEVICE == "cuda")):
-                restored_t, seg_logits, _, _ = model(inp, None, True, True)
+                restored_t, seg_logits, _, _, _ = model(inp, None, True, True)
         
         restored_np = (restored_t[0].permute(1, 2, 0).cpu().float().numpy() * 255.0).astype(np.uint8)
         restored_bgr = cv2.cvtColor(restored_np, cv2.COLOR_RGB2BGR)

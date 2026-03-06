@@ -262,7 +262,7 @@ def run_stage1(model: torch.nn.Module, bgr_orig: np.ndarray) -> Dict[str, Any]:
     inp = inp.permute(2, 0, 1).unsqueeze(0).to(DEVICE)
 
     # make_fusion_cache.py：restored_t, seg_logits, _ = seg_model(inp, None, True, True)
-    restored_t, seg_logits, _, _ = model(inp, None, True, True)
+    restored_t, seg_logits, _, _, _ = model(inp, None, True, True)
 
     restored_np = (restored_t[0].permute(1, 2, 0).cpu().float().numpy() * 255.0)
     restored_np = np.clip(restored_np, 0, 255).astype(np.uint8)

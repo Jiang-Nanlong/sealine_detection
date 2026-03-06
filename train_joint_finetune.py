@@ -300,6 +300,7 @@ def build_param_groups(unet, cnn):
     unet_unfreeze_modules = [
         unet.rest_fuse, unet.rest_strip, unet.rest_out,
         unet.ca2, unet.ca3, unet.ca4, unet.ca5,
+        unet.film_head,  # [L2] FiLM 头: 们要特实现 L2 就必须训练它
     ]
     unet_params = []
     for module in unet_unfreeze_modules:
@@ -402,24 +403,22 @@ def train_one_epoch(unet, cnn, radon, train_loader, optimizer, scaler, criterion
 
 def _forward_joint(unet, cnn, radon, img_rgb, trad_4ch):
     """
-    联合前向: UNet → bridge_feats → 可微 Radon → 拼接传统 4ch → ResNet。
+    联合前向: UNet → (bridge_feats + film_params) → 可微 Radon + FiLM → ResNet。
     
-    梯度流:
-      ResNet ← 7ch sinogram ← [trad_4ch(detached), bridge_3ch(有梯度)]
-                                                         ↑
-                                              可微 Radon ← bridge_feats
-                                                              ↑
-                                                    UNet bridge_conv ← r
-                                                              ↑
-                                                      UNet 复原分支
+    梯度流 (两条路径):
+      [L1] ResNet ← 7ch sinogram ← [trad_4ch(detached), bridge_3ch(有梯度)]
+                                                           ↑
+                                                可微 Radon ← bridge_feats ← bridge_conv ← r ← UNet复原分支
+      [L2] ResNet layer2 ← FiLM(γ,β) ← film_head ← c5(GAP) ← UNet encoder
     """
     B = img_rgb.size(0)
 
     # --- UNet 前向 (只需要复原分支, 不需要分割) ---
-    restored, _, _, bridge_feats = unet(img_rgb, None,
+    restored, _, _, bridge_feats, film_params = unet(img_rgb, None,
                                         enable_restoration=True,
                                         enable_segmentation=False)
-    # bridge_feats: (B, 3, 576, 1024), 值域 [0, 1], 有梯度
+    # bridge_feats: (B, 3, 576, 1024), 値域 [0, 1], 有梯度
+    # film_params:  (B, 256), 有梯度
 
     # --- 对 bridge_feats 的每个通道做可微 Radon ---
     bridge_sinos = []
@@ -432,8 +431,8 @@ def _forward_joint(unet, cnn, radon, img_rgb, trad_4ch):
     # --- 拼接: 传统 4ch (无梯度) + bridge 3ch (有梯度) ---
     full_7ch = torch.cat([trad_4ch.detach(), bridge_3ch], dim=1)  # (B, 7, 2240, 180)
 
-    # --- ResNet 前向 ---
-    pred = cnn(full_7ch)  # (B, 2)
+    # --- ResNet 前向 (bridge 3ch有梯度, film_params有梯度) ---
+    pred = cnn(full_7ch, film_params=film_params)  # (B, 2)
 
     return pred
 

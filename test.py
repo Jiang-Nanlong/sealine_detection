@@ -196,7 +196,7 @@ def main():
 
         # -------- Panel3 & Panel4: UNet 输出（复原 + 分割）--------
         with torch.no_grad():
-            restored_t, seg_logits, _, _ = unet(input_tensor, None, True, True)
+            restored_t, seg_logits, _, _, _ = unet(input_tensor, None, True, True)
 
         panel3_bgr = tensor_to_bgr_uint8(restored_t)
 

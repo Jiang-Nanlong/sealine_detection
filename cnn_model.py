@@ -101,13 +101,25 @@ class HorizonResNet(nn.Module):
             self.in_planes = planes * block.expansion
         return nn.Sequential(*layers)
 
-    def forward(self, x, return_conf: bool = False):
-        # x: [B, 3, 2240, 180]
+    def forward(self, x, film_params=None, return_conf: bool = False):
+        """
+        film_params: (B, 256) tensor 来自 UNet.film_head, 包含 γ[:128] 和 β[128:]
+                     用于 FiLM 调制 layer2 输出 (128ch)。
+                     None 时跳过调制 (等价于 γ=1, β=0)。
+        """
+        # x: [B, in_channels, 2240, 180]
         x = F.relu(self.bn1(self.conv1(x)))
         x = self.maxpool(x)
 
         x = self.layer1(x)
         x = self.layer2(x)
+
+        # [FiLM 调制] 用 UNet 全局语义特征调制 layer2 输出
+        if film_params is not None:
+            gamma = film_params[:, :128].view(-1, 128, 1, 1)   # (B, 128, 1, 1)
+            beta  = film_params[:, 128:].view(-1, 128, 1, 1)   # (B, 128, 1, 1)
+            x = gamma * x + beta
+
         x = self.layer3(x)
         x = self.layer4(x)
         x = self.cbam(x)  # Feature Map: [B, 512, H_feat, W_feat]

@@ -94,7 +94,7 @@ def main():
             img = img.to(DEVICE)
             
             # Forward
-            _, seg_logits, _, _ = model(img, None, enable_restoration=True, enable_segmentation=True)
+            _, seg_logits, _, _, _ = model(img, None, enable_restoration=True, enable_segmentation=True)
             
             vis_in = tensor_to_img(img[0])
             pred_mask = seg_logits.argmax(dim=1)[0].cpu().numpy().astype(np.uint8)

@@ -186,13 +186,24 @@ class RestorationGuidedHorizonNet(nn.Module):
 
         self.inject = nn.Conv2d(r_ch, s_ch, 1)
 
-        # [Bridge] 1x1 Conv: 从复原分支中间特征 r (64ch) 提取 3 通道学习型边缘特征
+        # [Bridge-L1] 1x1 Conv: 从复原分支中间特征 r (64ch) 提取 3 通道学习型边缘特征
         # 这些特征将经过 Radon 变换后作为 ResNet 的额外输入通道
         self.bridge_conv = nn.Conv2d(r_ch, 3, 1)
         # 初始化：让每个输出通道均匀聚合所有输入通道（类似 channel-wise average）
-        # 这样即使 bridge_conv 没有被单独训练，输出也是 r 的有意义摘要
         nn.init.constant_(self.bridge_conv.weight, 1.0 / r_ch)
         nn.init.zeros_(self.bridge_conv.bias)
+
+        # [Bridge-L2] FiLM 调制头: c5 全局特征 → (γ, β) 用于调制 ResNet layer2 输出(128ch)
+        # 输出维度: 256 = 128(γ) + 128(β)
+        # 初始化: 权重趋近0, γ初始=1.0, β初始=0.0 (等效恒等变换, 训练早期不破坏 ResNet)
+        self.film_head = nn.Sequential(
+            nn.Linear(c5_ch, 256),
+            nn.ReLU(inplace=True),
+            nn.Linear(256, 256),
+        )
+        nn.init.zeros_(self.film_head[-1].weight)
+        self.film_head[-1].bias.data[:128] = 1.0  # γ 初始化为 1
+        self.film_head[-1].bias.data[128:] = 0.0  # β 初始化为 0
 
     @torch.no_grad()
     def _dce_enhance(self, x: torch.Tensor) -> torch.Tensor:
@@ -261,7 +272,7 @@ class RestorationGuidedHorizonNet(nn.Module):
             if seg_logits.shape[-2:] != input_size:
                 seg_logits = F.interpolate(seg_logits, size=input_size, mode="bilinear", align_corners=False)
 
-        # [Bridge] 提取学习型边缘特征 (上采样到原图尺寸 + sigmoid 归一化)
+        # [Bridge-L1] 提取学习型边缘特征 (上采样到原图尺寸 + sigmoid 归一化)
         bridge_feats = None
         if enable_restoration:
             bridge_feats = torch.sigmoid(self.bridge_conv(r))  # (B, 3, H_r, W_r)
@@ -269,4 +280,10 @@ class RestorationGuidedHorizonNet(nn.Module):
                 bridge_feats = F.interpolate(bridge_feats, size=input_size,
                                              mode="bilinear", align_corners=False)
 
-        return restored_img, seg_logits, target_dce, bridge_feats
+        # [Bridge-L2] FiLM 调制参数: 从 c5 全局语义提取 (γ, β)
+        # c5: (B, 960, H5, W5) → GAP → (B, 960) → film_head → (B, 256)
+        film_params = self.film_head(
+            F.adaptive_avg_pool2d(c5, 1).flatten(1)
+        )  # (B, 256), 无论 enable_restoration 如何都计算
+
+        return restored_img, seg_logits, target_dce, bridge_feats, film_params

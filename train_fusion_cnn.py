@@ -178,9 +178,15 @@ class SplitCacheDataset(Dataset):
         data = np.load(path, allow_pickle=True).item()
         x = torch.from_numpy(data["input"]).float()   # [C,H,W]
         y = torch.from_numpy(data["label"]).float()   # [2]
+        # FiLM 参数 (256,): 若缓存中没有则用 γ=1,β=0 (恒等变换, 向后兼容)
+        fp_np = data.get("film_params", None)
+        if fp_np is None:
+            film_params = torch.cat([torch.ones(128), torch.zeros(128)])
+        else:
+            film_params = torch.from_numpy(fp_np.astype(np.float32)).reshape(256)
         if self.augment:
             x = augment_fusion_tensor(x)
-        return x, y
+        return x, y, film_params
 
 
 # =========================
@@ -243,11 +249,12 @@ def evaluate(model, loader, criterion):
     model.eval()
     total_loss = 0.0
     n = 0
-    for x, y in loader:
+    for x, y, fp in loader:
         x = x.to(DEVICE, non_blocking=True)
         y = y.to(DEVICE, non_blocking=True)
+        fp = fp.to(DEVICE, non_blocking=True)
         with autocast_ctx():
-            pred = model(x)
+            pred = model(x, film_params=fp)
             loss = criterion(pred, y)
         total_loss += float(loss.item()) * x.size(0)
         n += x.size(0)
@@ -259,15 +266,16 @@ def train_one_epoch(model, loader, optimizer, scaler, criterion):
     total_loss = 0.0
     n = 0
 
-    for x, y in tqdm(loader, desc="train", ncols=90):
+    for x, y, fp in tqdm(loader, desc="train", ncols=90):
         x = x.to(DEVICE, non_blocking=True)
         y = y.to(DEVICE, non_blocking=True)
+        fp = fp.to(DEVICE, non_blocking=True)
 
         optimizer.zero_grad(set_to_none=True)
 
         if scaler is not None:
             with autocast_ctx():
-                pred = model(x)
+                pred = model(x, film_params=fp)
                 loss = criterion(pred, y)
             scaler.scale(loss).backward()
             if GRAD_CLIP_NORM and GRAD_CLIP_NORM > 0:
@@ -276,7 +284,7 @@ def train_one_epoch(model, loader, optimizer, scaler, criterion):
             scaler.step(optimizer)
             scaler.update()
         else:
-            pred = model(x)
+            pred = model(x, film_params=fp)
             loss = criterion(pred, y)
             loss.backward()
             if GRAD_CLIP_NORM and GRAD_CLIP_NORM > 0:

@@ -525,14 +525,19 @@ class FusionCacheDataset(torch.utils.data.Dataset):
             x = obj.get("x", obj.get("input", None))
             y = obj.get("y", obj.get("label", None))
             img_name = obj.get("img_name", obj.get("image_name", obj.get("img", None)))
+            # FiLM 参数 (256,)：若不存在用恒等变换 (向后兴容老缓存)
+            fp = obj.get("film_params", None)
         else:
             # pattern: saved as tuple/list
+            fp = None
             if isinstance(obj, (list, tuple)) and len(obj) >= 2:
                 x, y = obj[0], obj[1]
                 if len(obj) >= 3:
                     img_name = obj[2]
+                fp = None
             elif isinstance(obj, np.ndarray) and obj.ndim == 1 and len(obj) == 2 and isinstance(obj[0], np.ndarray):
                 x, y = obj[0], obj[1]
+                fp = None
 
         if x is None or y is None:
             raise RuntimeError(f"Cannot parse cache npy: {path}")
@@ -546,12 +551,18 @@ class FusionCacheDataset(torch.utils.data.Dataset):
         if y.size != 2:
             raise RuntimeError(f"Label must be size=2 [rho_norm, theta_norm], got shape={y.shape} in {path}")
 
-        return x, y, str(img_name)
+        # FiLM 参数默认值 (向后化居老缓存): γ=1, β=0 (恒等)
+        if fp is None:
+            fp = np.concatenate([np.ones(128, dtype=np.float32), np.zeros(128, dtype=np.float32)])
+        else:
+            fp = np.asarray(fp, dtype=np.float32).reshape(-1)
+
+        return x, y, str(img_name), fp
 
     def __getitem__(self, idx):
         p = self.files[idx]
-        x, y, img_name = self._load_one(p)
-        return torch.from_numpy(x), torch.from_numpy(y), img_name, os.path.basename(p)
+        x, y, img_name, fp = self._load_one(p)
+        return torch.from_numpy(x), torch.from_numpy(y), img_name, os.path.basename(p), torch.from_numpy(fp)
 
 
 def load_original_image(img_name: str, w: int, h: int) -> Optional[np.ndarray]:
@@ -967,14 +978,15 @@ def main():
             idxs = []
             with torch.no_grad():
                 for i, batch in enumerate(loader):
-                    x, y, img_name, cache_file = batch
+                    x, y, img_name, cache_file, fp = batch
                     x = x.to(DEVICE, non_blocking=True).float()
+                    fp = fp.to(DEVICE, non_blocking=True).float()
                     # CNN pred + confidence
                     try:
-                        pred_norm, conf = cnn(x, return_conf=True)
+                        pred_norm, conf = cnn(x, film_params=fp, return_conf=True)
                         conf_val = float(conf.detach().cpu().numpy().reshape(-1)[0])
                     except TypeError:
-                        pred_norm = cnn(x)
+                        pred_norm = cnn(x, film_params=fp)
                         conf_val = float('nan')
 
                     pred_norm = pred_norm.detach().cpu().numpy().reshape(-1)
@@ -990,7 +1002,7 @@ def main():
                         im_rgb = cv2.cvtColor(im, cv2.COLOR_BGR2RGB)
                         im_t = torch.from_numpy(im_rgb).permute(2, 0, 1).float() / 255.0
                         im_t = im_t.unsqueeze(0).to(DEVICE)
-                        _, seg_logits, _, _ = unet(im_t, enable_restoration=True, enable_segmentation=True)
+                        _, seg_logits, _, _, _ = unet(im_t, enable_restoration=True, enable_segmentation=True)
                         if seg_logits is not None:
                             mask = torch.argmax(seg_logits, dim=1)[0].detach().cpu().numpy().astype(np.uint8)
                             pts, leak = extract_boundary_points_sky_to_sea(mask)
@@ -1114,17 +1126,18 @@ def main():
 
     with torch.no_grad():
         for i, batch in enumerate(loader):
-            x, y, img_name, cache_file = batch
+            x, y, img_name, cache_file, fp = batch
             # batch=1
             x = x.to(DEVICE, non_blocking=True).float()
             y = y.to(DEVICE, non_blocking=True).float()
+            fp = fp.to(DEVICE, non_blocking=True).float()
 
             # CNN pred + confidence
             try:
-                pred_norm, conf = cnn(x, return_conf=True)
+                pred_norm, conf = cnn(x, film_params=fp, return_conf=True)
                 conf_val = float(conf.detach().cpu().numpy().reshape(-1)[0])
             except TypeError:
-                pred_norm = cnn(x)
+                pred_norm = cnn(x, film_params=fp)
                 conf_val = float("nan")
 
             # Top-K selection flag (for Top-K refine experiment)
@@ -1197,7 +1210,7 @@ def main():
                     im_t = torch.from_numpy(im_rgb).permute(2, 0, 1).float() / 255.0
                     im_t = im_t.unsqueeze(0).to(DEVICE)
 
-                    _, seg_logits, _, _ = unet(im_t, enable_restoration=True, enable_segmentation=True)
+                    _, seg_logits, _, _, _ = unet(im_t, enable_restoration=True, enable_segmentation=True)
                     if seg_logits is not None:
                         mask = torch.argmax(seg_logits, dim=1)[0].detach().cpu().numpy().astype(
                             np.uint8)  # 0 sea, 1 sky

@@ -193,7 +193,7 @@ def build_cache_for_split(df: pd.DataFrame, indices, out_dir: str, seg_model, de
         # 2) UNet inference
         with torch.no_grad():
             with amp.autocast(device_type=DEVICE_TYPE, enabled=(DEVICE == "cuda")):
-                restored_t, seg_logits, _, _ = seg_model(inp, None, True, True)
+                restored_t, seg_logits, _, _, _ = seg_model(inp, None, True, True)
 
         restored_np = (restored_t[0].permute(1, 2, 0).cpu().float().numpy() * 255.0).astype(np.uint8)
         restored_bgr = cv2.cvtColor(restored_np, cv2.COLOR_RGB2BGR)
