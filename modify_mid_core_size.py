@@ -24,7 +24,7 @@ inp_rgb = cv2.cvtColor(inp_bgr, cv2.COLOR_BGR2RGB)
 inp_tensor = torch.from_numpy(inp_rgb / 255.0).permute(2, 0, 1).unsqueeze(0).float().to(device)
 
 with torch.no_grad():
-    restored, _, _ = model(inp_tensor, None, True, True)
+    restored, _, _, _ = model(inp_tensor, None, True, True)
 
 # 转回 numpy (这是送给 Traditional Method 的输入)
 restored_np = (restored.squeeze().permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)

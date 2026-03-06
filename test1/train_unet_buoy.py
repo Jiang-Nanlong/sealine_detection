@@ -3,7 +3,7 @@
 train_unet_buoy.py - Train UNet on Buoy Dataset (In-Domain Training)
 
 与主训练策略完全一致：
-- 5阶段训练: A �?B �?C1 �?B2 �?C2
+- 5阶段训练: A �?B �?C1 �?B2 �?C2
 - C2阶段 seg_w=1.0
 - P_CLEAN=0.35
 - IMG_SIZE=(576, 1024)
@@ -52,10 +52,10 @@ DCE_WEIGHTS = str(PROJECT_ROOT / "weights" / "Epoch99.pth")
 WEIGHTS_DIR = str(PROJECT_ROOT / "test1" / "weights_buoy")
 
 # 当前运行阶段: 'A' -> 'B' -> 'C1' -> 'B2' -> 'C2'
-# 可通过命令行参数覆�? python train_unet_buoy.py --stage B
+# 可通过命令行参数覆�? python train_unet_buoy.py --stage B
 STAGE = "A"
 
-# �?核心配置 - 与主训练一�?
+# �?核心配置 - 与主训练一�?
 IMG_SIZE = (576, 1024)
 BATCH_SIZE = 4
 P_CLEAN = 0.35
@@ -206,7 +206,7 @@ def load_checkpoint_smart(model, current_stage: str, device: str):
 
 
 # =========================
-# Losses & Metrics (�?train_unet_smd.py 相同)
+# Losses & Metrics (�?train_unet_smd.py 相同)
 # =========================
 class CharbonnierLoss(nn.Module):
     def __init__(self, eps=1e-3):
@@ -267,7 +267,7 @@ class HybridRestorationLoss(nn.Module):
 
 
 def build_optimizer(model, stage: str, lr: float):
-    """构建优化�?""
+    """构建优化�?""
     restoration_names = [
         "rest_lat2", "rest_lat3", "rest_lat4", "rest_lat5",
         "ca2", "ca3", "ca4", "ca5",
@@ -452,7 +452,7 @@ def evaluate(model, loader, mode: str, crit_rest, crit_seg, seg_w: float = 0.5) 
             img = img.to(DEVICE, non_blocking=True)
             mask = mask.to(DEVICE, non_blocking=True)
             with amp.autocast(device_type=DEVICE_TYPE, enabled=(DEVICE_TYPE == "cuda")):
-                _, seg, _ = model(img, None, enable_restoration=True, enable_segmentation=True)
+                _, seg, _, _ = model(img, None, enable_restoration=True, enable_segmentation=True)
                 loss_s = crit_seg(seg, mask)
             pred = seg.argmax(1)
             sums["seg"] += float(loss_s.item())
@@ -464,7 +464,7 @@ def evaluate(model, loader, mode: str, crit_rest, crit_seg, seg_w: float = 0.5) 
             target = target.to(DEVICE, non_blocking=True)
             mask = mask.to(DEVICE, non_blocking=True)
             with amp.autocast(device_type=DEVICE_TYPE, enabled=(DEVICE_TYPE == "cuda")):
-                restored, seg, _ = model(img, target, enable_restoration=True, enable_segmentation=True)
+                restored, seg, _, _ = model(img, target, enable_restoration=True, enable_segmentation=True)
                 loss_r = crit_rest(restored, target)
                 loss_s = crit_seg(seg, mask)
                 loss_joint = loss_r + seg_w * loss_s
@@ -480,7 +480,7 @@ def evaluate(model, loader, mode: str, crit_rest, crit_seg, seg_w: float = 0.5) 
             img = img.to(DEVICE, non_blocking=True)
             target = target.to(DEVICE, non_blocking=True)
             with amp.autocast(device_type=DEVICE_TYPE, enabled=(DEVICE_TYPE == "cuda")):
-                restored, _, _ = model(img, target, enable_restoration=True, enable_segmentation=False)
+                restored, _, _, _ = model(img, target, enable_restoration=True, enable_segmentation=False)
                 loss_r = crit_rest(restored, target)
             mse = F.mse_loss(restored.detach().float(), target.detach().float())
             sums["psnr"] += psnr_from_mse(mse)
@@ -622,7 +622,7 @@ def main():
                 img = img.to(DEVICE)
                 target = target.to(DEVICE)
                 with amp.autocast(device_type=DEVICE_TYPE, enabled=(DEVICE_TYPE == "cuda")):
-                    r, _, _ = model(img, target, True, False)
+                    r, _, _, _ = model(img, target, True, False)
                     loss = crit_rest(r, target)
             
             elif STAGE in ("B", "B2"):
@@ -630,7 +630,7 @@ def main():
                 img = img.to(DEVICE)
                 mask = mask.to(DEVICE)
                 with amp.autocast(device_type=DEVICE_TYPE, enabled=(DEVICE_TYPE == "cuda")):
-                    _, s, _ = model(img, None, True, True)
+                    _, s, _, _ = model(img, None, True, True)
                     loss = crit_seg(s, mask)
             
             elif STAGE == "C1":
@@ -638,7 +638,7 @@ def main():
                 img = img.to(DEVICE)
                 target = target.to(DEVICE)
                 with amp.autocast(device_type=DEVICE_TYPE, enabled=(DEVICE_TYPE == "cuda")):
-                    r, _, _ = model(img, target, True, False)
+                    r, _, _, _ = model(img, target, True, False)
                     loss = crit_rest(r, target)
             
             else:  # C2
@@ -647,7 +647,7 @@ def main():
                 target = target.to(DEVICE)
                 mask = mask.to(DEVICE)
                 with amp.autocast(device_type=DEVICE_TYPE, enabled=(DEVICE_TYPE == "cuda")):
-                    r, s, _ = model(img, target, True, True)
+                    r, s, _, _ = model(img, target, True, True)
                     loss = crit_rest(r, target) + curr_seg_w * crit_seg(s, mask)
             
             scaler.scale(loss).backward()

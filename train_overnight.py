@@ -35,6 +35,7 @@ NEW_CACHE_DIR = PROJECT_ROOT / "Hashmani's Dataset" / "FusionCache_new_1024x576"
 TRAIN_UNET_SCRIPT = PROJECT_ROOT / "train_unet.py"
 MAKE_CACHE_SCRIPT = PROJECT_ROOT / "make_fusion_cache.py"
 TRAIN_CNN_SCRIPT = PROJECT_ROOT / "train_fusion_cnn.py"
+TRAIN_JOINT_SCRIPT = PROJECT_ROOT / "train_joint_finetune.py"
 
 # UNet 阶段
 UNET_STAGES = ["A", "B", "C1", "B2", "C2"]
@@ -230,6 +231,15 @@ def main():
     if not success:
         log("Fusion CNN 训练失败")
         return
+    
+    # 5. 联合微调
+    print("\n" + "=" * 60)
+    print("  阶段 4: 联合微调 UNet (bridge) + ResNet")
+    print("=" * 60)
+    
+    success = run_script(TRAIN_JOINT_SCRIPT, "联合微调 (20 epochs)")
+    if not success:
+        log("联合微调失败 (非致命，阶段3权重仍可用)")
     
     # 完成
     total_time = time.time() - start_time

@@ -182,7 +182,7 @@ def build_cache_for_split(df, indices, out_dir, seg_model, detector, theta_scan)
         with torch.no_grad():
             # NOTE: use the actual device type to avoid autocast warnings/errors on CPU.
             with amp.autocast(device_type=DEVICE_TYPE, enabled=(DEVICE == "cuda")):
-                restored_t, seg_logits, _ = seg_model(inp, None, True, True)
+                restored_t, seg_logits, _, bridge_feats = seg_model(inp, None, True, True)
 
         restored_np = (restored_t[0].permute(1, 2, 0).cpu().float().numpy() * 255.0).astype(np.uint8)
         restored_bgr = cv2.cvtColor(restored_np, cv2.COLOR_RGB2BGR)
@@ -209,6 +209,20 @@ def build_cache_for_split(df, indices, out_dir, seg_model, detector, theta_scan)
             edges = cv2.dilate(edges, k, iterations=EDGE_DILATE)
         seg_sino = detector._radon_gpu(edges, theta_scan)
         processed_stack.append(process_sinogram(seg_sino, RESIZE_H, RESIZE_W))
+
+        # 5. [新增] Bridge特征 Radon通道 (从UNet复原分支中间特征r学习到的3通道边缘响应)
+        if bridge_feats is not None:
+            bridge_np = bridge_feats[0].cpu().float().numpy()  # (3, H, W)
+            for ch_i in range(bridge_np.shape[0]):
+                ch_map = bridge_np[ch_i]  # (H, W), 值域 [0, 1]
+                # 转为 uint8-like float 以兼容 _radon_gpu (接受 numpy 2D array)
+                ch_map_scaled = (ch_map * 255.0).astype(np.float32)
+                bridge_sino = detector._radon_gpu(ch_map_scaled, theta_scan)
+                processed_stack.append(process_sinogram(bridge_sino, RESIZE_H, RESIZE_W))
+        else:
+            # fallback: 3个空通道
+            for _ in range(3):
+                processed_stack.append(np.zeros((RESIZE_H, RESIZE_W), dtype=np.float32))
 
         combined_input = np.stack(processed_stack, axis=0).astype(np.float32)
 

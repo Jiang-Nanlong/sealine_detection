@@ -515,7 +515,7 @@ def main():
             # (c) UNet 复原
             with torch.no_grad():
                 deg_tensor = bgr_to_tensor(degraded, device)
-                restored_tensor, _, _ = model(deg_tensor, enable_restoration=True, enable_segmentation=False)
+                restored_tensor, _, _, _ = model(deg_tensor, enable_restoration=True, enable_segmentation=False)
             restored = tensor_to_bgr(restored_tensor)
             
             # (d) 计算指标

@@ -365,7 +365,7 @@ def evaluate(model, loader, mode: str, crit_rest, crit_seg, seg_w: float = 0.5) 
             img, mask = batch
             img = img.to(DEVICE, non_blocking=True); mask = mask.to(DEVICE, non_blocking=True)
             with amp.autocast(device_type=DEVICE_TYPE, enabled=(DEVICE_TYPE == "cuda")):
-                _, seg, _ = model(img, None, enable_restoration=True, enable_segmentation=True)
+                _, seg, _, _ = model(img, None, enable_restoration=True, enable_segmentation=True)
                 loss_s = crit_seg(seg, mask)
             pred = seg.argmax(1)
             sums["seg"] += float(loss_s.item()); sums["joint"] += float(loss_s.item())
@@ -373,7 +373,7 @@ def evaluate(model, loader, mode: str, crit_rest, crit_seg, seg_w: float = 0.5) 
             img, target, mask = batch
             img = img.to(DEVICE, non_blocking=True); target = target.to(DEVICE, non_blocking=True); mask = mask.to(DEVICE, non_blocking=True)
             with amp.autocast(device_type=DEVICE_TYPE, enabled=(DEVICE_TYPE == "cuda")):
-                restored, seg, target_dce = model(img, target, enable_restoration=True, enable_segmentation=True)
+                restored, seg, target_dce, _ = model(img, target, enable_restoration=True, enable_segmentation=True)
                 # ✅ 核心改动 5: Loss 监督 Clean Target (消除色偏)
                 loss_r = crit_rest(restored, target) 
                 loss_s = crit_seg(seg, mask)
@@ -386,7 +386,7 @@ def evaluate(model, loader, mode: str, crit_rest, crit_seg, seg_w: float = 0.5) 
             img, target = batch
             img = img.to(DEVICE, non_blocking=True); target = target.to(DEVICE, non_blocking=True)
             with amp.autocast(device_type=DEVICE_TYPE, enabled=(DEVICE_TYPE == "cuda")):
-                restored, _, _ = model(img, target, enable_restoration=True, enable_segmentation=False)
+                restored, _, _, _ = model(img, target, enable_restoration=True, enable_segmentation=False)
                 # ✅ 核心改动 5: Loss 监督 Clean Target
                 loss_r = crit_rest(restored, target)
             mse = F.mse_loss(restored.detach().float(), target.detach().float())
@@ -498,25 +498,25 @@ def main():
                 img, target = batch
                 img=img.to(DEVICE); target=target.to(DEVICE)
                 with amp.autocast(device_type=DEVICE_TYPE, enabled=(DEVICE_TYPE=="cuda")):
-                    r, _, _ = model(img, target, True, False)
+                    r, _, _, _ = model(img, target, True, False)
                     loss = crit_rest(r, target) # Clean
             elif STAGE in ("B", "B2"):
                 img, mask = batch
                 img=img.to(DEVICE); mask=mask.to(DEVICE)
                 with amp.autocast(device_type=DEVICE_TYPE, enabled=(DEVICE_TYPE=="cuda")):
-                    _, s, _ = model(img, None, True, True)
+                    _, s, _, _ = model(img, None, True, True)
                     loss = crit_seg(s, mask)
             elif STAGE == "C1":
                 img, target, _ = batch
                 img=img.to(DEVICE); target=target.to(DEVICE)
                 with amp.autocast(device_type=DEVICE_TYPE, enabled=(DEVICE_TYPE=="cuda")):
-                    r, _, _ = model(img, target, True, False)
+                    r, _, _, _ = model(img, target, True, False)
                     loss = crit_rest(r, target) # Clean
             else: # C2
                 img, target, mask = batch
                 img=img.to(DEVICE); target=target.to(DEVICE); mask=mask.to(DEVICE)
                 with amp.autocast(device_type=DEVICE_TYPE, enabled=(DEVICE_TYPE=="cuda")):
-                    r, s, _ = model(img, target, True, True)
+                    r, s, _, _ = model(img, target, True, True)
                     loss = crit_rest(r, target) + curr_seg_w * crit_seg(s, mask) # Clean
             
             scaler.scale(loss).backward()

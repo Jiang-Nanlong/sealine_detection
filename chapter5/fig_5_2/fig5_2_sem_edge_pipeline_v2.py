@@ -78,7 +78,7 @@ def get_prob_map_from_unet(model, img_bgr):
     inp_tensor = inp_tensor.permute(2, 0, 1).unsqueeze(0).to(DEVICE)
     
     with torch.no_grad():
-        _, seg_logits, _ = model(inp_tensor, enable_restoration=False, enable_segmentation=True)
+        _, seg_logits, _, _ = model(inp_tensor, enable_restoration=False, enable_segmentation=True)
         prob_tensor = torch.softmax(seg_logits, dim=1)
     
     prob = tensor_to_numpy(prob_tensor)

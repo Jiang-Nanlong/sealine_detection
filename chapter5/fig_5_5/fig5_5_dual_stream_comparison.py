@@ -101,7 +101,7 @@ def run_stage1(model, img_bgr):
     inp_tensor = torch.from_numpy(rgb_resized.astype(np.float32) / 255.0)
     inp_tensor = inp_tensor.permute(2, 0, 1).unsqueeze(0).to(DEVICE)
     
-    restored_t, seg_logits, _ = model(inp_tensor, None, True, True)
+    restored_t, seg_logits, _, _ = model(inp_tensor, None, True, True)
     
     restored_np = restored_t[0].permute(1, 2, 0).cpu().numpy()
     restored_np = np.clip(restored_np * 255, 0, 255).astype(np.uint8)

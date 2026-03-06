@@ -239,7 +239,7 @@ def run_restoration(model: torch.nn.Module, bgr_u8: np.ndarray) -> Tuple[np.ndar
 
     # Forward signature in your repo's make_fusion_cache.py:
     # restored_t, seg_logits, _ = seg_model(inp, None, True, True)
-    restored_t, _, _ = model(inp, None, True, False)  # restoration only
+    restored_t, _, _, _ = model(inp, None, True, False)  # restoration only
 
     restored_rgb = (restored_t[0].permute(1, 2, 0).cpu().float().numpy() * 255.0)
     restored_rgb = np.clip(restored_rgb, 0.0, 255.0).astype(np.uint8)

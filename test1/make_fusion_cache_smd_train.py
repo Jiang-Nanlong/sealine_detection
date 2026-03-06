@@ -39,15 +39,15 @@ from unet_model import RestorationGuidedHorizonNet  # noqa: E402
 from gradient_radon import TextureSuppressedMuSCoWERT  # noqa: E402
 
 # ============================
-# PyCharm 配置�?
+# PyCharm 配置�?
 # ============================
-# 使用手动筛选后�?SMD 数据 (manual_review 目录)
+# 使用手动筛选后�?SMD 数据 (manual_review 目录)
 CSV_PATH = str(PROJECT_ROOT / "test4" / "manual_review" / "SMD_GroundTruth_filtered.csv")
 IMG_DIR = str(PROJECT_ROOT / "test4" / "manual_review" / "kept_frames")
 SPLIT_DIR = str(PROJECT_ROOT / "test1" / "splits_smd")
 SAVE_ROOT = str(PROJECT_ROOT / "test1" / "FusionCache_SMD")
 
-# �?使用 SMD 本地训练�?UNet 权重 (In-Domain Training)
+# �?使用 SMD 本地训练�?UNet 权重 (In-Domain Training)
 RGHNET_CKPT = str(PROJECT_ROOT / "test1" / "weights_smd" / "smd_rghnet_best_seg_c2.pth")
 DCE_WEIGHTS = str(PROJECT_ROOT / "weights" / "Epoch99.pth")
 # ============================
@@ -193,7 +193,7 @@ def build_cache_for_split(df: pd.DataFrame, indices, out_dir: str, seg_model, de
         # 2) UNet inference
         with torch.no_grad():
             with amp.autocast(device_type=DEVICE_TYPE, enabled=(DEVICE == "cuda")):
-                restored_t, seg_logits, _ = seg_model(inp, None, True, True)
+                restored_t, seg_logits, _, _ = seg_model(inp, None, True, True)
 
         restored_np = (restored_t[0].permute(1, 2, 0).cpu().float().numpy() * 255.0).astype(np.uint8)
         restored_bgr = cv2.cvtColor(restored_np, cv2.COLOR_RGB2BGR)

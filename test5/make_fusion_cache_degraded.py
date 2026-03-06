@@ -5,7 +5,7 @@ make_fusion_cache_degraded.py
 Build FusionCache for degraded MU-SID test images.
 
 基于 make_fusion_cache.py 的相同处理流程，
-为每种退化类型生�?cache 文件�?
+为每种退化类型生�?cache 文件�?
 
 PyCharm: 直接运行此文件，在下方配置区修改参数
 """
@@ -32,17 +32,17 @@ from unet_model import RestorationGuidedHorizonNet
 from gradient_radon import TextureSuppressedMuSCoWERT
 
 # ============================
-# PyCharm 配置�?(在这里修�?
+# PyCharm 配置�?(在这里修�?
 # ============================
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 DEVICE_TYPE = "cuda" if torch.cuda.is_available() else "cpu"
 # 选择要处理的退化类型，None 表示处理全部
-SELECTED_DEGRADATIONS = None  # �?["gaussian_noise_15", "low_light_2.0"]
-# 选择数据�? "musid", "smd", "buoy"
+SELECTED_DEGRADATIONS = None  # �?["gaussian_noise_15", "low_light_2.0"]
+# 选择数据�? "musid", "smd", "buoy"
 DATASET = "musid"
 # ============================
 
-# 命令行参数覆�?(支持 run_experiment5.py 一键调�?
+# 命令行参数覆�?(支持 run_experiment5.py 一键调�?
 if "--dataset" in sys.argv:
     _idx = sys.argv.index("--dataset")
     if _idx + 1 < len(sys.argv):
@@ -55,7 +55,7 @@ TEST5_DIR = PROJECT_ROOT / "test5"
 TEST4_DIR = PROJECT_ROOT / "test4"
 test1_DIR = PROJECT_ROOT / "test1"
 
-# 数据集配�?
+# 数据集配�?
 DATASET_CONFIGS = {
     "musid": {
         "degraded_img_dir": TEST5_DIR / "degraded_images",
@@ -98,7 +98,7 @@ CACHE_ROOT = TEST5_DIR / "FusionCache_Degraded"
 RGHNET_CKPT = str(PROJECT_ROOT / "weights" / "rghnet_best_c2.pth")
 DCE_WEIGHTS = str(PROJECT_ROOT / "weights" / "Epoch99.pth")
 
-# Image sizes (�?make_fusion_cache.py 一�?
+# Image sizes (�?make_fusion_cache.py 一�?
 UNET_IN_W = 1024
 UNET_IN_H = 576
 
@@ -106,7 +106,7 @@ UNET_IN_H = 576
 RESIZE_H = 2240
 RESIZE_W = 180
 
-# 后处理参�?
+# 后处理参�?
 MORPH_CLOSE = 3
 TOP_TOUCH_TOL = 0
 CANNY_LOW = 50
@@ -238,7 +238,7 @@ def build_cache_for_degradation(df, deg_folder, out_dir, model, detector, theta_
             skip_reasons["coord_error"] += 1
             continue
         
-        # 读取退化图�?(尝试多种扩展�?
+        # 读取退化图�?(尝试多种扩展�?
         img_path = None
         for ext in [".JPG", ".jpg", ".jpeg", ".png"]:
             candidate = deg_folder / f"{img_stem}{ext}"
@@ -262,20 +262,20 @@ def build_cache_for_degradation(df, deg_folder, out_dir, model, detector, theta_
         h_orig, w_orig = bgr.shape[:2]
         rgb0 = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         
-        # 1. Resize �?UNet 尺寸 (1024x576)
+        # 1. Resize �?UNet 尺寸 (1024x576)
         rgb_unet = cv2.resize(rgb0, (UNET_IN_W, UNET_IN_H), interpolation=cv2.INTER_AREA)
         inp = torch.from_numpy(rgb_unet.astype(np.float32) / 255.0).permute(2, 0, 1).unsqueeze(0).to(DEVICE)
         
         # 2. UNet 推理
         with torch.no_grad():
             with amp.autocast(device_type=DEVICE_TYPE, enabled=(DEVICE == "cuda")):
-                restored_t, seg_logits, _ = model(inp, None, True, True)
+                restored_t, seg_logits, _, _ = model(inp, None, True, True)
         
         restored_np = (restored_t[0].permute(1, 2, 0).cpu().float().numpy() * 255.0).astype(np.uint8)
         restored_bgr = cv2.cvtColor(restored_np, cv2.COLOR_RGB2BGR)
         mask_np = seg_logits.argmax(dim=1)[0].cpu().numpy().astype(np.uint8)
         
-        # 3. 后处�?
+        # 3. 后处�?
         mask_pp = post_process_mask_top_connected(mask_np)
         
         # 4. 特征提取
@@ -300,7 +300,7 @@ def build_cache_for_degradation(df, deg_folder, out_dir, model, detector, theta_
         
         combined_input = np.stack(processed_stack, axis=0).astype(np.float32)
         
-        # 5. 计算 Label (坐标缩放�?1024x576)
+        # 5. 计算 Label (坐标缩放�?1024x576)
         scale_x = UNET_IN_W / w_orig
         scale_y = UNET_IN_H / h_orig
         

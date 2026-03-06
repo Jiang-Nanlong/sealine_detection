@@ -611,13 +611,14 @@ def load_original_image(img_name: str, w: int, h: int) -> Optional[np.ndarray]:
 
 def load_cnn():
     from cnn_model import HorizonResNet
-    # model = HorizonResNet(in_channels=4, use_gate=True)
-    model = HorizonResNet(in_channels=4)
     ckpt = torch.load(CNN_WEIGHTS_PATH, map_location="cpu", weights_only=False)
     if isinstance(ckpt, dict) and "state_dict" in ckpt:
         ckpt = ckpt["state_dict"]
     if isinstance(ckpt, dict) and "model" in ckpt:
         ckpt = ckpt["model"]
+    # 自动检测输入通道数 (兼容 4ch 旧模型和 7ch 新模型)
+    in_ch = ckpt["conv1.weight"].shape[1] if "conv1.weight" in ckpt else 7
+    model = HorizonResNet(in_channels=in_ch)
     model.load_state_dict(ckpt, strict=True)
     model.eval().to(DEVICE)
     return model
@@ -989,7 +990,7 @@ def main():
                         im_rgb = cv2.cvtColor(im, cv2.COLOR_BGR2RGB)
                         im_t = torch.from_numpy(im_rgb).permute(2, 0, 1).float() / 255.0
                         im_t = im_t.unsqueeze(0).to(DEVICE)
-                        _, seg_logits, _ = unet(im_t, enable_restoration=True, enable_segmentation=True)
+                        _, seg_logits, _, _ = unet(im_t, enable_restoration=True, enable_segmentation=True)
                         if seg_logits is not None:
                             mask = torch.argmax(seg_logits, dim=1)[0].detach().cpu().numpy().astype(np.uint8)
                             pts, leak = extract_boundary_points_sky_to_sea(mask)
@@ -1196,7 +1197,7 @@ def main():
                     im_t = torch.from_numpy(im_rgb).permute(2, 0, 1).float() / 255.0
                     im_t = im_t.unsqueeze(0).to(DEVICE)
 
-                    _, seg_logits, _ = unet(im_t, enable_restoration=True, enable_segmentation=True)
+                    _, seg_logits, _, _ = unet(im_t, enable_restoration=True, enable_segmentation=True)
                     if seg_logits is not None:
                         mask = torch.argmax(seg_logits, dim=1)[0].detach().cpu().numpy().astype(
                             np.uint8)  # 0 sea, 1 sky

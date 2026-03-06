@@ -186,6 +186,14 @@ class RestorationGuidedHorizonNet(nn.Module):
 
         self.inject = nn.Conv2d(r_ch, s_ch, 1)
 
+        # [Bridge] 1x1 Conv: 从复原分支中间特征 r (64ch) 提取 3 通道学习型边缘特征
+        # 这些特征将经过 Radon 变换后作为 ResNet 的额外输入通道
+        self.bridge_conv = nn.Conv2d(r_ch, 3, 1)
+        # 初始化：让每个输出通道均匀聚合所有输入通道（类似 channel-wise average）
+        # 这样即使 bridge_conv 没有被单独训练，输出也是 r 的有意义摘要
+        nn.init.constant_(self.bridge_conv.weight, 1.0 / r_ch)
+        nn.init.zeros_(self.bridge_conv.bias)
+
     @torch.no_grad()
     def _dce_enhance(self, x: torch.Tensor) -> torch.Tensor:
         if self.dce_net is None: return x
@@ -253,4 +261,12 @@ class RestorationGuidedHorizonNet(nn.Module):
             if seg_logits.shape[-2:] != input_size:
                 seg_logits = F.interpolate(seg_logits, size=input_size, mode="bilinear", align_corners=False)
 
-        return restored_img, seg_logits, target_dce
+        # [Bridge] 提取学习型边缘特征 (上采样到原图尺寸 + sigmoid 归一化)
+        bridge_feats = None
+        if enable_restoration:
+            bridge_feats = torch.sigmoid(self.bridge_conv(r))  # (B, 3, H_r, W_r)
+            if bridge_feats.shape[-2:] != input_size:
+                bridge_feats = F.interpolate(bridge_feats, size=input_size,
+                                             mode="bilinear", align_corners=False)
+
+        return restored_img, seg_logits, target_dce, bridge_feats

@@ -58,7 +58,8 @@ BEST_PATH = "weights/best_fusion_cnn_1024x576.pth"
 OUT_JSON  = os.path.join(SPLIT_DIR, "train_fusion_cnn_1024x576.json")
 
 # Dataset fallback shape (should match cache input shape)
-FALLBACK_SHAPE = (4, 2240, 180)
+# 7 channels: 3 traditional Radon + 1 seg-edge Radon + 3 bridge feature Radon
+FALLBACK_SHAPE = (7, 2240, 180)
 
 # =========================
 # Data augmentation (ship-line / spurious straight-line interference)
@@ -69,7 +70,7 @@ AUG_MAX_PEAKS = 3              # how many spurious peaks to inject per sample
 AUG_AMP_MIN, AUG_AMP_MAX = 0.15, 0.60
 AUG_SIGMA_RHO = 18.0           # gaussian radius along rho axis (pixels)
 AUG_SIGMA_THETA = 1.8          # gaussian radius along theta axis (bins)
-AUG_TARGET_CHANNELS = (0, 1, 2)  # default: only traditional Radon channels
+AUG_TARGET_CHANNELS = (0, 1, 2, 4, 5, 6)  # traditional Radon + bridge Radon channels
 
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"

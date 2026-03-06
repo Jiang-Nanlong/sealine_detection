@@ -102,7 +102,7 @@ def main():
             img = img.to(DEVICE)
             
             # Forward
-            restored, seg_logits, _ = model(img, None, enable_restoration=True, enable_segmentation=True)
+            restored, seg_logits, _, _ = model(img, None, enable_restoration=True, enable_segmentation=True)
             
             vis_in = tensor_to_img(img[0])
             vis_restored = tensor_to_img(restored[0])
