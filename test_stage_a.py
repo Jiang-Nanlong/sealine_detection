@@ -89,7 +89,7 @@ def main():
 
     # 3) Forward: Stage A restoration only，但模型会吐出 target_dce
     with torch.amp.autocast(device_type=device_type, enabled=(device_type == "cuda")):
-        restored, _, target_dce = model(
+        restored, _, target_dce, _, _ = model(
             img_in, target_clean,
             enable_restoration=True,
             enable_segmentation=False

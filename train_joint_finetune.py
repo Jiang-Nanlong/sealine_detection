@@ -184,15 +184,12 @@ class DifferentiableRadon(nn.Module):
         sinogram = torch.stack(sinogram_cols, dim=2)  # (B, 1, num_angles, D)
         sinogram = sinogram.permute(0, 1, 3, 2)       # (B, 1, D, num_angles)
 
-        # 归一化到 [0, 1]
-        # 对每个样本独立归一化
-        for b in range(B):
-            s = sinogram[b, 0]
-            smin, smax = s.min(), s.max()
-            if smax - smin > 1e-6:
-                sinogram[b, 0] = (s - smin) / (smax - smin)
-            else:
-                sinogram[b, 0] = torch.zeros_like(s)
+        # 归一化到 [0, 1] — 对每个样本独立归一化 (向量化, 无 in-place 操作以保持 autograd 安全)
+        flat = sinogram.reshape(B, -1)                          # (B, D*num_angles)
+        smin = flat.min(dim=1, keepdim=True)[0].view(B, 1, 1, 1)  # (B, 1, 1, 1)
+        smax = flat.max(dim=1, keepdim=True)[0].view(B, 1, 1, 1)  # (B, 1, 1, 1)
+        denom = (smax - smin).clamp(min=1e-6)
+        sinogram = (sinogram - smin) / denom
 
         # Resize 到统一尺寸
         sinogram = F.interpolate(sinogram, size=(self.target_h, self.target_w),

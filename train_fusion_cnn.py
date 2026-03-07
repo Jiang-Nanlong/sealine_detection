@@ -173,7 +173,8 @@ class SplitCacheDataset(Dataset):
                 raise FileNotFoundError(f"Missing cache file: {path}")
             x = torch.zeros(self.fallback_shape, dtype=torch.float32)
             y = torch.zeros(2, dtype=torch.float32)
-            return x, y
+            fp = torch.cat([torch.ones(128), torch.zeros(128)])
+            return x, y, fp
 
         data = np.load(path, allow_pickle=True).item()
         x = torch.from_numpy(data["input"]).float()   # [C,H,W]
@@ -338,7 +339,7 @@ def main():
     ) if test_ds is not None else None
 
     # model
-    x0, _ = train_ds[0]
+    x0, _, _fp = train_ds[0]
     in_ch = int(x0.shape[0])
     model = HorizonResNet(in_channels=in_ch).to(DEVICE)
 
