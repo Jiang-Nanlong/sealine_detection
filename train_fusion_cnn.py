@@ -27,7 +27,7 @@ from cnn_model import HorizonResNet
 # Config
 # =========================
 # Cache root produced by the NEW make_fusion_cache.py
-CACHE_ROOT = r"Hashmani's Dataset/FusionCache_1024x576"
+CACHE_ROOT = r"Hashmani's Dataset/FusionCache_new_1024x576"
 TRAIN_CACHE_DIR = os.path.join(CACHE_ROOT, "train")
 VAL_CACHE_DIR   = os.path.join(CACHE_ROOT, "val")
 TEST_CACHE_DIR  = os.path.join(CACHE_ROOT, "test")
@@ -54,7 +54,7 @@ PLATEAU_FACTOR = 0.5       # 每次减半
 EARLY_STOP_PATIENCE = 100  # 设为 100，实际上就是禁用了早停，保证跑满
 
 # Model / log outputs
-BEST_PATH = "weights/best_fusion_cnn_1024x576.pth"
+BEST_PATH = "weights_new/best_fusion_cnn_1024x576.pth"
 OUT_JSON  = os.path.join(SPLIT_DIR, "train_fusion_cnn_1024x576.json")
 
 # Dataset fallback shape (should match cache input shape)
