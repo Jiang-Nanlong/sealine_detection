@@ -66,6 +66,9 @@ JOINT_SEG_W = 0.5
 C2_SEG_W_WARMUP = 1.0
 C2_WARMUP_EPOCHS = 0  # 不需要warmup，直接保持seg_w=1.0
 
+# [Bridge-L1] 辅助监督权重: 让 bridge_feats 学习提取 Sobel 边缘特征
+BRIDGE_AUX_W = 0.1
+
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 DEVICE_TYPE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -215,6 +218,33 @@ class HybridRestorationLoss(nn.Module):
         # 加上频域损失，抑制周期性海浪噪声
         return self.charb(pred, target) + 0.1 * self.edge(pred, target) + 0.1 * self.fft(pred, target)
 
+
+class SobelEdgeLoss(nn.Module):
+    """
+    [Bridge-L1 辅助监督] 让 bridge_feats 学习提取目标图像的 Sobel 边缘。
+    bridge_feats: (B,3,H,W) sigmoid [0,1]
+    target:       (B,3,H,W) 清晰 RGB [0,1]
+    => 计算 target 的 Sobel 边缘 (归一化到 [0,1]) 作为监督目标
+    """
+    def __init__(self):
+        super().__init__()
+        kx = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=torch.float32)
+        ky = torch.tensor([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], dtype=torch.float32)
+        self.register_buffer("kx", kx.view(1, 1, 3, 3).repeat(3, 1, 1, 1))  # (3,1,3,3)
+        self.register_buffer("ky", ky.view(1, 1, 3, 3).repeat(3, 1, 1, 1))
+
+    def _sobel_edges(self, img):
+        gx = F.conv2d(img, self.kx.to(img.dtype), padding=1, groups=3)
+        gy = F.conv2d(img, self.ky.to(img.dtype), padding=1, groups=3)
+        edge = torch.sqrt(gx ** 2 + gy ** 2 + 1e-8)
+        flat = edge.reshape(edge.shape[0], edge.shape[1], -1)
+        emax = flat.max(dim=2)[0].reshape(edge.shape[0], edge.shape[1], 1, 1).clamp(min=1e-6)
+        return edge / emax
+
+    def forward(self, bridge_feats, target):
+        edge_target = self._sobel_edges(target.detach())
+        return F.l1_loss(bridge_feats, edge_target)
+
 def build_optimizer(model, stage: str, lr: float):
     # 模块定义
     restoration_names = [
@@ -222,6 +252,7 @@ def build_optimizer(model, stage: str, lr: float):
         "ca2", "ca3", "ca4", "ca5", # CoordAtt
         "rest_fuse", "rest_strip", "rest_out",
         "rest_up1", "rest_conv1", "rest_up2", "rest_conv2", "rest_up3", "rest_conv3", "rest_up4",
+        "bridge_conv",  # [Bridge-L1] 随复原分支一起训练
     ]
     segmentation_names = [
         "seg_lat3", "seg_lat4", "seg_lat5",
@@ -454,6 +485,7 @@ def main():
 
     crit_rest = HybridRestorationLoss().to(DEVICE)
     crit_seg = nn.CrossEntropyLoss(ignore_index=255).to(DEVICE)
+    crit_bridge = SobelEdgeLoss().to(DEVICE)  # [Bridge-L1] Sobel 边缘辅助损失
     optimizer = build_optimizer(model, STAGE, lr)
     try: scaler = amp.GradScaler(device=DEVICE_TYPE, enabled=(DEVICE_TYPE == "cuda"))
     except TypeError: scaler = amp.GradScaler(enabled=(DEVICE_TYPE == "cuda"))
@@ -498,8 +530,8 @@ def main():
                 img, target = batch
                 img=img.to(DEVICE); target=target.to(DEVICE)
                 with amp.autocast(device_type=DEVICE_TYPE, enabled=(DEVICE_TYPE=="cuda")):
-                    r, _, _, _, _ = model(img, target, True, False)
-                    loss = crit_rest(r, target) # Clean
+                    r, _, _, bridge_feats, _ = model(img, target, True, False)
+                    loss = crit_rest(r, target) + BRIDGE_AUX_W * crit_bridge(bridge_feats, target)
             elif STAGE in ("B", "B2"):
                 img, mask = batch
                 img=img.to(DEVICE); mask=mask.to(DEVICE)
@@ -510,14 +542,14 @@ def main():
                 img, target, _ = batch
                 img=img.to(DEVICE); target=target.to(DEVICE)
                 with amp.autocast(device_type=DEVICE_TYPE, enabled=(DEVICE_TYPE=="cuda")):
-                    r, _, _, _, _ = model(img, target, True, False)
-                    loss = crit_rest(r, target) # Clean
+                    r, _, _, bridge_feats, _ = model(img, target, True, False)
+                    loss = crit_rest(r, target) + BRIDGE_AUX_W * crit_bridge(bridge_feats, target)
             else: # C2
                 img, target, mask = batch
                 img=img.to(DEVICE); target=target.to(DEVICE); mask=mask.to(DEVICE)
                 with amp.autocast(device_type=DEVICE_TYPE, enabled=(DEVICE_TYPE=="cuda")):
-                    r, s, _, _, _ = model(img, target, True, True)
-                    loss = crit_rest(r, target) + curr_seg_w * crit_seg(s, mask) # Clean
+                    r, s, _, bridge_feats, _ = model(img, target, True, True)
+                    loss = crit_rest(r, target) + curr_seg_w * crit_seg(s, mask) + BRIDGE_AUX_W * crit_bridge(bridge_feats, target)
             
             scaler.scale(loss).backward()
             scaler.step(optimizer); scaler.update()
