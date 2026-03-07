@@ -57,9 +57,9 @@ VIS_MAX = 8
 STAGE_CFG = {
     "A":  dict(lr=2e-4, epochs=50),
     "B":  dict(lr=1e-4, epochs=20),
-    "C1": dict(lr=5e-5, epochs=1),
+    "C1": dict(lr=5e-5, epochs=10),
     "B2": dict(lr=5e-5, epochs=5),
-    "C2": dict(lr=2e-5, epochs=49),
+    "C2": dict(lr=2e-5, epochs=40),
 }
 
 JOINT_SEG_W = 0.5
