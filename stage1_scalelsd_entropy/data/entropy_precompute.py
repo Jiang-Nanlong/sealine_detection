@@ -1,3 +1,18 @@
+"""
+entropy_precompute.py — MU-SID 图像局部熵离线预计算
+
+功能：
+  对 MU-SID 每张图像提取 blue 通道（或灰度），用滑动窗口计算局部 Shannon 熵，
+  输出单通道 float32 的 .npy 文件（保存原始熵值，不做归一化）。
+
+关键设计：
+  - 支持 blue / gray 两种模式，默认 blue
+  - 保存原始熵值（约 [0, 8]），归一化留到 Dataset 读取阶段
+  - 使用 skimage.filters.rank.entropy + disk 结构元素
+
+用法：
+  直接运行本文件，或修改顶部全局变量后运行。
+"""
 import os
 from pathlib import Path
 

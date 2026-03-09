@@ -1,6 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Generic adapter that adds entropy_map to an existing dataset sample.
+"""
+entropy_dataset_wrapper.py — 通用 entropy map 包装器
+
+功能：将预计算的局部熵图（.npy）附加到任意已有 Dataset 的返回样本中。
+不修改原始 Dataset 代码，只在外层加一层 wrapper。
+
+使用场景：当你已有成熟的 MU-SID Dataset，不想修改其代码，
+只需通过本 wrapper 额外返回 entropy_map 字段。
+
+Generic adapter that adds entropy_map to an existing dataset sample.
 
 Why this file exists:
 - your project already has a mature MU-SID dataset / split / CSV pipeline

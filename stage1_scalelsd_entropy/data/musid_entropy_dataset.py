@@ -1,3 +1,22 @@
+"""
+musid_entropy_dataset.py — MU-SID Dataset（完整版，带 entropy map）
+
+功能：
+  读取 MU-SID 图像 + 预计算局部熵图 + CSV 标注，返回统一格式的样本 dict。
+  支持 resize，端点坐标会按缩放比例同步调整。
+
+返回格式：
+  {
+    "image":       FloatTensor [3, H, W], RGB, [0, 1]
+    "entropy_map": FloatTensor [1, H, W], clip(ent/8.0, 0, 1)
+    "annotation":  dict — 原始 + resize 后的端点、中点、角度
+    "meta":        dict — 文件路径、缩放系数等元信息
+  }
+
+与 musid_dataset.py 的区别：
+  本文件包含完整的 resize 元数据和端点坐标缩放逻辑，
+  适合直接用于训练/评估。
+"""
 import os
 from pathlib import Path
 from typing import Dict, Tuple, Union
@@ -13,9 +32,12 @@ from torch.utils.data import Dataset
 # Edit these variables directly before running this file.
 # This file is for dataset self-check and for being imported.
 # ============================================================
-CSV_FILE = "splits_musid/GroundTruth_train.csv"
-IMG_DIR = "Hashmani's Dataset/MU-SID"
-ENTROPY_DIR = "Hashmani's Dataset/MU-SID_entropy_blue"
+# 自动定位项目根目录（stage1_scalelsd_entropy/data/ 往上两级）
+_PROJECT_ROOT = str(Path(__file__).resolve().parent.parent.parent)
+
+CSV_FILE = os.path.join(_PROJECT_ROOT, "splits_musid", "GroundTruth_train.csv")
+IMG_DIR = os.path.join(_PROJECT_ROOT, "Hashmani's Dataset", "MU-SID")
+ENTROPY_DIR = os.path.join(_PROJECT_ROOT, "Hashmani's Dataset", "MU-SID_entropy_blue")
 IMG_SIZE = (576, 1024)   # (H, W)
 NUM_SAMPLES_TO_PRINT = 3
 

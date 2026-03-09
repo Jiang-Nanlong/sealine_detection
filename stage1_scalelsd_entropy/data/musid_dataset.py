@@ -190,14 +190,15 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Quick test: load MUSIDEntropyDataset")
+    _project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     parser.add_argument("--csv", type=str,
-                        default="splits_musid/GroundTruth_train.csv",
+                        default=os.path.join(_project_root, "splits_musid", "GroundTruth_train.csv"),
                         help="Split CSV path")
     parser.add_argument("--img_dir", type=str,
-                        default="Hashmani's Dataset/MU-SID",
+                        default=os.path.join(_project_root, "Hashmani's Dataset", "MU-SID"),
                         help="Image directory")
     parser.add_argument("--entropy_dir", type=str,
-                        default="Hashmani's Dataset/MU-SID_entropy_blue",
+                        default=os.path.join(_project_root, "Hashmani's Dataset", "MU-SID_entropy_blue"),
                         help="Precomputed entropy .npy directory")
     parser.add_argument("--img_h", type=int, default=512)
     parser.add_argument("--img_w", type=int, default=512)

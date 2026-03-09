@@ -1,3 +1,15 @@
+"""
+visualize_entropy.py — 局部熵图可视化与对比工具
+
+功能：
+  1) 加载原图 + 预计算的 .npy 熵图
+  2) 生成伪彩色 overlay 可视化
+  3) 支持 blue vs gray 两种模式的并排对比
+  4) 保存结果图到指定目录，便于人工检查哪种模式更适合海天线检测
+
+使用方法：
+  修改顶部全局变量（IMAGE_PATH / ENTROPY_PATH 等）后直接运行。
+"""
 import os
 from pathlib import Path
 
@@ -9,12 +21,15 @@ import numpy as np
 # Global config for PyCharm / server-side direct execution
 # Edit these variables directly before running this file.
 # ============================================================
-IMAGE_PATH = "Hashmani's Dataset/MU-SID/DSC_0051_9.JPG"
-ENTROPY_PATH = "Hashmani's Dataset/MU-SID_entropy_blue/DSC_0051_9.npy"
+# 自动定位项目根目录（stage1_scalelsd_entropy/utils/ 往上两级）
+_PROJECT_ROOT = str(Path(__file__).resolve().parent.parent.parent)
+
+IMAGE_PATH = os.path.join(_PROJECT_ROOT, "Hashmani's Dataset", "MU-SID", "DSC_0051_9.JPG")
+ENTROPY_PATH = os.path.join(_PROJECT_ROOT, "Hashmani's Dataset", "MU-SID_entropy_blue", "DSC_0051_9.npy")
 ENTROPY_PATH_2 = ""   # optional second entropy map for comparison
 LABEL_1 = "blue"
 LABEL_2 = "gray"
-SAVE_DIR = "stage1_scalelsd_entropy/vis_check"
+SAVE_DIR = os.path.join(_PROJECT_ROOT, "stage1_scalelsd_entropy", "vis_check")
 OVERLAY_ALPHA = 0.45
 
 

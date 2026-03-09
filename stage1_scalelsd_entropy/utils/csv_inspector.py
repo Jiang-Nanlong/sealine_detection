@@ -112,11 +112,12 @@ def inspect(csv_path: str, img_dir: str | None = None, head: int = 5):
 # ================================================================
 def main():
     parser = argparse.ArgumentParser(description="MU-SID GroundTruth.csv inspector")
+    _project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     parser.add_argument("--csv", type=str,
-                        default=r"D:\dataset\Hashmani's Dataset\GroundTruth.csv",
+                        default=os.path.join(_project_root, "Hashmani's Dataset", "GroundTruth.csv"),
                         help="Path to GroundTruth.csv")
     parser.add_argument("--img_dir", type=str,
-                        default=r"D:\dataset\Hashmani's Dataset\MU-SID",
+                        default=os.path.join(_project_root, "Hashmani's Dataset", "MU-SID"),
                         help="Path to MU-SID image directory")
     parser.add_argument("--head", type=int, default=5,
                         help="Number of rows to display")
