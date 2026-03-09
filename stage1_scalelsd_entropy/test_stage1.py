@@ -106,6 +106,11 @@ def build_model(mode, weights_path, device):
     else:
         raise ValueError(f"Unknown mode: {mode}")
 
+    # ScaleLSD.__init__ 把这两个值定义为局部变量而非实例属性，
+    # 只有 configure(opts) 被调用时才设为类属性。手动补上。
+    model.num_junctions_inference = 512
+    model.junction_threshold_hm = 0.008
+
     if weights_path and os.path.isfile(weights_path):
         state = torch.load(weights_path, map_location="cpu")
         if "model_state" in state:

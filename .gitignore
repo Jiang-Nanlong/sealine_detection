@@ -34,5 +34,4 @@ test1/FusionCache_SMD
 test1/weights
 test1/weights_smd
 test1/weights_buoy
-
-
+stage1_scalelsd_entropy/weights
