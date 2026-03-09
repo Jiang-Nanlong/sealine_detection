@@ -81,7 +81,7 @@ class MUSIDEntropyDataset(Dataset):
       meta        : file path / resize metadata
     """
 
-    def __init__(self, csv_file: str, img_dir: str, entropy_dir: str, img_size=(576, 1024)):
+    def __init__(self, csv_file: str, img_dir: str, entropy_dir: str, img_size=(576, 1024), gray_scale=False):
         if not os.path.isfile(csv_file):
             raise FileNotFoundError(f'CSV file not found: {csv_file}')
         if not os.path.isdir(img_dir):
@@ -93,6 +93,7 @@ class MUSIDEntropyDataset(Dataset):
         self.img_dir = img_dir
         self.entropy_dir = entropy_dir
         self.out_h, self.out_w = _parse_hw(img_size)
+        self.gray_scale = gray_scale
 
     def __len__(self):
         return len(self.data)
@@ -132,7 +133,11 @@ class MUSIDEntropyDataset(Dataset):
         # Fixed-scale normalization, never per-image max normalization.
         ent_map = np.clip(ent_map / 8.0, 0.0, 1.0).astype(np.float32)
 
-        image_tensor = torch.from_numpy(rgb.astype(np.float32) / 255.0).permute(2, 0, 1)
+        if self.gray_scale:
+            gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+            image_tensor = torch.from_numpy(gray.astype(np.float32) / 255.0).unsqueeze(0)
+        else:
+            image_tensor = torch.from_numpy(rgb.astype(np.float32) / 255.0).permute(2, 0, 1)
         entropy_tensor = torch.from_numpy(ent_map).unsqueeze(0)
 
         annotation = {
