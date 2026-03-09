@@ -11,8 +11,11 @@ from tqdm import tqdm
 # Global config for PyCharm / server-side direct execution
 # Edit these variables directly before running this file.
 # ============================================================
-INPUT_DIR = "Hashmani's Dataset/MU-SID"
-OUTPUT_DIR = "Hashmani's Dataset/MU-SID_entropy_blue"
+# 自动定位项目根目录（stage1_scalelsd_entropy/data/ 往上两级）
+_PROJECT_ROOT = str(Path(__file__).resolve().parent.parent.parent)
+
+INPUT_DIR = os.path.join(_PROJECT_ROOT, "Hashmani's Dataset", "MU-SID")
+OUTPUT_DIR = os.path.join(_PROJECT_ROOT, "Hashmani's Dataset", "MU-SID_entropy_blue")
 WINDOW_SIZE = 9
 ENTROPY_MODE = "blue"   # "blue" or "gray"
 EXTS = ('.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff', '.JPG', '.JPEG', '.PNG', '.BMP', '.TIF', '.TIFF')
