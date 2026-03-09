@@ -22,9 +22,12 @@ import sys
 import json
 
 # 将 scalelsd 仓库目录加入 sys.path，使 from scalelsd.ssl.* 可用
-_SCALELSD_REPO = os.path.join(os.path.dirname(__file__), "..", "scalelsd")
+_PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+_SCALELSD_REPO = os.path.join(_PROJECT_ROOT, "scalelsd")
 if os.path.isdir(_SCALELSD_REPO) and _SCALELSD_REPO not in sys.path:
-    sys.path.insert(0, os.path.abspath(_SCALELSD_REPO))
+    sys.path.insert(0, _SCALELSD_REPO)
+# 确保工作目录为项目根目录，使相对路径（splits_musid/ 等）可用
+os.chdir(_PROJECT_ROOT)
 
 import cv2
 import numpy as np
