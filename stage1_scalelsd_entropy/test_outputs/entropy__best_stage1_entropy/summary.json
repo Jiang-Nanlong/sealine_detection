@@ -1,0 +1,21 @@
+{
+  "mode": "entropy",
+  "weights": "stage1_scalelsd_entropy/weights/best_stage1_entropy.pth",
+  "n_samples": 268,
+  "img_size": [
+    576,
+    1024
+  ],
+  "avg_lines_per_image": 5.208955223880597,
+  "avg_junctions_per_image": 4.824626865671642,
+  "n_no_candidate": 14,
+  "failure_rate_pct": 5.223880597014925,
+  "n_valid_candidates": 254,
+  "mean_endpoint_error_px": 548263.6875,
+  "median_endpoint_error_px": 0.42267322540283203,
+  "max_endpoint_error_px": 138002784.0,
+  "pct_le_5px": 92.1259842519685,
+  "pct_le_10px": 93.30708661417323,
+  "pct_le_20px": 93.7007874015748,
+  "pct_le_50px": 95.66929133858267
+}
