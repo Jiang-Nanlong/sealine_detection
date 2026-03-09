@@ -372,7 +372,7 @@ def main():
         "per_sample": results,
     }
     with open(SAVE_JSON, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
+        json.dump(payload, f, ensure_ascii=False, indent=2, default=lambda o: float(o) if isinstance(o, np.floating) else int(o) if isinstance(o, np.integer) else o)
     print(f"\nResults saved to: {SAVE_JSON}")
     if do_vis:
         print(f"Visualizations saved to: {VIS_DIR}")
