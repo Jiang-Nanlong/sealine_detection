@@ -1,6 +1,14 @@
 import torch
 import torch.nn as nn
 
+# ============================================================
+# Global config for PyCharm / server-side direct execution
+# Edit these variables directly before running this file.
+# ============================================================
+TEST_BATCH = 2
+TEST_H = 576
+TEST_W = 1024
+
 
 class EntropyBranch(nn.Module):
     """
@@ -31,9 +39,13 @@ class EntropyBranch(nn.Module):
         return self.net(x)
 
 
-if __name__ == '__main__':
+def main():
     model = EntropyBranch()
-    x = torch.randn(2, 1, 576, 1024)
+    x = torch.randn(TEST_BATCH, 1, TEST_H, TEST_W)
     y = model(x)
     print('input :', tuple(x.shape))
-    print('output:', tuple(y.shape))  # expected [2, 256, 288, 512]
+    print('output:', tuple(y.shape))  # expected [B, 256, H/2, W/2]
+
+
+if __name__ == '__main__':
+    main()

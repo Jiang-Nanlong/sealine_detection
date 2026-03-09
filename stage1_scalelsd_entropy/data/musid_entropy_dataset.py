@@ -8,6 +8,16 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset
 
+# ============================================================
+# Global config for PyCharm / server-side direct execution
+# Edit these variables directly before running this file.
+# This file is for dataset self-check and for being imported.
+# ============================================================
+CSV_FILE = "splits_musid/GroundTruth_train.csv"
+IMG_DIR = "Hashmani's Dataset/MU-SID"
+ENTROPY_DIR = "Hashmani's Dataset/MU-SID_entropy_blue"
+IMG_SIZE = (576, 1024)   # (H, W)
+NUM_SAMPLES_TO_PRINT = 3
 
 IMAGE_EXTS = ('', '.JPG', '.jpg', '.png', '.jpeg', '.JPEG', '.PNG')
 
@@ -41,21 +51,22 @@ def resize_rgb_u8(image_rgb_u8: np.ndarray, out_h: int, out_w: int):
 
 class MUSIDEntropyDataset(Dataset):
     """
-    Clean stage-1 dataset for ScaleLSD entropy preparation.
-
-    Returns a dict with:
+    Stage-1 dataset for local entropy preparation.
+    Returns:
       image       : torch.FloatTensor [3, H, W] in [0,1]
       entropy_map : torch.FloatTensor [1, H, W] in [0,1]
-      annotation  : raw + resized endpoint information
-      meta        : filename/path/resize metadata
-
-    Notes:
-    - Uses split CSV files already produced by make_musid_splits.py
-    - Does NOT invent a new split strategy
-    - Does NOT silently pad missing files with zeros
+      annotation  : raw + resized endpoints
+      meta        : file path / resize metadata
     """
 
     def __init__(self, csv_file: str, img_dir: str, entropy_dir: str, img_size=(576, 1024)):
+        if not os.path.isfile(csv_file):
+            raise FileNotFoundError(f'CSV file not found: {csv_file}')
+        if not os.path.isdir(img_dir):
+            raise FileNotFoundError(f'IMG_DIR not found: {img_dir}')
+        if not os.path.isdir(entropy_dir):
+            raise FileNotFoundError(f'ENTROPY_DIR not found: {entropy_dir}')
+
         self.data = pd.read_csv(csv_file, header=None)
         self.img_dir = img_dir
         self.entropy_dir = entropy_dir
@@ -79,10 +90,10 @@ class MUSIDEntropyDataset(Dataset):
         bgr = cv2.imread(img_path, cv2.IMREAD_COLOR)
         if bgr is None:
             raise FileNotFoundError(f'Failed to read image: {img_path}')
+
         rgb0 = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         rgb, meta = resize_rgb_u8(rgb0, self.out_h, self.out_w)
 
-        # Scale endpoints to resized image coordinates.
         sx, sy = meta['scale_x'], meta['scale_y']
         p1 = (float(x1 * sx), float(y1 * sy))
         p2 = (float(x2 * sx), float(y2 * sy))
@@ -127,20 +138,13 @@ class MUSIDEntropyDataset(Dataset):
         }
 
 
-if __name__ == '__main__':
-    import argparse
-
-    parser = argparse.ArgumentParser(description='Quick check for MUSIDEntropyDataset')
-    parser.add_argument('--csv', type=str, required=True)
-    parser.add_argument('--img_dir', type=str, required=True)
-    parser.add_argument('--entropy_dir', type=str, required=True)
-    parser.add_argument('--img_h', type=int, default=576)
-    parser.add_argument('--img_w', type=int, default=1024)
-    parser.add_argument('--num_samples', type=int, default=3)
-    args = parser.parse_args()
-
-    ds = MUSIDEntropyDataset(args.csv, args.img_dir, args.entropy_dir, img_size=(args.img_h, args.img_w))
+def main():
+    ds = MUSIDEntropyDataset(CSV_FILE, IMG_DIR, ENTROPY_DIR, img_size=IMG_SIZE)
     print('len =', len(ds))
-    for i in range(min(args.num_samples, len(ds))):
+    for i in range(min(NUM_SAMPLES_TO_PRINT, len(ds))):
         sample = ds[i]
-        print(i, sample['image'].shape, sample['entropy_map'].shape, sample['annotation']['stem'])
+        print(f'[{i}] image={tuple(sample["image"].shape)} entropy={tuple(sample["entropy_map"].shape)} stem={sample["annotation"]["stem"]}')
+
+
+if __name__ == '__main__':
+    main()
