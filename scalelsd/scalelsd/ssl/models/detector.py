@@ -286,7 +286,11 @@ class ScaleLSD(nn.Module):
             dis_lsd_batch = []
             for i in range(batch_size):
                 image = np.array(images[i,0].cpu().numpy()*255,dtype=np.uint8)
-                lsd_lines = lsd.detect(image)[0].reshape(-1,4)
+                lsd_det = lsd.detect(image)[0]
+                if lsd_det is not None:
+                    lsd_lines = lsd_det.reshape(-1,4)
+                else:
+                    lsd_lines = np.zeros((0,4), dtype=np.float32)
                 
                 # transform lsd lines to lsd-hat-field 
                 md_lsd, dis_lsd, _ = self.hafm_encoder.lines2hafm(torch.from_numpy(lsd_lines).to(images.device)/self.stride, hs, ws)
