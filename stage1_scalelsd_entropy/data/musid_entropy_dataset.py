@@ -1,0 +1,146 @@
+import os
+from pathlib import Path
+from typing import Dict, Tuple, Union
+
+import cv2
+import numpy as np
+import pandas as pd
+import torch
+from torch.utils.data import Dataset
+
+
+IMAGE_EXTS = ('', '.JPG', '.jpg', '.png', '.jpeg', '.JPEG', '.PNG')
+
+
+def _parse_hw(img_size: Union[int, Tuple[int, int]]):
+    if isinstance(img_size, (tuple, list)) and len(img_size) == 2:
+        h, w = int(img_size[0]), int(img_size[1])
+        return max(1, h), max(1, w)
+    s = int(img_size)
+    return max(1, s), max(1, s)
+
+
+def resolve_image_path(img_dir: str, name_in_csv: str):
+    base = os.path.join(img_dir, str(name_in_csv))
+    for suffix in IMAGE_EXTS:
+        p = base if suffix == '' else base + suffix
+        if os.path.exists(p):
+            return p
+    return None
+
+
+def resize_rgb_u8(image_rgb_u8: np.ndarray, out_h: int, out_w: int):
+    h, w = image_rgb_u8.shape[:2]
+    sx = out_w / float(w)
+    sy = out_h / float(h)
+    interp = cv2.INTER_AREA if (out_w < w or out_h < h) else cv2.INTER_LINEAR
+    resized = cv2.resize(image_rgb_u8, (out_w, out_h), interpolation=interp)
+    meta = dict(scale_x=sx, scale_y=sy, orig_w=w, orig_h=h, out_w=out_w, out_h=out_h)
+    return resized, meta
+
+
+class MUSIDEntropyDataset(Dataset):
+    """
+    Clean stage-1 dataset for ScaleLSD entropy preparation.
+
+    Returns a dict with:
+      image       : torch.FloatTensor [3, H, W] in [0,1]
+      entropy_map : torch.FloatTensor [1, H, W] in [0,1]
+      annotation  : raw + resized endpoint information
+      meta        : filename/path/resize metadata
+
+    Notes:
+    - Uses split CSV files already produced by make_musid_splits.py
+    - Does NOT invent a new split strategy
+    - Does NOT silently pad missing files with zeros
+    """
+
+    def __init__(self, csv_file: str, img_dir: str, entropy_dir: str, img_size=(576, 1024)):
+        self.data = pd.read_csv(csv_file, header=None)
+        self.img_dir = img_dir
+        self.entropy_dir = entropy_dir
+        self.out_h, self.out_w = _parse_hw(img_size)
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx: int) -> Dict:
+        row = self.data.iloc[idx]
+        stem = str(row.iloc[0])
+        x1, y1, x2, y2 = float(row.iloc[1]), float(row.iloc[2]), float(row.iloc[3]), float(row.iloc[4])
+        xmid = float(row.iloc[5]) if len(row) > 5 else (x1 + x2) / 2.0
+        ymid = float(row.iloc[6]) if len(row) > 6 else (y1 + y2) / 2.0
+        angle = float(row.iloc[7]) if len(row) > 7 else 0.0
+
+        img_path = resolve_image_path(self.img_dir, stem)
+        if img_path is None:
+            raise FileNotFoundError(f'Image not found for stem: {stem}')
+
+        bgr = cv2.imread(img_path, cv2.IMREAD_COLOR)
+        if bgr is None:
+            raise FileNotFoundError(f'Failed to read image: {img_path}')
+        rgb0 = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        rgb, meta = resize_rgb_u8(rgb0, self.out_h, self.out_w)
+
+        # Scale endpoints to resized image coordinates.
+        sx, sy = meta['scale_x'], meta['scale_y']
+        p1 = (float(x1 * sx), float(y1 * sy))
+        p2 = (float(x2 * sx), float(y2 * sy))
+        pm = (float(xmid * sx), float(ymid * sy))
+
+        ent_path = os.path.join(self.entropy_dir, f'{Path(img_path).stem}.npy')
+        if not os.path.isfile(ent_path):
+            raise FileNotFoundError(f'Entropy map not found: {ent_path}')
+
+        ent_map = np.load(ent_path).astype(np.float32)
+        if ent_map.shape[:2] != (self.out_h, self.out_w):
+            ent_map = cv2.resize(ent_map, (self.out_w, self.out_h), interpolation=cv2.INTER_LINEAR)
+
+        # Fixed-scale normalization, never per-image max normalization.
+        ent_map = np.clip(ent_map / 8.0, 0.0, 1.0).astype(np.float32)
+
+        image_tensor = torch.from_numpy(rgb.astype(np.float32) / 255.0).permute(2, 0, 1)
+        entropy_tensor = torch.from_numpy(ent_map).unsqueeze(0)
+
+        annotation = {
+            'stem': stem,
+            'raw_endpoints': np.array([[x1, y1], [x2, y2]], dtype=np.float32),
+            'resized_endpoints': np.array([p1, p2], dtype=np.float32),
+            'raw_midpoint': np.array([xmid, ymid], dtype=np.float32),
+            'resized_midpoint': np.array(pm, dtype=np.float32),
+            'angle': angle,
+        }
+        meta_out = {
+            'img_path': img_path,
+            'entropy_path': ent_path,
+            'orig_size': (meta['orig_h'], meta['orig_w']),
+            'out_size': (self.out_h, self.out_w),
+            'scale_x': sx,
+            'scale_y': sy,
+        }
+
+        return {
+            'image': image_tensor,
+            'entropy_map': entropy_tensor,
+            'annotation': annotation,
+            'meta': meta_out,
+        }
+
+
+if __name__ == '__main__':
+    import argparse
+
+    parser = argparse.ArgumentParser(description='Quick check for MUSIDEntropyDataset')
+    parser.add_argument('--csv', type=str, required=True)
+    parser.add_argument('--img_dir', type=str, required=True)
+    parser.add_argument('--entropy_dir', type=str, required=True)
+    parser.add_argument('--img_h', type=int, default=576)
+    parser.add_argument('--img_w', type=int, default=1024)
+    parser.add_argument('--num_samples', type=int, default=3)
+    args = parser.parse_args()
+
+    ds = MUSIDEntropyDataset(args.csv, args.img_dir, args.entropy_dir, img_size=(args.img_h, args.img_w))
+    print('len =', len(ds))
+    for i in range(min(args.num_samples, len(ds))):
+        sample = ds[i]
+        print(i, sample['image'].shape, sample['entropy_map'].shape, sample['annotation']['stem'])

@@ -74,7 +74,7 @@ RESIZE_W = 180
 SEED = 42
 BATCH_SIZE = 2          # 端到端显存较大, 小 batch
 NUM_EPOCHS = 20
-NUM_WORKERS = 2
+NUM_WORKERS = 0
 
 # 学习率
 LR_BRIDGE = 1e-4        # bridge_conv: 学习率最高

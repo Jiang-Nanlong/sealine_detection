@@ -1,0 +1,55 @@
+# ============================================================
+# Stage-1 配置: MU-SID + 局部熵 + 特征级注入
+# ============================================================
+
+# 数据路径 (根据服务器实际路径修改)
+data:
+  csv_train: "splits_musid/GroundTruth_train.csv"
+  csv_val:   "splits_musid/GroundTruth_val.csv"
+  csv_test:  "splits_musid/GroundTruth_test.csv"
+  img_dir:   "Hashmani's Dataset/MU-SID"
+  entropy_dir: "Hashmani's Dataset/MU-SID_entropy"  # entropy_precompute.py 的输出目录
+
+  # 图像尺寸 (与主项目统一)
+  img_h: 576
+  img_w: 1024
+  orig_h: 1080
+  orig_w: 1920
+  sinogram_h: 2240
+
+# 模型配置
+model:
+  # "baseline" 或 "entropy"
+  mode: "entropy"
+  entropy_branch_ch: 128   # entropy branch 输出通道数
+  backbone_l2_ch: 128      # backbone layer2 通道数 (ResNet-34)
+
+# 训练配置
+train:
+  seed: 42
+  batch_size: 8
+  num_workers: 4
+  num_epochs: 100
+  lr: 2e-4
+  weight_decay: 1e-4
+  use_amp: true
+  grad_clip_norm: 1.0
+
+  # 学习率调度
+  scheduler_patience: 10
+  scheduler_factor: 0.5
+
+  # 早停
+  early_stop_patience: 100  # 设为 100 = 实质禁用
+
+  # 损失权重
+  rho_weight: 1.0
+  theta_weight: 2.0
+  rho_beta: 0.02
+  theta_beta: 0.02
+
+# 输出路径
+output:
+  weights_dir: "stage1_scalelsd_entropy/weights"
+  best_model:  "stage1_scalelsd_entropy/weights/best_stage1.pth"
+  log_json:    "stage1_scalelsd_entropy/weights/train_log_stage1.json"
