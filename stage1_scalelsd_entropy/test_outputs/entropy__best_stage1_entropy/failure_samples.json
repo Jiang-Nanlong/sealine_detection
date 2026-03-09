@@ -3,478 +3,84 @@
     "stem": "DSC_1018_2",
     "num_lines": 0,
     "num_junctions": 2,
-    "has_candidate": false,
-    "horizon_line": null,
-    "horizon_score": null,
-    "horizon_index": null,
-    "endpoint_error_px": null,
-    "gt_line": [
-      0.0,
-      368.0,
-      507.73333740234375,
-      576.0
-    ],
-    "lines_pred": [],
-    "lines_score": [],
-    "juncs_pred": [
-      [
-        5.2928924560546875e-05,
-        368.2508544921875
-      ],
-      [
-        1023.0105590820312,
-        21.237228393554688
-      ]
-    ],
-    "juncs_score": [
-      0.2085828334093094,
-      0.010689894668757915
-    ]
+    "has_candidate": false
   },
   {
     "stem": "DSC_1018_6",
     "num_lines": 0,
     "num_junctions": 3,
-    "has_candidate": false,
-    "horizon_line": null,
-    "horizon_score": null,
-    "horizon_index": null,
-    "endpoint_error_px": null,
-    "gt_line": [
-      0.0,
-      214.39999389648438,
-      875.7333374023438,
-      576.0
-    ],
-    "lines_pred": [],
-    "lines_score": [],
-    "juncs_pred": [
-      [
-        0.00024902820587158203,
-        466.76092529296875
-      ],
-      [
-        0.0009563565254211426,
-        445.4353332519531
-      ],
-      [
-        0.0009138584136962891,
-        490.5024719238281
-      ]
-    ],
-    "juncs_score": [
-      0.21803845465183258,
-      0.016646606847643852,
-      0.010155986063182354
-    ]
+    "has_candidate": false
   },
   {
     "stem": "DSC_1018_3",
     "num_lines": 0,
     "num_junctions": 3,
-    "has_candidate": false,
-    "horizon_line": null,
-    "horizon_score": null,
-    "horizon_index": null,
-    "endpoint_error_px": null,
-    "gt_line": [
-      504.5333251953125,
-      0.0,
-      1024.0,
-      213.86666870117188
-    ],
-    "lines_pred": [],
-    "lines_score": [],
-    "juncs_pred": [
-      [
-        1023.0068359375,
-        239.69578552246094
-      ],
-      [
-        1023.0067138671875,
-        458.83050537109375
-      ],
-      [
-        1023.0120239257812,
-        210.9759063720703
-      ]
-    ],
-    "juncs_score": [
-      0.062045466154813766,
-      0.02762092836201191,
-      0.008354865945875645
-    ]
+    "has_candidate": false
   },
   {
     "stem": "DSC_1401_2",
     "num_lines": 0,
     "num_junctions": 2,
-    "has_candidate": false,
-    "horizon_line": null,
-    "horizon_score": null,
-    "horizon_index": null,
-    "endpoint_error_px": null,
-    "gt_line": [
-      0.0,
-      368.5333251953125,
-      1024.0,
-      381.8666687011719
-    ],
-    "lines_pred": [],
-    "lines_score": [],
-    "juncs_pred": [
-      [
-        1023.0087280273438,
-        381.2513427734375
-      ],
-      [
-        1023.008544921875,
-        43.07365036010742
-      ]
-    ],
-    "juncs_score": [
-      0.2297487109899521,
-      0.01768549717962742
-    ]
+    "has_candidate": false
   },
   {
     "stem": "DSC_1596_5",
     "num_lines": 0,
     "num_junctions": 2,
-    "has_candidate": false,
-    "horizon_line": null,
-    "horizon_score": null,
-    "horizon_index": null,
-    "endpoint_error_px": null,
-    "gt_line": [
-      160.53334045410156,
-      576.0,
-      1024.0,
-      263.4666748046875
-    ],
-    "lines_pred": [],
-    "lines_score": [],
-    "juncs_pred": [
-      [
-        1023.00146484375,
-        264.2295837402344
-      ],
-      [
-        7.146596908569336e-05,
-        199.19139099121094
-      ]
-    ],
-    "juncs_score": [
-      0.25328147411346436,
-      0.015033354982733727
-    ]
+    "has_candidate": false
   },
   {
     "stem": "DSC_2273_2",
     "num_lines": 0,
     "num_junctions": 4,
-    "has_candidate": false,
-    "horizon_line": null,
-    "horizon_score": null,
-    "horizon_index": null,
-    "endpoint_error_px": null,
-    "gt_line": [
-      0.0,
-      482.6666564941406,
-      890.6666870117188,
-      576.0
-    ],
-    "lines_pred": [],
-    "lines_score": [],
-    "juncs_pred": [
-      [
-        0.0003839731216430664,
-        482.7594909667969
-      ],
-      [
-        1023.0057373046875,
-        447.0471496582031
-      ],
-      [
-        1023.0202026367188,
-        175.42422485351562
-      ],
-      [
-        0.0003743767738342285,
-        316.7132873535156
-      ]
-    ],
-    "juncs_score": [
-      0.8010129332542419,
-      0.06762596219778061,
-      0.020818784832954407,
-      0.014236479066312313
-    ]
+    "has_candidate": false
   },
   {
     "stem": "DSC_2436_1",
     "num_lines": 0,
     "num_junctions": 4,
-    "has_candidate": false,
-    "horizon_line": null,
-    "horizon_score": null,
-    "horizon_index": null,
-    "endpoint_error_px": null,
-    "gt_line": [
-      0.0,
-      321.0666809082031,
-      1024.0,
-      323.20001220703125
-    ],
-    "lines_pred": [],
-    "lines_score": [],
-    "juncs_pred": [
-      [
-        1023.0094604492188,
-        323.4473571777344
-      ],
-      [
-        9.942054748535156e-05,
-        320.24871826171875
-      ],
-      [
-        1022.998779296875,
-        419.2198791503906
-      ],
-      [
-        1023.0115356445312,
-        375.2430725097656
-      ]
-    ],
-    "juncs_score": [
-      0.17248424887657166,
-      0.05818629264831543,
-      0.02228403463959694,
-      0.012303435243666172
-    ]
+    "has_candidate": false
   },
   {
     "stem": "DSC_0135_3",
     "num_lines": 0,
     "num_junctions": 1,
-    "has_candidate": false,
-    "horizon_line": null,
-    "horizon_score": null,
-    "horizon_index": null,
-    "endpoint_error_px": null,
-    "gt_line": [
-      0.0,
-      3.200000047683716,
-      1024.0,
-      157.3333282470703
-    ],
-    "lines_pred": [],
-    "lines_score": [],
-    "juncs_pred": [
-      [
-        1023.0076293945312,
-        157.37887573242188
-      ]
-    ],
-    "juncs_score": [
-      0.8015541434288025
-    ]
+    "has_candidate": false
   },
   {
     "stem": "DSC_0161_2",
     "num_lines": 0,
     "num_junctions": 1,
-    "has_candidate": false,
-    "horizon_line": null,
-    "horizon_score": null,
-    "horizon_index": null,
-    "endpoint_error_px": null,
-    "gt_line": [
-      637.3333129882812,
-      0.0,
-      1024.0,
-      90.66666412353516
-    ],
-    "lines_pred": [],
-    "lines_score": [],
-    "juncs_pred": [
-      [
-        1023.0005493164062,
-        90.83334350585938
-      ]
-    ],
-    "juncs_score": [
-      0.30835676193237305
-    ]
+    "has_candidate": false
   },
   {
     "stem": "DSC_0161_1",
     "num_lines": 0,
     "num_junctions": 2,
-    "has_candidate": false,
-    "horizon_line": null,
-    "horizon_score": null,
-    "horizon_index": null,
-    "endpoint_error_px": null,
-    "gt_line": [
-      0.0,
-      426.6666564941406,
-      633.5999755859375,
-      576.0
-    ],
-    "lines_pred": [],
-    "lines_score": [],
-    "juncs_pred": [
-      [
-        1.6033649444580078e-05,
-        426.81622314453125
-      ],
-      [
-        1023.0122680664062,
-        205.2411651611328
-      ]
-    ],
-    "juncs_score": [
-      0.6146445870399475,
-      0.011603233404457569
-    ]
+    "has_candidate": false
   },
   {
     "stem": "DSC_0440_3",
     "num_lines": 0,
     "num_junctions": 2,
-    "has_candidate": false,
-    "horizon_line": null,
-    "horizon_score": null,
-    "horizon_index": null,
-    "endpoint_error_px": null,
-    "gt_line": [
-      0.0,
-      296.0,
-      1024.0,
-      324.79998779296875
-    ],
-    "lines_pred": [],
-    "lines_score": [],
-    "juncs_pred": [
-      [
-        1023.0010375976562,
-        324.4510498046875
-      ],
-      [
-        0.00010895729064941406,
-        228.69381713867188
-      ]
-    ],
-    "juncs_score": [
-      0.7061479091644287,
-      0.009003816172480583
-    ]
+    "has_candidate": false
   },
   {
     "stem": "DSC_0635_2",
     "num_lines": 0,
     "num_junctions": 2,
-    "has_candidate": false,
-    "horizon_line": null,
-    "horizon_score": null,
-    "horizon_index": null,
-    "endpoint_error_px": null,
-    "gt_line": [
-      718.933349609375,
-      0.0,
-      1024.0,
-      38.400001525878906
-    ],
-    "lines_pred": [],
-    "lines_score": [],
-    "juncs_pred": [
-      [
-        1023.0088500976562,
-        37.627662658691406
-      ],
-      [
-        0.0003120899200439453,
-        117.29429626464844
-      ]
-    ],
-    "juncs_score": [
-      0.24350792169570923,
-      0.041815511882305145
-    ]
+    "has_candidate": false
   },
   {
     "stem": "DSC_0635_1",
     "num_lines": 0,
     "num_junctions": 5,
-    "has_candidate": false,
-    "horizon_line": null,
-    "horizon_score": null,
-    "horizon_index": null,
-    "endpoint_error_px": null,
-    "gt_line": [
-      0.0,
-      489.0666809082031,
-      689.5999755859375,
-      576.0
-    ],
-    "lines_pred": [],
-    "lines_score": [],
-    "juncs_pred": [
-      [
-        3.343820571899414e-05,
-        487.42718505859375
-      ],
-      [
-        3.349781036376953e-05,
-        367.09564208984375
-      ],
-      [
-        1023.0108032226562,
-        91.29471588134766
-      ],
-      [
-        1023.0093994140625,
-        67.22199249267578
-      ],
-      [
-        1023.0087280273438,
-        270.9313659667969
-      ]
-    ],
-    "juncs_score": [
-      0.3379741609096527,
-      0.034633297473192215,
-      0.025856096297502518,
-      0.012578318826854229,
-      0.010780599899590015
-    ]
+    "has_candidate": false
   },
   {
     "stem": "DSC_0622_2",
     "num_lines": 0,
     "num_junctions": 1,
-    "has_candidate": false,
-    "horizon_line": null,
-    "horizon_score": null,
-    "horizon_index": null,
-    "endpoint_error_px": null,
-    "gt_line": [
-      0.0,
-      419.73333740234375,
-      966.4000244140625,
-      576.0
-    ],
-    "lines_pred": [],
-    "lines_score": [],
-    "juncs_pred": [
-      [
-        1.1980533599853516e-05,
-        419.3913879394531
-      ]
-    ],
-    "juncs_score": [
-      0.5761241912841797
-    ]
+    "has_candidate": false
   }
 ]
