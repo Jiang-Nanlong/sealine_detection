@@ -18,7 +18,13 @@ test_stage1.py — Stage-1 测试入口（真实 ScaleLSD + entropy injection）
 """
 
 import os
+import sys
 import json
+
+# 将 scalelsd 仓库目录加入 sys.path，使 from scalelsd.ssl.* 可用
+_SCALELSD_REPO = os.path.join(os.path.dirname(__file__), "..", "scalelsd")
+if os.path.isdir(_SCALELSD_REPO) and _SCALELSD_REPO not in sys.path:
+    sys.path.insert(0, os.path.abspath(_SCALELSD_REPO))
 
 import cv2
 import numpy as np

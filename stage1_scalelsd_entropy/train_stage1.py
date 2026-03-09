@@ -28,6 +28,11 @@ import random
 from collections import defaultdict
 from contextlib import nullcontext
 
+# 将 scalelsd 仓库目录加入 sys.path，使 from scalelsd.ssl.* 可用
+_SCALELSD_REPO = os.path.join(os.path.dirname(__file__), "..", "scalelsd")
+if os.path.isdir(_SCALELSD_REPO) and _SCALELSD_REPO not in sys.path:
+    sys.path.insert(0, os.path.abspath(_SCALELSD_REPO))
+
 import numpy as np
 import torch
 import torch.nn as nn
