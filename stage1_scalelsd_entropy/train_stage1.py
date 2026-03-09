@@ -36,6 +36,7 @@ if os.path.isdir(_SCALELSD_REPO) and _SCALELSD_REPO not in sys.path:
 # 确保工作目录为项目根目录，使相对路径（splits_musid/ 等）可用
 os.chdir(_PROJECT_ROOT)
 
+import functools
 import numpy as np
 import torch
 import torch.nn as nn
@@ -50,7 +51,7 @@ from stage1_scalelsd_entropy.data.musid_entropy_dataset import MUSIDEntropyDatas
 # ============================================================
 
 # 模式："baseline"（原始 ScaleLSD）or "entropy"（ScaleLSDWithEntropy）
-MODE = "entropy"
+MODE = "baseline"
 
 # 数据路径
 IMG_DIR       = "Hashmani's Dataset/MU-SID"
@@ -350,8 +351,8 @@ def main():
     train_ds = MUSIDEntropyDataset(csv_file=CSV_TRAIN, **common_kwargs)
     val_ds = MUSIDEntropyDataset(csv_file=CSV_VAL, **common_kwargs)
 
-    collate_fn = lambda batch: collate_scalelsd(batch, stride=stride,
-                                                img_w=IMG_W, img_h=IMG_H)
+    collate_fn = functools.partial(collate_scalelsd, stride=stride,
+                                    img_w=IMG_W, img_h=IMG_H)
     pin = device.startswith("cuda")
     train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True,
                               num_workers=NUM_WORKERS, pin_memory=pin,
