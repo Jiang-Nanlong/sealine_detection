@@ -138,9 +138,12 @@ def collate_scalelsd(batch, stride, img_w, img_h):
     stem_list = []
     for s in batch:
         ep = s["annotation"]["resized_endpoints"]  # np [2, 2], (x, y)
-        junctions = torch.from_numpy(ep.copy())
-        junctions[:, 0].clamp_(0, img_w - 1)
-        junctions[:, 1].clamp_(0, img_h - 1)
+        # HAFMencoder 内部做 junctions[:,[1,0]] 把 (y,x) 变成 (x,y)，
+        # 所以这里必须以 (y, x) 格式传入。
+        ep_yx = ep[:, [1, 0]]                      # swap to (y, x)
+        junctions = torch.from_numpy(ep_yx.copy())
+        junctions[:, 0].clamp_(0, img_h - 1)       # y 方向
+        junctions[:, 1].clamp_(0, img_w - 1)       # x 方向
         junc_list.append(junctions)
 
         # 对于一条无向线段，只保留上三角 adjacency，避免把同一条边记两次
