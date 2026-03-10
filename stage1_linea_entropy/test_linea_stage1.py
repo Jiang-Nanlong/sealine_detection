@@ -74,10 +74,10 @@ def load_config(config_file):
         sz = [sz, sz]
     args.eval_spatial_size = sz
 
-    # 覆盖数据目录（使用顶部全局变量）
-    args.musid_img_dir = IMG_DIR
-    args.musid_entropy_dir = ENTROPY_DIR
-    args.musid_split_dir = SPLIT_DIR
+    # 覆盖数据目录（使用顶部全局变量，相对路径基于项目根目录解析）
+    args.musid_img_dir = str(_PROJECT_ROOT / IMG_DIR) if not Path(IMG_DIR).is_absolute() else IMG_DIR
+    args.musid_entropy_dir = str(_PROJECT_ROOT / ENTROPY_DIR) if not Path(ENTROPY_DIR).is_absolute() else ENTROPY_DIR
+    args.musid_split_dir = str(_PROJECT_ROOT / SPLIT_DIR) if not Path(SPLIT_DIR).is_absolute() else SPLIT_DIR
 
     # 根据 MODE 覆盖 entropy_mode
     args.entropy_mode = MODE
@@ -113,8 +113,19 @@ def build_model(args):
     return model, postprocessor
 
 
+def _resolve_path(p):
+    """将相对路径基于项目根目录解析为绝对路径。"""
+    if not p:
+        return p
+    pp = Path(p)
+    if not pp.is_absolute():
+        pp = _PROJECT_ROOT / pp
+    return str(pp)
+
+
 def load_weights(model, weights_path, device):
     """加载权重文件，允许 strict=False，打印 missing/unexpected keys 信息。"""
+    weights_path = _resolve_path(weights_path)
     if not weights_path or not os.path.isfile(weights_path):
         print(f"[WARN] 权重文件不存在或未指定: {weights_path}")
         print("[WARN] 使用随机初始化权重（仅供调试）")
