@@ -1,0 +1,26 @@
+{
+  "mode": "baseline",
+  "weights_path": "output/linea_baseline_musid/checkpoint.pth",
+  "num_samples": 268,
+  "num_images_with_no_lines": 0,
+  "num_images_with_no_candidate": 0,
+  "num_valid_predictions": 268,
+  "avg_num_lines": 1100.0,
+  "mean_endpoint_error": 14.867054959600685,
+  "median_endpoint_error": 3.9223523751572733,
+  "max_endpoint_error": 232.72967435998507,
+  "min_endpoint_error": 0.2146429607723941,
+  "std_endpoint_error": 35.82751748048627,
+  "pct_le_5": 60.447761194029844,
+  "pct_le_10": 77.23880597014924,
+  "pct_le_20": 87.31343283582089,
+  "pct_le_50": 92.53731343283582,
+  "best_sample": {
+    "stem": "sample_30",
+    "endpoint_error": 0.2146429607723941
+  },
+  "worst_sample": {
+    "stem": "sample_75",
+    "endpoint_error": 232.72967435998507
+  }
+}
