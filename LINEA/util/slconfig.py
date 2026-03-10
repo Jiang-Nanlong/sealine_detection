@@ -69,7 +69,7 @@ class SLConfig(object):
     """
     @staticmethod
     def _validate_py_syntax(filename):
-        with open(filename) as f:
+        with open(filename, encoding='utf-8') as f:
             content = f.read()
         try:
             ast.parse(content)
@@ -111,7 +111,7 @@ class SLConfig(object):
             raise IOError('Only py/yml/yaml/json type are supported now!')
 
         cfg_text = filename + '\n'
-        with open(filename, 'r') as f:
+        with open(filename, 'r', encoding='utf-8') as f:
             cfg_text += f.read()
 
         # parse the base file
@@ -209,7 +209,7 @@ class SLConfig(object):
         if cfg_text:
             text = cfg_text
         elif filename:
-            with open(filename, 'r') as f:
+            with open(filename, 'r', encoding='utf-8') as f:
                 text = f.read()
         else:
             text = ''
