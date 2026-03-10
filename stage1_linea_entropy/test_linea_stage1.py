@@ -32,7 +32,7 @@ sys.path.insert(0, str(_PROJECT_ROOT / "LINEA"))
 # ============================================================
 MODE = "baseline"                # "baseline" 或 "entropy"
 CONFIG_FILE = "stage1_linea_entropy/configs/linea_baseline_musid.py"
-WEIGHTS_PATH = ""                # 权重文件路径（.pth）
+WEIGHTS_PATH = "output/linea_baseline_musid/checkpoint.pth"                # 权重文件路径（.pth）
 DEVICE = "cuda"
 
 CSV_FILE = ""                    # 留空则由 config / build_musid_dataset 自动决定
@@ -61,7 +61,11 @@ def load_config(config_file):
     """用 SLConfig 加载 .py 配置文件，返回 args-like 对象。"""
     from util.slconfig import SLConfig
 
-    cfg = SLConfig.fromfile(config_file)
+    # 将相对路径统一解析为相对于项目根目录的绝对路径
+    config_path = Path(config_file)
+    if not config_path.is_absolute():
+        config_path = _PROJECT_ROOT / config_path
+    cfg = SLConfig.fromfile(str(config_path))
     args = cfg
 
     # 保证 eval_spatial_size 格式
