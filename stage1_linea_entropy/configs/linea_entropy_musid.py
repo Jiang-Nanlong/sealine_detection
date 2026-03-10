@@ -11,6 +11,8 @@ linea_entropy_musid.py — LINEA + 局部熵注入，MU-SID 数据集训练配�
 # ---- 继承官方 LINEA 公共配置 ----
 _base_ = [
     '../../LINEA/configs/linea/include/optimizer.py',
+    '../../LINEA/configs/linea/include/linea.py',
+    '../../LINEA/configs/linea/include/dataset.py',
 ]
 
 # ============================================================
@@ -19,53 +21,30 @@ _base_ = [
 output_dir = 'output/linea_entropy_musid'
 
 # ============================================================
-# 模型
+# 模型（覆盖 linea.py 中的默认值）
 # ============================================================
 modelname = 'LINEA_ENTROPY'
-criterionname = 'LINEACRITERION'
-
-eval_spatial_size = [640, 640]
-eval_idx = 5                  # 6 decoder layers → index 5
-num_classes = 2
 
 # ---- backbone ----
 backbone = 'HGNetv2_B4'
 param_dict_type = 'hgnetv2_b4'
-pretrained = True
 use_lab = False
-use_checkpoint = False
-return_interm_indices = [1, 2, 3]
-freeze_norm = True
-freeze_stem_only = True
 
 # ---- encoder ----
-hybrid_encoder = 'hybrid_encoder_asymmetric_conv'
-in_channels_encoder = [512, 1024, 2048]
 feat_strides = [8, 16, 32]
 hidden_dim = 256
 dim_feedforward = 1024
 nheads = 8
-pe_temperatureH = 20
-pe_temperatureW = 20
 expansion = 0.5
 depth_mult = 1.0
 use_lmap = False
 
-transformer_activation = 'relu'
-batch_norm_type = 'FrozenBatchNorm2d'
-masks = False
-aux_loss = True
-
 # ---- decoder ----
 feat_channels_decoder = [256, 256, 256]
 dec_layers = 6
-num_queries = 1100
 num_select = 300
 reg_max = 16
 reg_scale = 4
-query_dim = 4
-num_feature_levels = 3
-dec_n_points = [4, 1, 1]
 
 # ---- criterion ----
 weight_dict = {'loss_logits': 4, 'loss_line': 5}
@@ -79,14 +58,6 @@ entropy_mode = 'entropy'          # 'baseline' / 'entropy'
 musid_img_dir     = "Hashmani's Dataset/MU-SID"
 musid_entropy_dir = "Hashmani's Dataset/MU-SID_entropy_blue"
 musid_split_dir   = 'splits_musid'
-
-# MU-SID: collate 用到的 data_aug 参数（MU-SID 已在 dataset 内完成 letterbox，
-# collate 的 multi-scale resize 仍需以下字段）
-data_aug_scales = [(640, 640)]
-data_aug_max_size = 1333
-data_aug_scales2_resize = [400, 500, 600]
-data_aug_scales2_crop = [384, 600]
-data_aug_scale_overlap = None
 
 # ============================================================
 # 训练
@@ -104,6 +75,8 @@ warmup_iters = 200
 
 use_ema = False
 ema_epoch = 0
+
+amp = False
 
 # ---- optimizer param groups ----
 model_parameters = [
