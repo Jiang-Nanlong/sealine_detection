@@ -76,8 +76,6 @@ warmup_iters = 200
 use_ema = False
 ema_epoch = 0
 
-amp = False
-
 # ---- optimizer param groups ----
 model_parameters = [
     {

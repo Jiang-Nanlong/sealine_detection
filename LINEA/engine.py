@@ -35,8 +35,9 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     criterion.train()
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
-    header = 'Epoch: [{}]'.format(epoch)
-    print_freq = 500
+    total_epochs = args.epochs if args is not None else '?'
+    header = 'Epoch: [{}/{}]'.format(epoch, total_epochs)
+    print_freq = max(1, len(data_loader) // 10)
 
     for i, batch in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
         samples, targets, entropy_maps = _unpack_batch(batch)
