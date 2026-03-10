@@ -1,0 +1,95 @@
+===========================================================
+LINEA 版第一阶段迁移清理 TODO
+===========================================================
+生成时间：2026-03-10
+目的：记录 stage1_scalelsd_entropy/ 中各文件的删除状态
+
+===== 依赖检查结论 =====
+stage1_linea_entropy/ 已完全独立，
+不再有任何 import 指向 stage1_scalelsd_entropy。
+
+===== 可以删除的文件 =====
+
+1. stage1_scalelsd_entropy/models/entropy_branch.py
+   原因：已完整迁移到 stage1_linea_entropy/models/entropy_branch.py，
+         结构完全一致。ScaleLSD 内部的 dpt_with_entropy.py /
+         scalelsd_entropy_wrapper.py 仍引用此文件，
+         但这些 ScaleLSD 模型本身也可一并废弃（见下方）。
+
+2. stage1_scalelsd_entropy/models/dpt_with_entropy.py
+   原因：ScaleLSD DPT 注入版，LINEA 版不使用。
+         仅被 scalelsd_with_entropy.py 引用。
+
+3. stage1_scalelsd_entropy/models/scalelsd_with_entropy.py
+   原因：ScaleLSD 整体 wrapper，LINEA 版不使用。
+         仅被 train_stage1.py / test_stage1.py / smoke_test_injection.py 引用。
+
+4. stage1_scalelsd_entropy/models/scalelsd_entropy_wrapper.py
+   原因：旧版图像域 ResNet backbone + entropy 融合 wrapper，已废弃。
+         仅被自身内部引用 entropy_branch + fusion_module。
+
+5. stage1_scalelsd_entropy/models/fusion_module.py
+   原因：旧版特征级融合模块，仅被 scalelsd_entropy_wrapper.py 引用。
+
+6. stage1_scalelsd_entropy/models/smoke_test_injection.py
+   原因：ScaleLSD path_1 注入冒烟测试，LINEA 版不使用。
+
+7. stage1_scalelsd_entropy/models/__init__.py
+   原因：ScaleLSD models 包的入口说明文件，LINEA 版不使用。
+
+8. stage1_scalelsd_entropy/data/entropy_precompute.py
+   原因：已完整迁移到 stage1_linea_entropy/data/entropy_precompute.py。
+
+9. stage1_scalelsd_entropy/data/entropy_dataset_wrapper.py
+   原因：通用 wrapper 设计，LINEA 版不使用（已有专用 musid_linea_entropy.py）。
+
+10. stage1_scalelsd_entropy/data/musid_dataset.py
+    原因：ScaleLSD 轻量版 dataset，LINEA 版不使用。
+
+11. stage1_scalelsd_entropy/data/musid_entropy_dataset.py
+    原因：ScaleLSD 完整版 dataset，LINEA 版不使用。
+
+12. stage1_scalelsd_entropy/data/__init__.py
+    原因：ScaleLSD data 包入口。
+
+13. stage1_scalelsd_entropy/train_stage1.py
+    原因：ScaleLSD 训练脚本，LINEA 版不使用。
+
+14. stage1_scalelsd_entropy/test_stage1.py
+    原因：ScaleLSD 测试脚本，LINEA 版不使用。
+
+15. stage1_scalelsd_entropy/utils/csv_inspector.py
+    原因：CSV 检查工具，通用但非 LINEA 专属，可在需要时独立使用。
+
+16. stage1_scalelsd_entropy/utils/visualize_entropy.py
+    原因：熵图可视化工具，仅引用 stage1_scalelsd_entropy 路径。
+
+17. stage1_scalelsd_entropy/utils/__init__.py
+    原因：utils 包入口。
+
+18. stage1_scalelsd_entropy/configs/musid_entropy_stage1.yaml
+    原因：ScaleLSD 训练配置，LINEA 版不使用。
+
+19. stage1_scalelsd_entropy/configs/__init__.py
+    原因：configs 包入口。
+
+20. stage1_scalelsd_entropy/__init__.py
+    原因：顶层包入口。
+
+21. stage1_scalelsd_entropy/vis_check/
+    原因：可视化输出目录，可整体删除。
+
+22. stage1_scalelsd_entropy/test_outputs/
+    原因：测试输出目录，可整体删除。
+
+===== 暂时保留的文件 =====
+
+无。stage1_linea_entropy 已完全独立，不再依赖 stage1_scalelsd_entropy
+中的任何文件。整个 stage1_scalelsd_entropy/ 目录可以整体删除。
+
+但建议：
+  - 确认不再需要 ScaleLSD 版实验的任何对比结果或权重后再删除
+  - 如有旧权重文件在 stage1_scalelsd_entropy/weights/ 下，
+    可先备份再删除
+
+===========================================================
