@@ -18,7 +18,7 @@ _base_ = [
 # ============================================================
 # 输出目录
 # ============================================================
-output_dir = 'output/linea_baseline_musid'
+output_dir = 'output/linea_baseline_musid_e100'
 
 # ============================================================
 # 模型（覆盖 linea.py 中的默认值）
@@ -65,11 +65,11 @@ musid_split_dir   = 'splits_musid'
 batch_size_train = 4
 batch_size_val = 8
 
-epochs = 10
+epochs = 100
 lr = 0.00025
-lr_drop_list = [18, 22]
+lr_drop_list = [80, 90]
 clip_max_norm = 0.1
-save_checkpoint_interval = 2
+save_checkpoint_interval = 10
 use_warmup = True
 warmup_iters = 200
 
