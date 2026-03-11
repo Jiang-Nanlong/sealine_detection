@@ -1,11 +1,12 @@
 {
   "candidate_level_metrics": {
-    "val_loss": 0.09572814207871128,
-    "accuracy": 0.9893632958801498,
-    "precision": 0.5588235294117647,
-    "recall": 0.9606741573033708,
-    "f1": 0.706611570247934,
-    "auc": 0.9978015589759688,
+    "val_loss": 0.0035347610817629002,
+    "val_soft_target_mean": 0.024327190592885017,
+    "accuracy": 0.996629213483146,
+    "precision": 0.824390243902439,
+    "recall": 0.949438202247191,
+    "f1": 0.8825065274151435,
+    "auc": 0.9868643735264111,
     "num_candidates": 13350,
     "num_positive": 178,
     "num_negative": 13172
@@ -15,13 +16,13 @@
     "num_images": 267,
     "num_images_with_candidate": 267,
     "num_images_without_candidate": 0,
-    "mean_endpoint_err": 50.06738405029299,
+    "mean_endpoint_err": 58.386325914013696,
     "median_endpoint_err": 3.659090688099631,
-    "std_endpoint_err": 83.35122287542374,
+    "std_endpoint_err": 95.19156079516266,
     "pct_le_5": 56.92883895131086,
     "pct_le_10": 62.172284644194754,
     "pct_le_20": 64.7940074906367,
-    "pct_le_50": 70.0374531835206
+    "pct_le_50": 68.91385767790263
   },
   "image_level_metrics_det_score_baseline": {
     "method": "det_score_baseline",
@@ -36,6 +37,13 @@
     "pct_le_20": 65.1685393258427,
     "pct_le_50": 72.65917602996255
   },
+  "image_weight_stats": {
+    "num_images_total": 267,
+    "num_images_used_for_training": 178,
+    "num_images_dropped_by_weight": 89,
+    "mean_image_weight": 0.653990028617593,
+    "median_image_weight": 1.0
+  },
   "image_level_metrics_heuristic_baseline": {
     "method": "heuristic_baseline",
     "num_images": 267,
@@ -49,7 +57,26 @@
     "pct_le_20": 61.04868913857678,
     "pct_le_50": 68.53932584269663
   },
-  "best_epoch": 77,
+  "best_epoch": 1,
   "best_metric": "image_mean_err",
-  "best_metric_value": 50.06738405029299
+  "best_metric_value": 58.386325914013696,
+  "training_config": {
+    "tau": 10.0,
+    "t_good": 10.0,
+    "t_drop": 20.0,
+    "reg_loss_type": "mse",
+    "lr": 0.001,
+    "hidden_dims": [
+      64,
+      32
+    ],
+    "dropout": 0.3
+  },
+  "train_image_weight_stats": {
+    "num_images_total": 2138,
+    "num_images_used_for_training": 2004,
+    "num_images_dropped_by_weight": 134,
+    "mean_image_weight": 0.9297860759795852,
+    "median_image_weight": 1.0
+  }
 }
