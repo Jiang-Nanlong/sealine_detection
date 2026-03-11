@@ -81,6 +81,21 @@ WEIGHT_DECAY = 1e-4
 RANDOM_SEED = 42
 DEVICE = "cuda"
 
+# ---- 软目标参数 ----
+# target_score = exp(-endpoint_err / TAU)
+TAU = 10.0                       # 温度参数：越小则对 endpoint_err 越敏感
+
+# ---- 图像级权重参数 ----
+# best_err = min(endpoint_err)  in each image
+# image_weight = 1.0           if best_err <= T_GOOD
+#              = linear decay   if T_GOOD < best_err < T_DROP
+#              = 0.0           if best_err >= T_DROP
+T_GOOD = 10.0
+T_DROP = 20.0
+
+# ---- 回归损失类型 ----
+REG_LOSS_TYPE = "mse"            # "mse" 或 "smoothl1"
+
 # ---- Best model 选择 ----
 #   "image_mean_err"  — 以验证集 image-level mean endpoint error 最小为 best
 #   "val_loss"        — 以验证集 loss 最小为 best（fallback）
@@ -136,19 +151,17 @@ def load_csv(filepath):
     return rows
 
 
-def extract_features_and_labels(rows, feature_cols):
+def extract_features_and_meta(rows, feature_cols):
     """
-    从 rows 中提取特征矩阵 X、标签 y、辅助信息 meta。
+    从 rows 中提取特征矩阵 X 和辅助信息 meta。
 
     Returns:
         X     : ndarray [N, D] float32
-        y     : ndarray [N] float32  (0/1)
-        meta  : list of dict（每行的辅助信息）
+        meta  : list of dict（每行的辅助信息，含 endpoint_err 等）
     """
     N = len(rows)
     D = len(feature_cols)
     X = np.zeros((N, D), dtype=np.float32)
-    y = np.zeros(N, dtype=np.float32)
     meta = []
 
     for i, row in enumerate(rows):
@@ -161,26 +174,111 @@ def extract_features_and_labels(rows, feature_cols):
                     val = float("nan")
             X[i, j] = val
 
+        # endpoint_err
+        err_val = row.get("endpoint_err", float("nan"))
+        if isinstance(err_val, str):
+            try:
+                err_val = float(err_val)
+            except (ValueError, TypeError):
+                err_val = float("nan")
+
         label_val = row.get("label", 0)
         if isinstance(label_val, str):
             try:
                 label_val = float(label_val)
             except (ValueError, TypeError):
                 label_val = 0.0
-        y[i] = float(label_val)
 
         meta.append({
             "image_stem": str(row.get("image_stem", "")),
             "image_id": row.get("image_id", i),
             "candidate_rank": row.get("candidate_rank", i),
-            "endpoint_err": row.get("endpoint_err", float("nan")),
+            "endpoint_err": err_val,
             "is_best_match": row.get("is_best_match", 0),
             "det_score": row.get("det_score", 0.0),
             "heuristic_score": row.get("heuristic_score", float("nan")),
             "label": float(label_val),
         })
 
-    return X, y, meta
+    return X, meta
+
+
+def compute_soft_targets(meta, tau):
+    """
+    基于 endpoint_err 生成连续目标分数：target_score = exp(-err / tau)。
+
+    Returns:
+        ndarray [N] float32  — 范围 (0, 1]
+    """
+    N = len(meta)
+    targets = np.zeros(N, dtype=np.float32)
+    for i, m in enumerate(meta):
+        err = m["endpoint_err"]
+        if math.isfinite(err) and err >= 0:
+            targets[i] = math.exp(-err / tau)
+        else:
+            targets[i] = 0.0
+    return targets
+
+
+def compute_image_weights(meta, t_good, t_drop):
+    """
+    基于每张图候选池中最小 endpoint_err 计算图像级权重。
+
+    规则：
+      best_err <= t_good       → 1.0
+      t_good < best_err < t_drop → 线性衰减
+      best_err >= t_drop       → 0.0
+
+    Returns:
+        weights  : ndarray [N] float32  — 每条候选线继承其所属图像的权重
+        img_stats: dict  — 图像级权重统计
+    """
+    # 按图分组，找每图最小 err
+    image_best_err = defaultdict(lambda: float("inf"))
+    image_indices = defaultdict(list)
+    for i, m in enumerate(meta):
+        stem = m["image_stem"]
+        err = m["endpoint_err"]
+        image_indices[stem].append(i)
+        if math.isfinite(err):
+            image_best_err[stem] = min(image_best_err[stem], err)
+
+    # 计算每图权重
+    image_weight_map = {}
+    for stem in image_indices:
+        best_err = image_best_err[stem]
+        if not math.isfinite(best_err):
+            image_weight_map[stem] = 0.0
+        elif best_err <= t_good:
+            image_weight_map[stem] = 1.0
+        elif best_err >= t_drop:
+            image_weight_map[stem] = 0.0
+        else:
+            image_weight_map[stem] = (t_drop - best_err) / (t_drop - t_good)
+
+    # 展开到每条候选线
+    N = len(meta)
+    weights = np.zeros(N, dtype=np.float32)
+    for stem, indices in image_indices.items():
+        w = image_weight_map[stem]
+        for idx in indices:
+            weights[idx] = w
+
+    # 统计
+    all_w = list(image_weight_map.values())
+    n_total = len(all_w)
+    n_used = sum(1 for w in all_w if w > 0)
+    n_dropped = n_total - n_used
+    img_stats = {
+        "num_images_total": n_total,
+        "num_images_used_for_training": n_used,
+        "num_images_dropped_by_weight": n_dropped,
+        "mean_image_weight": float(np.mean(all_w)) if all_w else 0.0,
+        "median_image_weight": float(np.median(all_w)) if all_w else 0.0,
+    }
+
+    return weights, img_stats
 
 
 def clean_features(X):
@@ -244,24 +342,27 @@ class FeatureScaler:
 # 3. Dataset
 # ============================================================
 class CandidateDataset(Dataset):
-    """表格数据 Dataset：每条候选线 = 一个特征向量 + label。"""
+    """
+    表格数据 Dataset。
 
-    def __init__(self, X, y, meta=None):
-        """
-        Args:
-            X    : ndarray [N, D] — 已标准化的特征
-            y    : ndarray [N] — 标签 0/1
-            meta : list of dict — 辅助信息（评估时用）
-        """
+    每条候选线返回：
+      features      : Tensor [D]
+      target_score  : Tensor []  — soft target (exp(-err/tau))
+      image_weight  : Tensor []  — 图像级权重
+      idx           : int        — 全局索引（用于 meta 反查）
+    """
+
+    def __init__(self, X, target_scores, image_weights, meta=None):
         self.X = torch.from_numpy(X)
-        self.y = torch.from_numpy(y)
+        self.target_scores = torch.from_numpy(target_scores)
+        self.image_weights = torch.from_numpy(image_weights)
         self.meta = meta
 
     def __len__(self):
-        return len(self.y)
+        return self.X.size(0)
 
     def __getitem__(self, idx):
-        return self.X[idx], self.y[idx], idx
+        return self.X[idx], self.target_scores[idx], self.image_weights[idx], idx
 
 
 # ============================================================
@@ -269,10 +370,10 @@ class CandidateDataset(Dataset):
 # ============================================================
 class RerankerMLP(nn.Module):
     """
-    轻量 MLP 二分类模型。
+    轻量 MLP 打分模型。
 
     输入：特征向量 [B, D]
-    输出：logit [B, 1]
+    输出：score [B, 1]（经 sigmoid → [0,1]，用于图内排序）
     """
 
     def __init__(self, input_dim, hidden_dims=None, dropout=0.3):
@@ -297,29 +398,52 @@ class RerankerMLP(nn.Module):
 
 
 # ============================================================
-# 5. 训练一个 epoch
+# 5. 构建回归损失
+# ============================================================
+def build_regression_criterion(loss_type):
+    """返回 reduction='none' 的回归损失函数。"""
+    if loss_type == "smoothl1":
+        return nn.SmoothL1Loss(reduction="none")
+    return nn.MSELoss(reduction="none")
+
+
+# ============================================================
+# 6. 训练一个 epoch（soft target + image weight）
 # ============================================================
 def train_one_epoch(model, dataloader, criterion, optimizer, device):
+    """
+    每条候选线的 loss = criterion(sigmoid(logit), target_score) * image_weight。
+    只对 image_weight > 0 的样本有效，最终取加权平均。
+    """
     model.train()
-    total_loss = 0.0
-    total_samples = 0
+    total_weighted_loss = 0.0
+    total_weight = 0.0
 
-    for X_batch, y_batch, _ in dataloader:
+    for X_batch, target_batch, weight_batch, _ in dataloader:
         X_batch = X_batch.to(device)
-        y_batch = y_batch.to(device).unsqueeze(1)  # [B, 1]
+        target_batch = target_batch.to(device).unsqueeze(1)   # [B, 1]
+        weight_batch = weight_batch.to(device).unsqueeze(1)   # [B, 1]
 
-        logits = model(X_batch)
-        loss = criterion(logits, y_batch)
+        logits = model(X_batch)          # [B, 1]
+        preds = torch.sigmoid(logits)    # [B, 1]  → [0, 1]
+
+        per_sample_loss = criterion(preds, target_batch)  # [B, 1]
+        weighted_loss = per_sample_loss * weight_batch     # [B, 1]
+
+        batch_weight_sum = weight_batch.sum()
+        if batch_weight_sum.item() > 0:
+            loss = weighted_loss.sum() / batch_weight_sum
+        else:
+            loss = weighted_loss.sum() * 0.0  # 无有效样本，zero grad
 
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
-        bs = X_batch.size(0)
-        total_loss += loss.item() * bs
-        total_samples += bs
+        total_weighted_loss += weighted_loss.sum().item()
+        total_weight += batch_weight_sum.item()
 
-    avg_loss = total_loss / max(total_samples, 1)
+    avg_loss = total_weighted_loss / max(total_weight, 1e-8)
     return avg_loss
 
 
@@ -329,47 +453,46 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device):
 def evaluate(model, dataloader, dataset, criterion, device, split_summary=None):
     """
     验证函数，同时输出：
-      1. candidate-level 指标（loss / accuracy / precision / recall / f1 / auc）
+      1. candidate-level 指标（regression loss / 与硬 label 的兼容统计）
       2. image-level 指标（reranker 选择 vs det_score baseline vs heuristic baseline）
 
-    Args:
-        split_summary : dict or None — 来自 export 阶段的 {split}_summary.json,
-                        用于修正 image-level 的 num_images 统计。
-
-    Returns:
-        dict 包含所有指标 + per-image 预测列表
+    模型输出 logit → sigmoid 作为排序分数，在同一张图内选分数最高者。
     """
     model.eval()
     all_logits = []
-    all_labels = []
     all_indices = []
-    total_loss = 0.0
-    total_samples = 0
+    total_weighted_loss = 0.0
+    total_weight = 0.0
 
     with torch.no_grad():
-        for X_batch, y_batch, idx_batch in dataloader:
+        for X_batch, target_batch, weight_batch, idx_batch in dataloader:
             X_batch = X_batch.to(device)
-            y_batch = y_batch.to(device).unsqueeze(1)
+            target_batch = target_batch.to(device).unsqueeze(1)
+            weight_batch = weight_batch.to(device).unsqueeze(1)
 
             logits = model(X_batch)
-            loss = criterion(logits, y_batch)
+            preds = torch.sigmoid(logits)
+            per_sample_loss = criterion(preds, target_batch)
+            weighted_loss = per_sample_loss * weight_batch
 
-            bs = X_batch.size(0)
-            total_loss += loss.item() * bs
-            total_samples += bs
+            total_weighted_loss += weighted_loss.sum().item()
+            total_weight += weight_batch.sum().item()
 
             all_logits.append(logits.cpu().squeeze(1))
-            all_labels.append(y_batch.cpu().squeeze(1))
             all_indices.append(idx_batch)
 
-    all_logits = torch.cat(all_logits).numpy()      # [N]
-    all_labels = torch.cat(all_labels).numpy()       # [N]
-    all_indices = torch.cat(all_indices).numpy()     # [N]
-    all_scores = 1.0 / (1.0 + np.exp(-all_logits))  # sigmoid → [0, 1]
+    all_logits = torch.cat(all_logits).numpy()       # [N]
+    all_indices = torch.cat(all_indices).numpy()      # [N]
+    all_scores = 1.0 / (1.0 + np.exp(-all_logits))   # sigmoid → [0, 1]
 
-    avg_loss = total_loss / max(total_samples, 1)
+    avg_loss = total_weighted_loss / max(total_weight, 1e-8)
 
     # ------ candidate-level 指标 ------
+    meta = dataset.meta
+    all_labels = np.array([meta[int(idx)]["label"] for idx in all_indices], dtype=np.float32)
+    all_target_scores = dataset.target_scores.numpy()[all_indices.astype(int)]
+
+    # 兼容性统计：用硬 label 计算 AUC 和分类指标（仅供参考）
     preds_binary = (all_scores >= 0.5).astype(np.float32)
     tp = float(((preds_binary == 1) & (all_labels == 1)).sum())
     fp = float(((preds_binary == 1) & (all_labels == 0)).sum())
@@ -380,12 +503,11 @@ def evaluate(model, dataloader, dataset, criterion, device, split_summary=None):
     precision = tp / max(tp + fp, 1e-8)
     recall = tp / max(tp + fn, 1e-8)
     f1 = 2 * precision * recall / max(precision + recall, 1e-8)
-
-    # AUC（简单实现，不依赖 sklearn）
     auc = _compute_auc(all_labels, all_scores)
 
     candidate_metrics = {
         "val_loss": avg_loss,
+        "val_soft_target_mean": float(np.mean(all_target_scores)),
         "accuracy": accuracy,
         "precision": precision,
         "recall": recall,
@@ -397,8 +519,6 @@ def evaluate(model, dataloader, dataset, criterion, device, split_summary=None):
     }
 
     # ------ image-level 重排序指标 ------
-    # 按 image_stem 分组
-    meta = dataset.meta
     image_groups = defaultdict(list)
     for i, global_idx in enumerate(all_indices):
         m = meta[int(global_idx)]
@@ -414,7 +534,6 @@ def evaluate(model, dataloader, dataset, criterion, device, split_summary=None):
             "label": int(m["label"]),
         })
 
-    # 三种选择策略
     reranker_errs = []
     det_baseline_errs = []
     heuristic_errs = []
@@ -422,15 +541,12 @@ def evaluate(model, dataloader, dataset, criterion, device, split_summary=None):
     per_image_results = []
 
     for stem, candidates in image_groups.items():
-        # reranker: 选 reranker_score 最高的
         best_reranker = max(candidates, key=lambda c: c["reranker_score"])
         reranker_errs.append(best_reranker["endpoint_err"])
 
-        # det_score baseline: 选 det_score 最高的
         best_det = max(candidates, key=lambda c: c["det_score"])
         det_baseline_errs.append(best_det["endpoint_err"])
 
-        # heuristic baseline: 只要 heuristic_score 是有限数值就算有效
         valid_heur = [c for c in candidates if c["heuristic_score"] is not None
                       and math.isfinite(c["heuristic_score"])]
         if valid_heur:
@@ -438,7 +554,6 @@ def evaluate(model, dataloader, dataset, criterion, device, split_summary=None):
             heuristic_errs.append(best_heur["endpoint_err"])
             any_image_has_valid_heuristic = True
         else:
-            # 该图所有候选线 heuristic_score 缺失/非有限，fallback 到 det_score
             heuristic_errs.append(best_det["endpoint_err"])
 
         per_image_results.append({
@@ -455,13 +570,12 @@ def evaluate(model, dataloader, dataset, criterion, device, split_summary=None):
     image_heuristic = (_compute_err_stats(heuristic_errs, "heuristic_baseline")
                        if any_image_has_valid_heuristic else None)
 
-    # 用 split_summary 修正 image-level num_images 统计
     image_reranker = enrich_image_level_stats_with_summary(image_reranker, split_summary)
     image_det_baseline = enrich_image_level_stats_with_summary(image_det_baseline, split_summary)
     if image_heuristic is not None:
         image_heuristic = enrich_image_level_stats_with_summary(image_heuristic, split_summary)
 
-    # ------ 组装 per-row predictions（用于 val_predictions.csv）------
+    # ------ per-row predictions ------
     all_predictions = []
     for i, global_idx in enumerate(all_indices):
         m = meta[int(global_idx)]
@@ -617,9 +731,9 @@ def save_checkpoint(model, filepath):
 def save_feature_config(scaler, filepath):
     """
     保存 feature_config.json，供推理时复用：
-      - feature_columns
-      - mean / std（标准化参数）
+      - feature_columns / mean / std（标准化参数）
       - hidden_dims / dropout（模型结构参数）
+      - tau / t_good / t_drop / reg_loss_type（训练配置）
     """
     config = {
         "feature_columns": FEATURE_COLUMNS,
@@ -627,6 +741,10 @@ def save_feature_config(scaler, filepath):
         "std": scaler.std.tolist(),
         "hidden_dims": HIDDEN_DIMS,
         "dropout": DROPOUT,
+        "tau": TAU,
+        "t_good": T_GOOD,
+        "t_drop": T_DROP,
+        "reg_loss_type": REG_LOSS_TYPE,
     }
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
     with open(filepath, "w", encoding="utf-8") as f:
@@ -673,7 +791,7 @@ def set_seed(seed):
 # ============================================================
 def main():
     print("=" * 60)
-    print("  Stage-2 Reranker Training")
+    print("  Stage-2 Reranker Training (soft target + image weight)")
     print(f"  EXPORT_DIR  = {EXPORT_DIR}")
     print(f"  OUTPUT_DIR  = {OUTPUT_DIR}")
     print(f"  FEATURES    = {len(FEATURE_COLUMNS)} columns")
@@ -682,6 +800,10 @@ def main():
     print(f"  BATCH_SIZE  = {BATCH_SIZE}")
     print(f"  NUM_EPOCHS  = {NUM_EPOCHS}")
     print(f"  LR          = {LR}")
+    print(f"  TAU         = {TAU}")
+    print(f"  T_GOOD      = {T_GOOD}")
+    print(f"  T_DROP      = {T_DROP}")
+    print(f"  LOSS        = {REG_LOSS_TYPE}")
     print(f"  BEST_METRIC = {BEST_METRIC}")
     print(f"  SEED        = {RANDOM_SEED}")
     print("=" * 60)
@@ -692,9 +814,9 @@ def main():
     os.makedirs(output_dir, exist_ok=True)
 
     # ================================================================
-    # [1/6] 加载 CSV + split summary
+    # [1/7] 加载 CSV + split summary
     # ================================================================
-    print("\n[1/6] 加载训练与验证 CSV...")
+    print("\n[1/7] 加载训练与验证 CSV...")
     train_csv_path = _get_csv_path(TRAIN_CSV, EXPORT_DIR, "train")
     val_csv_path = _get_csv_path(VAL_CSV, EXPORT_DIR, "val")
 
@@ -709,35 +831,50 @@ def main():
         print("  [INFO] val_summary.json 不存在，image-level 统计将使用 CSV 近似值")
 
     # ================================================================
-    # [2/6] 提取特征 + 清洗 + 标准化
+    # [2/7] 提取特征 + 清洗 + 标准化 + soft target + image weight
     # ================================================================
-    print("\n[2/6] 特征提取与标准化...")
-    X_train_raw, y_train, meta_train = extract_features_and_labels(train_rows, FEATURE_COLUMNS)
-    X_val_raw, y_val, meta_val = extract_features_and_labels(val_rows, FEATURE_COLUMNS)
+    print("\n[2/7] 特征提取与标准化...")
+    X_train_raw, meta_train = extract_features_and_meta(train_rows, FEATURE_COLUMNS)
+    X_val_raw, meta_val = extract_features_and_meta(val_rows, FEATURE_COLUMNS)
 
     X_train_clean = clean_features(X_train_raw)
     X_val_clean = clean_features(X_val_raw)
 
-    # z-score 标准化（仅用 train 集统计）
     scaler = FeatureScaler()
     X_train = scaler.fit_transform(X_train_clean)
     X_val = scaler.transform(X_val_clean)
 
-    print(f"  Train: {X_train.shape[0]} 样本, {int(y_train.sum())} 正样本, "
-          f"{int((y_train == 0).sum())} 负样本")
-    print(f"  Val  : {X_val.shape[0]} 样本, {int(y_val.sum())} 正样本, "
-          f"{int((y_val == 0).sum())} 负样本")
+    # soft target
+    target_train = compute_soft_targets(meta_train, TAU)
+    target_val = compute_soft_targets(meta_val, TAU)
+
+    # image weight
+    weight_train, train_img_stats = compute_image_weights(meta_train, T_GOOD, T_DROP)
+    weight_val, val_img_stats = compute_image_weights(meta_val, T_GOOD, T_DROP)
+
+    n_label_pos_train = sum(1 for m in meta_train if m["label"] == 1)
+    n_label_neg_train = len(meta_train) - n_label_pos_train
+    print(f"  Train: {X_train.shape[0]} 样本, hard_label: {n_label_pos_train} pos / {n_label_neg_train} neg")
+    print(f"    soft target mean={target_train.mean():.4f}, "
+          f"image weight: {train_img_stats['num_images_used_for_training']}/{train_img_stats['num_images_total']} used, "
+          f"{train_img_stats['num_images_dropped_by_weight']} dropped")
+
+    n_label_pos_val = sum(1 for m in meta_val if m["label"] == 1)
+    n_label_neg_val = len(meta_val) - n_label_pos_val
+    print(f"  Val  : {X_val.shape[0]} 样本, hard_label: {n_label_pos_val} pos / {n_label_neg_val} neg")
+    print(f"    soft target mean={target_val.mean():.4f}, "
+          f"image weight: {val_img_stats['num_images_used_for_training']}/{val_img_stats['num_images_total']} used")
 
     # 保存 feature_config
     feature_config_path = os.path.join(output_dir, "feature_config.json")
     save_feature_config(scaler, feature_config_path)
 
     # ================================================================
-    # [3/6] 构建 Dataset & DataLoader
+    # [3/7] 构建 Dataset & DataLoader
     # ================================================================
-    print("\n[3/6] 构建 DataLoader...")
-    train_dataset = CandidateDataset(X_train, y_train, meta_train)
-    val_dataset = CandidateDataset(X_val, y_val, meta_val)
+    print("\n[3/7] 构建 DataLoader...")
+    train_dataset = CandidateDataset(X_train, target_train, weight_train, meta_train)
+    val_dataset = CandidateDataset(X_val, target_val, weight_val, meta_val)
 
     train_loader = DataLoader(
         train_dataset, batch_size=BATCH_SIZE, shuffle=True,
@@ -749,34 +886,25 @@ def main():
     )
 
     # ================================================================
-    # [4/6] 构建模型 + 损失 + 优化器
+    # [4/7] 构建模型 + 损失 + 优化器
     # ================================================================
-    print("\n[4/6] 构建模型...")
+    print("\n[4/7] 构建模型...")
     input_dim = len(FEATURE_COLUMNS)
     model = RerankerMLP(input_dim=input_dim, hidden_dims=HIDDEN_DIMS, dropout=DROPOUT)
     model.to(device)
     print(f"  模型参数量: {sum(p.numel() for p in model.parameters()):,}")
 
-    # 正负样本不平衡 → 用 pos_weight 加权 BCEWithLogitsLoss
-    n_pos = float(y_train.sum())
-    n_neg = float((y_train == 0).sum())
-    if n_pos > 0:
-        pos_weight_val = n_neg / n_pos
-    else:
-        pos_weight_val = 1.0
-    pos_weight_tensor = torch.tensor([pos_weight_val], device=device)
-    print(f"  pos_weight = {pos_weight_val:.2f}  (neg/pos = {n_neg:.0f}/{n_pos:.0f})")
-
-    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight_tensor)
+    criterion = build_regression_criterion(REG_LOSS_TYPE)
+    print(f"  损失函数: {REG_LOSS_TYPE} (reduction=none, weighted by image_weight)")
 
     optimizer = torch.optim.Adam(
         model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY,
     )
 
     # ================================================================
-    # [5/6] 训练循环
+    # [5/7] 训练循环
     # ================================================================
-    print("\n[5/6] 开始训练...")
+    print("\n[5/7] 开始训练...")
     metrics_history = []
     best_val_score = float("inf")    # 越小越好（mean_endpoint_err 或 val_loss）
     best_epoch = -1
@@ -808,17 +936,16 @@ def main():
             best_val_score = current_score
             best_epoch = epoch
             save_checkpoint(model, os.path.join(output_dir, "best_model.pth"))
-            # 保存 best epoch 的完整验证结果
             best_val_results = {
                 "candidate_level_metrics": cand_m,
                 "image_level_metrics_reranker": img_reranker,
                 "image_level_metrics_det_score_baseline": img_det,
+                "image_weight_stats": val_img_stats,
             }
             if "image_level_metrics_heuristic_baseline" in val_results:
                 best_val_results["image_level_metrics_heuristic_baseline"] = (
                     val_results["image_level_metrics_heuristic_baseline"]
                 )
-            # 保存 predictions
             _best_predictions = val_results.get("predictions", [])
 
         # ---- 记录 ----
@@ -827,9 +954,6 @@ def main():
             "train_loss": train_loss,
             "val_loss": val_loss,
             "val_auc": val_auc,
-            "val_accuracy": cand_m["accuracy"],
-            "val_precision": cand_m["precision"],
-            "val_recall": cand_m["recall"],
             "val_f1": cand_m["f1"],
             "reranker_mean_err": reranker_mean_err,
             "det_baseline_mean_err": det_mean_err,
@@ -840,10 +964,9 @@ def main():
         # ---- 打印 ----
         best_mark = " *BEST*" if is_best else ""
         print(f"  Epoch {epoch:3d}/{NUM_EPOCHS}  "
-              f"train_loss={train_loss:.4f}  "
-              f"val_loss={val_loss:.4f}  "
+              f"train={train_loss:.4f}  "
+              f"val={val_loss:.4f}  "
               f"auc={val_auc:.4f}  "
-              f"f1={cand_m['f1']:.4f}  "
               f"reranker_err={reranker_mean_err:.2f}  "
               f"det_err={det_mean_err:.2f}"
               f"{best_mark}")
@@ -852,9 +975,9 @@ def main():
     save_checkpoint(model, os.path.join(output_dir, "last_model.pth"))
 
     # ================================================================
-    # [6/6] 保存训练日志与最终评估
+    # [6/7] 保存训练日志与最终评估
     # ================================================================
-    print("\n[6/6] 保存训练日志与评估结果...")
+    print("\n[6/7] 保存训练日志与评估结果...")
 
     # 训练日志
     log_path = os.path.join(output_dir, "metrics_history.json")
@@ -865,6 +988,12 @@ def main():
     best_val_results["best_epoch"] = best_epoch
     best_val_results["best_metric"] = BEST_METRIC
     best_val_results["best_metric_value"] = best_val_score
+    best_val_results["training_config"] = {
+        "tau": TAU, "t_good": T_GOOD, "t_drop": T_DROP,
+        "reg_loss_type": REG_LOSS_TYPE, "lr": LR,
+        "hidden_dims": HIDDEN_DIMS, "dropout": DROPOUT,
+    }
+    best_val_results["train_image_weight_stats"] = train_img_stats
     val_results_path = os.path.join(output_dir, "val_results_best.json")
     save_json(best_val_results, val_results_path)
     print(f"  已保存最佳验证结果: {val_results_path}")
@@ -875,7 +1004,7 @@ def main():
 
     # ---- 最终汇总 ----
     print("\n" + "=" * 60)
-    print(f"  [DONE] 训练完成")
+    print(f"  [7/7] 训练完成")
     print(f"  Best epoch: {best_epoch}  ({BEST_METRIC} = {best_val_score:.4f})")
     print(f"  输出目录: {output_dir}")
     print()
