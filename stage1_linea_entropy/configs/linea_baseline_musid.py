@@ -65,7 +65,7 @@ musid_split_dir   = 'splits_musid'
 batch_size_train = 4
 batch_size_val = 8
 
-epochs = 24
+epochs = 10
 lr = 0.00025
 lr_drop_list = [18, 22]
 clip_max_norm = 0.1

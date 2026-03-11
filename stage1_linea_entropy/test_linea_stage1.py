@@ -30,9 +30,9 @@ sys.path.insert(0, str(_PROJECT_ROOT / "LINEA"))
 # ============================================================
 # 顶部全局变量配置 — 在 PyCharm 中直接修改
 # ============================================================
-MODE = "entropy"                # "baseline" 或 "entropy"
-CONFIG_FILE = "stage1_linea_entropy/configs/linea_entropy_musid.py"
-WEIGHTS_PATH = "output/linea_entropy_musid/checkpoint.pth"                # 权重文件路径（.pth）
+MODE = "baseline"                # "baseline" 或 "entropy"
+CONFIG_FILE = "stage1_linea_entropy/configs/linea_baseline_musid.py"
+WEIGHTS_PATH = "output/linea_baseline_musid/best_checkpoint.pth"                # 权重文件路径（.pth）
 DEVICE = "cuda"
 
 CSV_FILE = ""                    # 留空则由 config / build_musid_dataset 自动决定
