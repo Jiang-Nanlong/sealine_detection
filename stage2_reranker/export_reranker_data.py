@@ -45,7 +45,7 @@ sys.path.insert(0, str(_PROJECT_ROOT / "LINEA"))
 # ============================================================
 MODE = "entropy"                 # "baseline" 或 "entropy"
 CONFIG_FILE = "stage1_linea_entropy/configs/linea_entropy_musid.py"
-WEIGHTS_PATH = "output/linea_entropy_musid/checkpoint.pth"
+WEIGHTS_PATH = "output/linea_entropy_musid/best_checkpoint.pth"
 DEVICE = "cuda"
 
 IMG_DIR = "Hashmani's Dataset/MU-SID"
