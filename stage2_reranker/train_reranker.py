@@ -36,10 +36,10 @@ _PROJECT_ROOT = _SCRIPT_DIR.parent                      # sealine_detection/
 # ============================================================
 
 # ---- 输入输出路径 ----
-EXPORT_DIR = "stage2_reranker/exports/entropy__checkpoint"
+EXPORT_DIR = "stage2_reranker/exports/entropy__best_checkpoint"
 TRAIN_CSV = ""      # 留空则自动拼接 EXPORT_DIR/train_reranker_candidates.csv
 VAL_CSV = ""        # 留空则自动拼接 EXPORT_DIR/val_reranker_candidates.csv
-OUTPUT_DIR = "stage2_reranker/reranker_output"
+OUTPUT_DIR = "stage2_reranker/reranker_output/entropy__best_checkpoint"
 
 # ---- 训练特征列（与 export_reranker_data.py CSV_COLUMNS 对齐）----
 FEATURE_COLUMNS = [
