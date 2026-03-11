@@ -101,6 +101,12 @@ REG_LOSS_TYPE = "mse"            # "mse" 或 "smoothl1"
 #   "val_loss"        — 以验证集 loss 最小为 best（fallback）
 BEST_METRIC = "image_mean_err"
 
+# ---- 融合打分（验证/评估阶段） ----
+# score_final = lambda * det_score + (1 - lambda) * reranker_score
+# lambda=0.0 → 纯 reranker；lambda=1.0 → 纯 det_score；中间值 → 融合
+USE_FUSED_SCORING = True
+FUSION_LAMBDAS = [0.0, 0.3, 0.5, 0.7, 1.0]
+
 
 # ============================================================
 # 路径工具
@@ -601,6 +607,15 @@ def evaluate(model, dataloader, dataset, criterion, device, split_summary=None):
     if image_heuristic is not None:
         results["image_level_metrics_heuristic_baseline"] = image_heuristic
 
+    # ------ fused scoring（det_score + reranker_score 融合） ------
+    if USE_FUSED_SCORING and FUSION_LAMBDAS:
+        fused_all, fused_lam, fused_m, fused_per_img = \
+            _compute_fused_image_metrics(image_groups, FUSION_LAMBDAS, split_summary)
+        results["fused_all_lambdas"] = fused_all
+        results["fused_best_lambda"] = fused_lam
+        results["fused_best_metrics"] = fused_m
+        results["fused_best_per_image"] = fused_per_img
+
     return results
 
 
@@ -634,6 +649,84 @@ def _compute_err_stats(errs, name):
         "pct_le_20": float(np.mean(valid <= 20) * 100),
         "pct_le_50": float(np.mean(valid <= 50) * 100),
     }
+
+
+def _compute_fused_image_metrics(image_groups, lambdas, split_summary=None):
+    """
+    对每个 lambda 计算融合打分的 image-level 指标。
+
+    融合公式：
+      fused_score = lambda * det_score_norm + (1 - lambda) * reranker_score
+
+    其中 det_score_norm 在每张图内部做 min-max 归一化：
+      - 避免 det_score 与 reranker_score 量纲不一致导致融合失真
+      - reranker_score 是 sigmoid(logit)，范围 [0,1]
+      - det_score 原始量纲不一定在 [0,1]，直接相加不公平
+      - 图内归一化后两者均在 [0,1]，lambda 真正控制混合比例
+
+    每张图选 fused_score 最大的候选线。
+
+    Returns:
+        all_lambda_metrics : list of dict — 每个 lambda 的完整指标
+        best_lambda        : float — mean_endpoint_err 最小的 lambda
+        best_metrics       : dict — best_lambda 对应的指标
+        best_per_image     : list of dict — best_lambda 下每张图的选择详情
+    """
+    # ---- 预计算每张图内的 det_score_norm ----
+    image_det_norm = {}  # stem → list of float, 与 candidates 顺序一致
+    for stem, candidates in image_groups.items():
+        det_vals = [c["det_score"] for c in candidates]
+        min_det = min(det_vals)
+        max_det = max(det_vals)
+        if max_det > min_det:
+            norms = [(d - min_det) / (max_det - min_det) for d in det_vals]
+        else:
+            # 所有候选线 det_score 完全一样 → 统一设为 0.5
+            norms = [0.5] * len(det_vals)
+        image_det_norm[stem] = norms
+
+    all_lambda_metrics = []
+    best_lambda = None
+    best_mean_err = float("inf")
+    best_metrics = None
+    best_per_image = None
+
+    for lam in lambdas:
+        fused_errs = []
+        per_image = []
+
+        for stem, candidates in image_groups.items():
+            norms = image_det_norm[stem]
+            scored = []
+            for i, c in enumerate(candidates):
+                fs = lam * norms[i] + (1.0 - lam) * c["reranker_score"]
+                scored.append((fs, norms[i], c))
+            best_fs, best_norm, best_cand = max(scored, key=lambda x: x[0])
+            fused_errs.append(best_cand["endpoint_err"])
+
+            per_image.append({
+                "image_stem": stem,
+                "selected_candidate_rank": best_cand["candidate_rank"],
+                "det_score": best_cand["det_score"],
+                "det_score_norm": best_norm,
+                "reranker_score": best_cand["reranker_score"],
+                "fused_score": best_fs,
+                "endpoint_err": best_cand["endpoint_err"],
+            })
+
+        stats = _compute_err_stats(fused_errs, f"fused_lambda_{lam:.2f}")
+        stats = enrich_image_level_stats_with_summary(stats, split_summary)
+        stats["lambda"] = lam
+        all_lambda_metrics.append(stats)
+
+        mean_err = stats.get("mean_endpoint_err", float("nan"))
+        if math.isfinite(mean_err) and mean_err < best_mean_err:
+            best_mean_err = mean_err
+            best_lambda = lam
+            best_metrics = stats
+            best_per_image = per_image
+
+    return all_lambda_metrics, best_lambda, best_metrics, best_per_image
 
 
 def load_split_summary(export_dir, split_name):
@@ -775,6 +868,26 @@ def save_predictions_csv(predictions, filepath):
     print(f"  已保存 predictions: {filepath}  ({len(predictions)} 行)")
 
 
+def _save_fused_predictions_csv(per_image_results, best_lambda, filepath):
+    """保存 val_predictions_fused_best.csv — 每张图融合打分后选中的候选线。"""
+    if not per_image_results:
+        return
+    columns = [
+        "image_stem", "selected_candidate_rank",
+        "det_score", "det_score_norm", "reranker_score", "fused_score",
+        "endpoint_err", "lambda",
+    ]
+    os.makedirs(os.path.dirname(filepath), exist_ok=True)
+    with open(filepath, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=columns)
+        writer.writeheader()
+        for row in per_image_results:
+            out = {k: row.get(k, "") for k in columns}
+            out["lambda"] = best_lambda
+            writer.writerow(out)
+    print(f"  已保存 fused predictions: {filepath}  ({len(per_image_results)} 行)")
+
+
 # ============================================================
 # 8. 随机种子
 # ============================================================
@@ -805,6 +918,7 @@ def main():
     print(f"  T_DROP      = {T_DROP}")
     print(f"  LOSS        = {REG_LOSS_TYPE}")
     print(f"  BEST_METRIC = {BEST_METRIC}")
+    print(f"  FUSED       = {USE_FUSED_SCORING}  lambdas={FUSION_LAMBDAS}")
     print(f"  SEED        = {RANDOM_SEED}")
     print("=" * 60)
 
@@ -908,6 +1022,7 @@ def main():
     metrics_history = []
     best_val_score = float("inf")    # 越小越好（mean_endpoint_err 或 val_loss）
     best_epoch = -1
+    _best_fused_per_image = []
 
     for epoch in range(1, NUM_EPOCHS + 1):
         # ---- train ----
@@ -925,9 +1040,23 @@ def main():
         reranker_mean_err = img_reranker.get("mean_endpoint_err", float("nan"))
         det_mean_err = img_det.get("mean_endpoint_err", float("nan"))
 
+        # fused scoring 指标
+        fused_best_lam = val_results.get("fused_best_lambda", None)
+        fused_best_m = val_results.get("fused_best_metrics", None)
+        fused_mean_err = float("nan")
+        fused_median_err = float("nan")
+        if fused_best_m is not None:
+            fused_mean_err = fused_best_m.get("mean_endpoint_err", float("nan"))
+            fused_median_err = fused_best_m.get("median_endpoint_err", float("nan"))
+
         # ---- best model 判定 ----
         if BEST_METRIC == "image_mean_err":
-            current_score = reranker_mean_err if math.isfinite(reranker_mean_err) else val_loss
+            if USE_FUSED_SCORING and math.isfinite(fused_mean_err):
+                current_score = fused_mean_err
+            elif math.isfinite(reranker_mean_err):
+                current_score = reranker_mean_err
+            else:
+                current_score = val_loss
         else:
             current_score = val_loss
 
@@ -946,7 +1075,13 @@ def main():
                 best_val_results["image_level_metrics_heuristic_baseline"] = (
                     val_results["image_level_metrics_heuristic_baseline"]
                 )
+            # fused scoring 结果
+            if "fused_all_lambdas" in val_results:
+                best_val_results["best_fusion_lambda"] = val_results["fused_best_lambda"]
+                best_val_results["image_level_metrics_fused_best"] = val_results["fused_best_metrics"]
+                best_val_results["image_level_metrics_fused_all_lambdas"] = val_results["fused_all_lambdas"]
             _best_predictions = val_results.get("predictions", [])
+            _best_fused_per_image = val_results.get("fused_best_per_image", [])
 
         # ---- 记录 ----
         epoch_record = {
@@ -957,17 +1092,24 @@ def main():
             "val_f1": cand_m["f1"],
             "reranker_mean_err": reranker_mean_err,
             "det_baseline_mean_err": det_mean_err,
+            "fused_best_lambda": fused_best_lam if fused_best_lam is not None else float("nan"),
+            "fused_best_image_mean_err": fused_mean_err,
+            "fused_best_image_median_err": fused_median_err,
             "is_best": is_best,
         }
         metrics_history.append(epoch_record)
 
         # ---- 打印 ----
         best_mark = " *BEST*" if is_best else ""
+        fused_str = ""
+        if USE_FUSED_SCORING and math.isfinite(fused_mean_err):
+            fused_str = f"  fused={fused_mean_err:.2f}(\u03bb={fused_best_lam})"
         print(f"  Epoch {epoch:3d}/{NUM_EPOCHS}  "
               f"train={train_loss:.4f}  "
               f"val={val_loss:.4f}  "
               f"auc={val_auc:.4f}  "
-              f"reranker_err={reranker_mean_err:.2f}  "
+              f"reranker_err={reranker_mean_err:.2f}"
+              f"{fused_str}  "
               f"det_err={det_mean_err:.2f}"
               f"{best_mark}")
 
@@ -992,6 +1134,8 @@ def main():
         "tau": TAU, "t_good": T_GOOD, "t_drop": T_DROP,
         "reg_loss_type": REG_LOSS_TYPE, "lr": LR,
         "hidden_dims": HIDDEN_DIMS, "dropout": DROPOUT,
+        "use_fused_scoring": USE_FUSED_SCORING,
+        "fusion_lambdas": FUSION_LAMBDAS,
     }
     best_val_results["train_image_weight_stats"] = train_img_stats
     val_results_path = os.path.join(output_dir, "val_results_best.json")
@@ -1001,6 +1145,15 @@ def main():
     # val_predictions.csv
     pred_csv_path = os.path.join(output_dir, "val_predictions.csv")
     save_predictions_csv(_best_predictions, pred_csv_path)
+
+    # val_predictions_fused_best.csv
+    if _best_fused_per_image:
+        fused_csv_path = os.path.join(output_dir, "val_predictions_fused_best.csv")
+        _save_fused_predictions_csv(
+            _best_fused_per_image,
+            best_val_results.get("best_fusion_lambda", float("nan")),
+            fused_csv_path,
+        )
 
     # ---- 最终汇总 ----
     print("\n" + "=" * 60)
@@ -1012,10 +1165,19 @@ def main():
     # 打印 best epoch 的 image-level 对比
     img_r = best_val_results["image_level_metrics_reranker"]
     img_d = best_val_results["image_level_metrics_det_score_baseline"]
+    rows_to_print = [("Reranker", img_r), ("Det-Score Baseline", img_d)]
+    if "image_level_metrics_fused_best" in best_val_results:
+        img_f = best_val_results["image_level_metrics_fused_best"]
+        fused_lam = best_val_results.get("best_fusion_lambda", "?")
+        rows_to_print.append((f"Fused (\u03bb={fused_lam})", img_f))
+    if "image_level_metrics_heuristic_baseline" in best_val_results:
+        img_h = best_val_results["image_level_metrics_heuristic_baseline"]
+        rows_to_print.append(("Heuristic Baseline", img_h))
+
     print(f"  === Image-Level Endpoint Error (Best Epoch {best_epoch}) ===")
     print(f"  {'Method':<25s} {'Mean':>8s} {'Median':>8s} {'<=5':>7s} {'<=10':>7s} {'<=20':>7s} {'<=50':>7s}")
     print(f"  {'-'*25} {'-'*8} {'-'*8} {'-'*7} {'-'*7} {'-'*7} {'-'*7}")
-    for tag, d in [("Reranker", img_r), ("Det-Score Baseline", img_d)]:
+    for tag, d in rows_to_print:
         print(f"  {tag:<25s} "
               f"{d.get('mean_endpoint_err', float('nan')):8.2f} "
               f"{d.get('median_endpoint_err', float('nan')):8.2f} "
@@ -1023,15 +1185,20 @@ def main():
               f"{d.get('pct_le_10', float('nan')):6.1f}% "
               f"{d.get('pct_le_20', float('nan')):6.1f}% "
               f"{d.get('pct_le_50', float('nan')):6.1f}%")
-    if "image_level_metrics_heuristic_baseline" in best_val_results:
-        img_h = best_val_results["image_level_metrics_heuristic_baseline"]
-        print(f"  {'Heuristic Baseline':<25s} "
-              f"{img_h.get('mean_endpoint_err', float('nan')):8.2f} "
-              f"{img_h.get('median_endpoint_err', float('nan')):8.2f} "
-              f"{img_h.get('pct_le_5', float('nan')):6.1f}% "
-              f"{img_h.get('pct_le_10', float('nan')):6.1f}% "
-              f"{img_h.get('pct_le_20', float('nan')):6.1f}% "
-              f"{img_h.get('pct_le_50', float('nan')):6.1f}%")
+
+    # 打印所有 lambda 的融合结果对比
+    if "image_level_metrics_fused_all_lambdas" in best_val_results:
+        print()
+        print(f"  === Fused Scoring: All Lambdas (Best Epoch {best_epoch}) ===")
+        for fm in best_val_results["image_level_metrics_fused_all_lambdas"]:
+            lam = fm.get("lambda", "?")
+            me = fm.get('mean_endpoint_err', float('nan'))
+            mde = fm.get('median_endpoint_err', float('nan'))
+            p10 = fm.get('pct_le_10', float('nan'))
+            p20 = fm.get('pct_le_20', float('nan'))
+            print(f"    \u03bb={lam:<5}  "
+                  f"mean={me:8.2f}  median={mde:8.2f}  "
+                  f"<=10: {p10:5.1f}%  <=20: {p20:5.1f}%")
 
     print("=" * 60)
 
