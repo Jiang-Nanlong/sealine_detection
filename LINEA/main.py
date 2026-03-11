@@ -196,6 +196,7 @@ def main(args):
 
     print("-"*41 + " Start training " + "-"*42)
     start_time = time.time()
+    best_val_loss = float('inf')
     for epoch in range(args.start_epoch, args.epochs):
         epoch_start_time = time.time()
         if args.distributed:
@@ -232,6 +233,24 @@ def main(args):
         test_stats = evaluate(
             model, criterion, postprocessors, data_loader_val, device, args.output_dir, args=args
         )
+
+        # save best checkpoint (by validation loss)
+        val_loss = sum(v for v in test_stats.values() if isinstance(v, (int, float)))
+        if 'loss' in test_stats:
+            val_loss = test_stats['loss']
+        if args.output_dir and val_loss < best_val_loss:
+            best_val_loss = val_loss
+            best_weights = {
+                'model': model_without_ddp.state_dict(),
+                'optimizer': optimizer.state_dict(),
+                'lr_scheduler': lr_scheduler.state_dict(),
+                'warmup_scheduler': warmup_scheduler.state_dict() if warmup_scheduler is not None else None,
+                'epoch': epoch,
+                'args': args,
+                'best_val_loss': best_val_loss,
+            }
+            utils.save_on_master(best_weights, output_dir / 'best_checkpoint.pth')
+            print(f"  * Best model saved at epoch {epoch} with val_loss={best_val_loss:.6f}")
 
         if utils.is_main_process():
             for k in test_stats:
