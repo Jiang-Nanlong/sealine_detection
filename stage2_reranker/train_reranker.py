@@ -100,7 +100,7 @@ REG_LOSS_TYPE = "mse"            # "mse" 或 "smoothl1"
 # score_final = lambda * det_score + (1 - lambda) * reranker_score
 # lambda=0.0 → 纯 reranker；lambda=1.0 → 纯 det_score；中间值 → 融合
 USE_FUSED_SCORING = True
-FUSION_LAMBDAS = [round(i * 0.02, 2) for i in range(51)]  # 0.00, 0.02, ..., 1.00
+FUSION_LAMBDAS = [round(i * 0.0001, 4) for i in range(10001)]  # 0.0000, 0.0001, ..., 1.0000
 
 
 # ============================================================
@@ -709,7 +709,7 @@ def _compute_fused_image_metrics(image_groups, lambdas, split_summary=None):
                 "endpoint_err": best_cand["endpoint_err"],
             })
 
-        stats = _compute_err_stats(fused_errs, f"fused_lambda_{lam:.2f}")
+        stats = _compute_err_stats(fused_errs, f"fused_lambda_{lam:.4f}")
         stats = enrich_image_level_stats_with_summary(stats, split_summary)
         stats["lambda"] = lam
         all_lambda_metrics.append(stats)
@@ -944,7 +944,7 @@ def main():
     print(f"  T_GOOD      = {T_GOOD}")
     print(f"  T_DROP      = {T_DROP}")
     print(f"  LOSS        = {REG_LOSS_TYPE}")
-    print(f"  FUSED       = {USE_FUSED_SCORING}  lambdas=0.00:0.02:1.00 ({len(FUSION_LAMBDAS)} values)")
+    print(f"  FUSED       = {USE_FUSED_SCORING}  lambdas=0.0000:0.0001:1.0000 ({len(FUSION_LAMBDAS)} values)")
     print(f"  SEED        = {RANDOM_SEED}")
     print("=" * 60)
 
@@ -1138,7 +1138,7 @@ def main():
         mark_str = " " + " ".join(marks) if marks else ""
         fused_str = ""
         if USE_FUSED_SCORING and math.isfinite(fused_mean_err):
-            fused_str = f"  fused={fused_mean_err:.2f}(\u03bb={fused_best_lam:.2f})"
+            fused_str = f"  fused={fused_mean_err:.2f}(\u03bb={fused_best_lam:.4f})"
         print(f"  Epoch {epoch:3d}/{NUM_EPOCHS}  "
               f"train={train_loss:.4f}  "
               f"val={val_loss:.4f}  "
@@ -1202,7 +1202,7 @@ def main():
         if "image_level_metrics_fused_best" in results_dict:
             img_f = results_dict["image_level_metrics_fused_best"]
             fused_lam = results_dict.get("best_fusion_lambda", 0.0)
-            rows_to_print.append((f"Fused (\u03bb={fused_lam:.2f})", img_f))
+            rows_to_print.append((f"Fused (\u03bb={fused_lam:.4f})", img_f))
         if "image_level_metrics_heuristic_baseline" in results_dict:
             img_h = results_dict["image_level_metrics_heuristic_baseline"]
             rows_to_print.append(("Heuristic Baseline", img_h))
@@ -1230,7 +1230,7 @@ def main():
             mde = fm.get('median_endpoint_err', float('nan'))
             p10 = fm.get('pct_le_10', float('nan'))
             p20 = fm.get('pct_le_20', float('nan'))
-            print(f"    \u03bb={lam:.2f}  "
+            print(f"    \u03bb={lam:.4f}  "
                   f"mean={me:8.2f}  median={mde:8.2f}  "
                   f"<=10: {p10:5.1f}%  <=20: {p20:5.1f}%")
 
