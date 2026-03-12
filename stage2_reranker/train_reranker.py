@@ -85,15 +85,17 @@ LOSS_W_PAIR = 1.0
 HARD_IMAGE_RULE = "mean"   # "mean" / "median" / "p60" / "p70"
 HARD_IMAGE_EXTRA_PAIR_WEIGHT = 1.5
 
-FIXABLE_MIN_IMPROVEMENT = 2.0
-FIXABLE_MAX_ORACLE_ERR = 20.0
-PAIR_MIN_ERR_GAP = 1.0
+FIXABLE_MIN_IMPROVEMENT = 1.0
+FIXABLE_MAX_ORACLE_ERR = 30.0
+USE_FIXABLE_MAX_ORACLE_ERR = True
+PAIR_MIN_ERR_GAP = 0.5
 
 ENABLE_PAIRS_FOR_HARD_NONFIXABLE = True
 HARD_NONFIXABLE_PAIR_WEIGHT = 0.5
-MAX_NEG_PER_IMAGE = 5
+MAX_NEG_PER_IMAGE = 6
 NEGATIVE_SELECT_MODE = "hard_det"
-HARD_NEG_TOPK_BY_DET = 8
+HARD_NEG_TOPK_BY_DET = 10
+FIXABLE_EXTRA_PAIR_WEIGHT = 2.0
 
 PAIRWISE_LOSS_TYPE = "logistic"  # "logistic" / "margin"
 PAIRWISE_MARGIN = 0.0
@@ -310,7 +312,7 @@ def _choose_hard_threshold(global_stats, rule):
 
 
 def compute_image_analysis(meta, hard_rule, fixable_min_improvement, fixable_max_oracle_err,
-                           hard_threshold_override=None):
+                           hard_threshold_override=None, use_fixable_max_oracle_err=True):
     image_groups = defaultdict(list)
     for m in meta:
         image_groups[m["image_stem"]].append(m)
@@ -354,11 +356,13 @@ def compute_image_analysis(meta, hard_rule, fixable_min_improvement, fixable_max
         oracle_best_err = info["oracle_best_err"]
         best_improvement = info["best_improvement"]
         is_hard = bool(math.isfinite(det_top1_err) and math.isfinite(hard_threshold) and det_top1_err > hard_threshold)
-        is_fixable = bool(
+        fixable_cond = (
             is_hard and
-            math.isfinite(best_improvement) and best_improvement >= fixable_min_improvement and
-            math.isfinite(oracle_best_err) and oracle_best_err <= fixable_max_oracle_err
+            math.isfinite(best_improvement) and best_improvement >= fixable_min_improvement
         )
+        if fixable_cond and use_fixable_max_oracle_err:
+            fixable_cond = fixable_cond and math.isfinite(oracle_best_err) and oracle_best_err <= fixable_max_oracle_err
+        is_fixable = bool(fixable_cond)
         if is_hard:
             num_hard += 1
         if is_fixable:
@@ -507,7 +511,7 @@ def build_pairs(meta, image_analysis):
 
         img_pair_weight = 1.0
         if is_fixable:
-            img_pair_weight *= HARD_IMAGE_EXTRA_PAIR_WEIGHT
+            img_pair_weight *= HARD_IMAGE_EXTRA_PAIR_WEIGHT * FIXABLE_EXTRA_PAIR_WEIGHT
         elif is_hard:
             img_pair_weight *= HARD_NONFIXABLE_PAIR_WEIGHT
 
@@ -924,6 +928,8 @@ def save_feature_config(scaler, filepath):
         "fixable_min_improvement": FIXABLE_MIN_IMPROVEMENT,
         "fixable_max_oracle_err": FIXABLE_MAX_ORACLE_ERR,
         "pair_min_err_gap": PAIR_MIN_ERR_GAP,
+        "use_fixable_max_oracle_err": USE_FIXABLE_MAX_ORACLE_ERR,
+        "fixable_extra_pair_weight": FIXABLE_EXTRA_PAIR_WEIGHT,
     }
     save_json(config, filepath)
 
@@ -983,7 +989,8 @@ def main():
     print(f"  REG_LOSS     = {REG_LOSS_TYPE}")
     print(f"  HARD_RULE    = {HARD_IMAGE_RULE}")
     print(f"  FIXABLE_MIN  = {FIXABLE_MIN_IMPROVEMENT}")
-    print(f"  FIXABLE_ORCL = {FIXABLE_MAX_ORACLE_ERR}")
+    print(f"  FIXABLE_ORCL = {FIXABLE_MAX_ORACLE_ERR}  (use={USE_FIXABLE_MAX_ORACLE_ERR})")
+    print(f"  FIXABLE_EXTRA= {FIXABLE_EXTRA_PAIR_WEIGHT}")
     print(f"  PAIR_GAP     = {PAIR_MIN_ERR_GAP}")
     print(f"  MAX_NEG/DET  = {MAX_NEG_PER_IMAGE}/{HARD_NEG_TOPK_BY_DET}")
     print(f"  FUSED        = {USE_FUSED_SCORING}  lambdas={len(FUSION_LAMBDAS)}")
@@ -1021,6 +1028,7 @@ def main():
         hard_rule=HARD_IMAGE_RULE,
         fixable_min_improvement=FIXABLE_MIN_IMPROVEMENT,
         fixable_max_oracle_err=FIXABLE_MAX_ORACLE_ERR,
+        use_fixable_max_oracle_err=USE_FIXABLE_MAX_ORACLE_ERR,
     )
     hard_threshold = train_analysis_summary["hard_image_threshold"]
     val_analysis, val_analysis_summary = compute_image_analysis(
@@ -1029,6 +1037,7 @@ def main():
         fixable_min_improvement=FIXABLE_MIN_IMPROVEMENT,
         fixable_max_oracle_err=FIXABLE_MAX_ORACLE_ERR,
         hard_threshold_override=hard_threshold,
+        use_fixable_max_oracle_err=USE_FIXABLE_MAX_ORACLE_ERR,
     )
 
     train_pairs, train_pair_count_by_image = build_pairs(meta_train, train_analysis)
@@ -1115,6 +1124,8 @@ def main():
                     "hard_image_rule": HARD_IMAGE_RULE,
                     "fixable_min_improvement": FIXABLE_MIN_IMPROVEMENT,
                     "fixable_max_oracle_err": FIXABLE_MAX_ORACLE_ERR,
+                    "use_fixable_max_oracle_err": USE_FIXABLE_MAX_ORACLE_ERR,
+                    "fixable_extra_pair_weight": FIXABLE_EXTRA_PAIR_WEIGHT,
                     "pair_min_err_gap": PAIR_MIN_ERR_GAP,
                     "max_neg_per_image": MAX_NEG_PER_IMAGE,
                     "hard_neg_topk_by_det": HARD_NEG_TOPK_BY_DET,
@@ -1161,6 +1172,8 @@ def main():
                     "hard_image_rule": HARD_IMAGE_RULE,
                     "fixable_min_improvement": FIXABLE_MIN_IMPROVEMENT,
                     "fixable_max_oracle_err": FIXABLE_MAX_ORACLE_ERR,
+                    "use_fixable_max_oracle_err": USE_FIXABLE_MAX_ORACLE_ERR,
+                    "fixable_extra_pair_weight": FIXABLE_EXTRA_PAIR_WEIGHT,
                     "pair_min_err_gap": PAIR_MIN_ERR_GAP,
                     "max_neg_per_image": MAX_NEG_PER_IMAGE,
                     "hard_neg_topk_by_det": HARD_NEG_TOPK_BY_DET,
@@ -1221,14 +1234,18 @@ def main():
         "global_median_det_err": train_analysis_summary["global_median_det_err"],
         "global_p60_det_err": train_analysis_summary["global_p60_det_err"],
         "global_p70_det_err": train_analysis_summary["global_p70_det_err"],
-        "hard_image_rule": HARD_IMAGE_RULE,
+        "HARD_IMAGE_RULE": HARD_IMAGE_RULE,
         "hard_image_threshold": train_analysis_summary["hard_image_threshold"],
-        "num_train_images": train_analysis_summary["num_images"],
+        "FIXABLE_MIN_IMPROVEMENT": FIXABLE_MIN_IMPROVEMENT,
+        "FIXABLE_MAX_ORACLE_ERR": FIXABLE_MAX_ORACLE_ERR,
+        "USE_FIXABLE_MAX_ORACLE_ERR": USE_FIXABLE_MAX_ORACLE_ERR,
+        "FIXABLE_EXTRA_PAIR_WEIGHT": FIXABLE_EXTRA_PAIR_WEIGHT,
         "num_hard_train_images": train_analysis_summary["num_hard_images"],
         "num_fixable_train_images": train_analysis_summary["num_fixable_images"],
-        "num_val_images": val_analysis_summary["num_images"],
         "num_hard_val_images": val_analysis_summary["num_hard_images"],
         "num_fixable_val_images": val_analysis_summary["num_fixable_images"],
+        "num_train_images": train_analysis_summary["num_images"],
+        "num_val_images": val_analysis_summary["num_images"],
         "num_train_pairs": len(train_pairs),
         "best_reranker_epoch": best_reranker_epoch,
         "best_reranker_metric": best_reranker_metric,
