@@ -1,0 +1,34 @@
+{
+  "global_mean_det_err": 0.8212005245936849,
+  "global_median_det_err": 0.26491237495460673,
+  "global_p60_det_err": 0.31790435350334983,
+  "global_p70_det_err": 0.3889560315699561,
+  "hard_image_rule": "mean",
+  "hard_image_threshold": 0.8212005245936849,
+  "num_train_images": 2138,
+  "num_hard_train_images": 226,
+  "num_fixable_train_images": 2,
+  "num_val_images": 267,
+  "num_hard_val_images": 101,
+  "num_fixable_val_images": 1,
+  "num_train_pairs": 1130,
+  "best_reranker_epoch": 11,
+  "best_reranker_metric": 4.577171369012415,
+  "best_fused_epoch": 31,
+  "best_fused_metric": 4.3887002901795125,
+  "best_fused_lambda": 0.2846,
+  "train_image_weight_stats": {
+    "num_images_total": 2138,
+    "num_images_used_for_training": 2127,
+    "num_images_dropped_by_weight": 11,
+    "mean_image_weight": 0.9903530060791883,
+    "median_image_weight": 1.0
+  },
+  "val_image_weight_stats": {
+    "num_images_total": 267,
+    "num_images_used_for_training": 252,
+    "num_images_dropped_by_weight": 15,
+    "mean_image_weight": 0.9219878344565904,
+    "median_image_weight": 1.0
+  }
+}
