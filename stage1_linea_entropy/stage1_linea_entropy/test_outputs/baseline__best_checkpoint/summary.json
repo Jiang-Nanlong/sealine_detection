@@ -16,11 +16,11 @@
   "pct_le_20": 94.40298507462687,
   "pct_le_50": 95.1492537313433,
   "best_sample": {
-    "stem": "sample_152",
+    "stem": "DSC_2436_1",
     "endpoint_error": 0.014213759162482208
   },
   "worst_sample": {
-    "stem": "sample_75",
+    "stem": "DSC_1596_7",
     "endpoint_error": 229.36682784680707
   }
 }
