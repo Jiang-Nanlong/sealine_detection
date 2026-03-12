@@ -45,33 +45,55 @@ class BatchImageCollateFunction(BaseCollateFunction):
         self.ema_restart_decay = ema_restart_decay
 
     def __call__(self, items):
-        # 兼容三种输入:
+        # 兼容四种输入:
         #   2-tuple (image, target)                    — baseline (COCO 等)
-        #   3-tuple (image, target, entropy_map)       — entropy 无 meta
+        #   3-tuple (image, target, meta)              — baseline 带 meta（meta 为 dict）
+        #   3-tuple (image, target, entropy_map)       — entropy 无 meta（entropy_map 为 Tensor）
         #   4-tuple (image, target, entropy_map, meta) — entropy 带 meta
         n = len(items[0])
-        has_entropy = n >= 3
-        has_meta = n >= 4
+
+        if n == 4:
+            has_entropy = True
+            has_meta = True
+        elif n == 3:
+            # 区分第 3 个元素是 entropy_map (Tensor) 还是 meta (dict)
+            third = items[0][2]
+            if isinstance(third, dict):
+                has_entropy = False
+                has_meta = True
+            else:
+                has_entropy = True
+                has_meta = False
+        else:
+            has_entropy = False
+            has_meta = False
 
         images = torch.cat([x[0][None] for x in items], dim=0)
         targets = [x[1] for x in items]
 
-        if has_entropy:
-            entropy_maps = torch.cat([x[2][None] for x in items], dim=0)
+        entropy_maps = None
+        metas = None
 
-        if has_meta:
+        if has_entropy and has_meta:
+            entropy_maps = torch.cat([x[2][None] for x in items], dim=0)
             metas = [x[3] for x in items]
+        elif has_entropy:
+            entropy_maps = torch.cat([x[2][None] for x in items], dim=0)
+        elif has_meta:
+            metas = [x[2] for x in items]
 
         # ---- multi-scale resize ----
         if self.scales is not None:
             sz = random.choice(self.scales)
             images = resize(images, [sz, sz])
-            if has_entropy:
+            if entropy_maps is not None:
                 entropy_maps = resize(entropy_maps, [sz, sz])
 
         # ---- 组装输出 ----
-        if has_meta:
+        if has_entropy and has_meta:
             return images, targets, entropy_maps, metas
         if has_entropy:
             return images, targets, entropy_maps
+        if has_meta:
+            return images, targets, metas
         return images, targets

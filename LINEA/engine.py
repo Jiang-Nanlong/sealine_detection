@@ -19,10 +19,18 @@ import util.misc as utils
 def _unpack_batch(batch):
     """从 dataloader batch 中解包，兼容 2 / 3 / 4-tuple。
     始终返回 (samples, targets, entropy_maps_or_None)。
-    第 4 个元素 metas（如有）在此处丢弃，不参与训练。
+    metas（list[dict]）在此处丢弃，不参与训练。
     """
-    if len(batch) >= 3:
+    if len(batch) == 4:
+        # (images, targets, entropy_maps, metas)
         return batch[0], batch[1], batch[2]
+    if len(batch) == 3:
+        third = batch[2]
+        # baseline 3-tuple: (images, targets, metas) — metas is list[dict]
+        if isinstance(third, (list, tuple)) and len(third) > 0 and isinstance(third[0], dict):
+            return batch[0], batch[1], None
+        # entropy 3-tuple: (images, targets, entropy_maps)
+        return batch[0], batch[1], third
     return batch[0], batch[1], None
 
 

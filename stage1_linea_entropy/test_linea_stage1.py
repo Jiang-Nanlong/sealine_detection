@@ -423,9 +423,12 @@ def run_inference(model, postprocessor, dataloader, device, include_entropy):
                 images, targets, entropy_maps = batch
                 metas = None
         else:
-            images, targets = batch[:2]
+            if len(batch) == 3:
+                images, targets, metas = batch
+            else:
+                images, targets = batch[:2]
+                metas = None
             entropy_maps = None
-            metas = batch[3] if len(batch) >= 4 else None
 
         images = images.to(device)
         if entropy_maps is not None:

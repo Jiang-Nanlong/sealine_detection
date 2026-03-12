@@ -206,19 +206,19 @@ class MUSIDLineaEntropyDataset(Dataset):
         }
 
         # ---- 返回格式取决于模式 ----
+        meta = {
+            'stem': stem,
+            'img_path': img_path,
+            'entropy_path': ent_path,
+            'scale': scale,
+            'new_w': new_w,
+            'new_h': new_h,
+        }
         if self.include_entropy:
             entropy_tensor = torch.from_numpy(ent_sq).unsqueeze(0)  # [1, sz, sz]
-            meta = {
-                'stem': stem,
-                'img_path': img_path,
-                'entropy_path': ent_path,
-                'scale': scale,
-                'new_w': new_w,
-                'new_h': new_h,
-            }
             return image_tensor, target, entropy_tensor, meta
         else:
-            return image_tensor, target
+            return image_tensor, target, meta
 
 
 def main():
