@@ -63,7 +63,9 @@
   "t_drop": 20.0,
   "reg_loss_type": "mse",
   "hard_image_rule": "mean",
-  "fixable_min_improvement": 2.0,
-  "fixable_max_oracle_err": 20.0,
-  "pair_min_err_gap": 1.0
+  "fixable_min_improvement": 1.0,
+  "fixable_max_oracle_err": 30.0,
+  "pair_min_err_gap": 0.5,
+  "use_fixable_max_oracle_err": true,
+  "fixable_extra_pair_weight": 2.0
 }
