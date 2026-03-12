@@ -96,6 +96,23 @@ T_DROP = 20.0
 # ---- 回归损失类型 ----
 REG_LOSS_TYPE = "mse"            # "mse" 或 "smoothl1"
 
+# ---- Pairwise ranking 参数 ----
+USE_PAIRWISE = True              # 是否启用 pairwise ranking loss
+LOSS_W_POINT = 0.2               # pointwise soft-target 损失权重
+LOSS_W_PAIR = 1.0                # pairwise ranking 损失权重
+
+FIXABLE_MIN_IMPROVEMENT = 5.0    # det_top1_err - oracle_best_err >= 此值才认为可纠正
+PAIR_MIN_ERR_GAP = 3.0           # 正负样本 endpoint_err 差距阈值
+
+MAX_NEG_PER_IMAGE = 3            # 每张图最多取几个负样本
+NEGATIVE_SELECT_MODE = "hard_det"  # "hard_det": 优先 det_score 高但 err 差的负样本
+HARD_NEG_TOPK_BY_DET = 5         # 从 det_score 前 K 中选负样本
+
+PAIRWISE_LOSS_TYPE = "logistic"  # "logistic" 或 "margin"
+PAIRWISE_MARGIN = 0.0            # margin ranking loss 的 margin 值
+
+HARD_IMAGE_EXTRA_WEIGHT = 2.0    # fixable hard image 的额外 pair 权重
+
 # ---- 融合打分（验证/评估阶段） ----
 # score_final = lambda * det_score + (1 - lambda) * reranker_score
 # lambda=0.0 → 纯 reranker；lambda=1.0 → 纯 det_score；中间值 → 融合
@@ -409,43 +426,269 @@ def build_regression_criterion(loss_type):
 
 
 # ============================================================
-# 6. 训练一个 epoch（soft target + image weight）
+# 5b. Pairwise 图内分析与 pair 构造
 # ============================================================
-def train_one_epoch(model, dataloader, criterion, optimizer, device):
+def compute_image_analysis(meta):
     """
-    每条候选线的 loss = criterion(sigmoid(logit), target_score) * image_weight。
-    只对 image_weight > 0 的样本有效，最终取加权平均。
+    按图分组，计算每张图的 det_top1 / oracle_best / fixable 状态。
+
+    Returns:
+        image_info : dict  stem → {
+            'indices': list[int],
+            'det_top1_idx': int,
+            'det_top1_err': float,
+            'oracle_best_idx': int,
+            'oracle_best_err': float,
+            'best_improvement': float,
+            'is_fixable': bool,
+        }
+        stats : dict  汇总统计
+    """
+    image_indices = defaultdict(list)
+    for i, m in enumerate(meta):
+        image_indices[m["image_stem"]].append(i)
+
+    image_info = {}
+    n_fixable = 0
+    for stem, indices in image_indices.items():
+        # det_score top1
+        det_top1_idx = max(indices, key=lambda i: float(meta[i]["det_score"]))
+        det_top1_err = meta[det_top1_idx]["endpoint_err"]
+        if not math.isfinite(det_top1_err):
+            det_top1_err = float("inf")
+
+        # oracle best (endpoint_err 最小)
+        valid = [(i, meta[i]["endpoint_err"]) for i in indices
+                 if math.isfinite(meta[i]["endpoint_err"])]
+        if valid:
+            oracle_best_idx, oracle_best_err = min(valid, key=lambda x: x[1])
+        else:
+            oracle_best_idx = det_top1_idx
+            oracle_best_err = float("inf")
+
+        improvement = det_top1_err - oracle_best_err if (
+            math.isfinite(det_top1_err) and math.isfinite(oracle_best_err)
+        ) else 0.0
+        is_fixable = improvement >= FIXABLE_MIN_IMPROVEMENT
+
+        if is_fixable:
+            n_fixable += 1
+
+        image_info[stem] = {
+            "indices": indices,
+            "det_top1_idx": det_top1_idx,
+            "det_top1_err": det_top1_err,
+            "oracle_best_idx": oracle_best_idx,
+            "oracle_best_err": oracle_best_err,
+            "best_improvement": improvement,
+            "is_fixable": is_fixable,
+        }
+
+    stats = {
+        "num_images": len(image_info),
+        "num_fixable_images": n_fixable,
+    }
+    return image_info, stats
+
+
+def build_pairs(X, meta, image_info):
+    """
+    从 fixable hard images 构造 pairwise 训练样本。
+
+    Returns:
+        pairs : list of dict  — 每个 pair 包含:
+            pos_idx, neg_idx, pair_weight
+        pair_stats : dict
+    """
+    pairs = []
+    for stem, info in image_info.items():
+        if not info["is_fixable"]:
+            continue
+
+        pos_idx = info["oracle_best_idx"]
+        pos_err = info["oracle_best_err"]
+        indices = info["indices"]
+
+        # 候选负样本池：排除 pos 自身
+        neg_candidates = []
+        for i in indices:
+            if i == pos_idx:
+                continue
+            err_i = meta[i]["endpoint_err"]
+            if not math.isfinite(err_i):
+                continue
+            gap = err_i - pos_err
+            if gap < PAIR_MIN_ERR_GAP:
+                continue
+            neg_candidates.append((i, err_i, float(meta[i]["det_score"])))
+
+        if not neg_candidates:
+            continue
+
+        # 按负样本选择策略排序
+        if NEGATIVE_SELECT_MODE == "hard_det":
+            # 优先选 det_score 高的错误候选（det 排高但实际差的）
+            neg_candidates.sort(key=lambda x: x[2], reverse=True)
+            # det_top1 优先：如果 det_top1 在负样本中，提到最前面
+            det_top1_idx = info["det_top1_idx"]
+            reordered = []
+            rest = []
+            for nc in neg_candidates:
+                if nc[0] == det_top1_idx:
+                    reordered.insert(0, nc)
+                else:
+                    rest.append(nc)
+            neg_candidates = reordered + rest[:HARD_NEG_TOPK_BY_DET - len(reordered)]
+        else:
+            # fallback: 按 err gap 降序
+            neg_candidates.sort(key=lambda x: x[1], reverse=True)
+
+        selected = neg_candidates[:MAX_NEG_PER_IMAGE]
+
+        base_weight = HARD_IMAGE_EXTRA_WEIGHT
+        for neg_idx, neg_err, neg_det in selected:
+            pairs.append({
+                "pos_idx": pos_idx,
+                "neg_idx": neg_idx,
+                "pair_weight": base_weight,
+            })
+
+    pair_stats = {
+        "num_pairs": len(pairs),
+        "num_images_with_pairs": len(set(
+            meta[p["pos_idx"]]["image_stem"] for p in pairs
+        )) if pairs else 0,
+    }
+    return pairs, pair_stats
+
+
+class PairDataset(Dataset):
+    """Pairwise 训练 Dataset。每条返回 (pos_features, neg_features, pair_weight)。"""
+
+    def __init__(self, X_tensor, pairs):
+        """
+        Args:
+            X_tensor : Tensor [N, D]  — 标准化后的全量特征
+            pairs    : list of dict   — build_pairs 的输出
+        """
+        self.X = X_tensor
+        self.pairs = pairs
+
+    def __len__(self):
+        return len(self.pairs)
+
+    def __getitem__(self, idx):
+        p = self.pairs[idx]
+        return (self.X[p["pos_idx"]],
+                self.X[p["neg_idx"]],
+                torch.tensor(p["pair_weight"], dtype=torch.float32))
+
+
+def compute_pairwise_loss(model, pos_feat, neg_feat, pair_weight, device):
+    """
+    计算一个 batch 的 pairwise ranking loss。
+
+    Returns:
+        loss : scalar tensor (已做加权平均)
+        n_pairs : int
+    """
+    pos_feat = pos_feat.to(device)
+    neg_feat = neg_feat.to(device)
+    pair_weight = pair_weight.to(device)
+
+    score_pos = model(pos_feat).squeeze(1)  # [B]
+    score_neg = model(neg_feat).squeeze(1)  # [B]
+    diff = score_pos - score_neg            # [B]
+
+    if PAIRWISE_LOSS_TYPE == "margin":
+        # margin ranking loss: max(0, margin - diff)
+        per_pair = torch.clamp(PAIRWISE_MARGIN - diff, min=0.0)
+    else:
+        # logistic: softplus(-diff) = log(1 + exp(-diff))
+        per_pair = torch.nn.functional.softplus(-diff)
+
+    weighted = per_pair * pair_weight
+    w_sum = pair_weight.sum()
+    if w_sum.item() > 0:
+        loss = weighted.sum() / w_sum
+    else:
+        loss = weighted.sum() * 0.0
+    return loss, len(pair_weight)
+
+
+# ============================================================
+# 6. 训练一个 epoch（pointwise + pairwise）
+# ============================================================
+def train_one_epoch(model, point_loader, pair_loader, criterion, optimizer, device):
+    """
+    联合训练：
+      total_loss = LOSS_W_POINT * loss_point + LOSS_W_PAIR * loss_pair
+
+    如果 pair_loader 为 None 或无数据，自动退化为纯 pointwise。
     """
     model.train()
-    total_weighted_loss = 0.0
-    total_weight = 0.0
+    total_point_loss = 0.0
+    total_point_weight = 0.0
+    total_pair_loss = 0.0
+    total_pair_count = 0
 
-    for X_batch, target_batch, weight_batch, _ in dataloader:
+    # 预取 pair batches 为列表，便于与 point batches 交替
+    pair_batches = list(pair_loader) if pair_loader is not None else []
+    pair_iter = iter(pair_batches)
+
+    for X_batch, target_batch, weight_batch, _ in point_loader:
         X_batch = X_batch.to(device)
-        target_batch = target_batch.to(device).unsqueeze(1)   # [B, 1]
-        weight_batch = weight_batch.to(device).unsqueeze(1)   # [B, 1]
+        target_batch = target_batch.to(device).unsqueeze(1)
+        weight_batch = weight_batch.to(device).unsqueeze(1)
 
-        logits = model(X_batch)          # [B, 1]
-        preds = torch.sigmoid(logits)    # [B, 1]  → [0, 1]
-
-        per_sample_loss = criterion(preds, target_batch)  # [B, 1]
-        weighted_loss = per_sample_loss * weight_batch     # [B, 1]
+        logits = model(X_batch)
+        preds = torch.sigmoid(logits)
+        per_sample_loss = criterion(preds, target_batch)
+        weighted_loss = per_sample_loss * weight_batch
 
         batch_weight_sum = weight_batch.sum()
         if batch_weight_sum.item() > 0:
-            loss = weighted_loss.sum() / batch_weight_sum
+            loss_point = weighted_loss.sum() / batch_weight_sum
         else:
-            loss = weighted_loss.sum() * 0.0  # 无有效样本，zero grad
+            loss_point = weighted_loss.sum() * 0.0
+
+        # pairwise loss: 取一个 pair batch（如果还有的话）
+        loss_pair = torch.tensor(0.0, device=device)
+        n_p = 0
+        try:
+            pair_batch = next(pair_iter)
+            pos_f, neg_f, pw = pair_batch
+            loss_pair, n_p = compute_pairwise_loss(model, pos_f, neg_f, pw, device)
+        except StopIteration:
+            pass
+
+        total_loss = LOSS_W_POINT * loss_point + LOSS_W_PAIR * loss_pair
 
         optimizer.zero_grad()
-        loss.backward()
+        total_loss.backward()
         optimizer.step()
 
-        total_weighted_loss += weighted_loss.sum().item()
-        total_weight += batch_weight_sum.item()
+        total_point_loss += weighted_loss.sum().item()
+        total_point_weight += batch_weight_sum.item()
+        total_pair_loss += loss_pair.item() * n_p
+        total_pair_count += n_p
 
-    avg_loss = total_weighted_loss / max(total_weight, 1e-8)
-    return avg_loss
+    # 处理剩余 pair batches（如果 pair 比 point 多）
+    for pair_batch in pair_iter:
+        pos_f, neg_f, pw = pair_batch
+        loss_pair, n_p = compute_pairwise_loss(model, pos_f, neg_f, pw, device)
+        total_loss = LOSS_W_PAIR * loss_pair
+
+        optimizer.zero_grad()
+        total_loss.backward()
+        optimizer.step()
+
+        total_pair_loss += loss_pair.item() * n_p
+        total_pair_count += n_p
+
+    avg_point = total_point_loss / max(total_point_weight, 1e-8)
+    avg_pair = total_pair_loss / max(total_pair_count, 1e-8)
+    return avg_point, avg_pair
 
 
 # ============================================================
@@ -921,6 +1164,14 @@ def _build_val_results_dict(cand_m, img_reranker, img_det, val_results,
         "hidden_dims": HIDDEN_DIMS, "dropout": DROPOUT,
         "use_fused_scoring": USE_FUSED_SCORING,
         "fusion_lambdas": FUSION_LAMBDAS,
+        "use_pairwise": USE_PAIRWISE,
+        "loss_w_point": LOSS_W_POINT,
+        "loss_w_pair": LOSS_W_PAIR,
+        "fixable_min_improvement": FIXABLE_MIN_IMPROVEMENT,
+        "pair_min_err_gap": PAIR_MIN_ERR_GAP,
+        "max_neg_per_image": MAX_NEG_PER_IMAGE,
+        "pairwise_loss_type": PAIRWISE_LOSS_TYPE,
+        "hard_image_extra_weight": HARD_IMAGE_EXTRA_WEIGHT,
     }
     d["train_image_weight_stats"] = train_img_stats
     return d
@@ -931,7 +1182,7 @@ def _build_val_results_dict(cand_m, img_reranker, img_det, val_results,
 # ============================================================
 def main():
     print("=" * 60)
-    print("  Stage-2 Reranker Training (soft target + image weight)")
+    print("  Stage-2 Reranker Training (pointwise + pairwise ranking)")
     print(f"  EXPORT_DIR  = {EXPORT_DIR}")
     print(f"  OUTPUT_DIR  = {OUTPUT_DIR}")
     print(f"  FEATURES    = {len(FEATURE_COLUMNS)} columns")
@@ -944,6 +1195,9 @@ def main():
     print(f"  T_GOOD      = {T_GOOD}")
     print(f"  T_DROP      = {T_DROP}")
     print(f"  LOSS        = {REG_LOSS_TYPE}")
+    print(f"  PAIRWISE    = {USE_PAIRWISE}  W_POINT={LOSS_W_POINT} W_PAIR={LOSS_W_PAIR}")
+    print(f"  FIXABLE_MIN = {FIXABLE_MIN_IMPROVEMENT}  PAIR_GAP={PAIR_MIN_ERR_GAP}  MAX_NEG={MAX_NEG_PER_IMAGE}")
+    print(f"  PAIR_LOSS   = {PAIRWISE_LOSS_TYPE}  MARGIN={PAIRWISE_MARGIN}  HARD_W={HARD_IMAGE_EXTRA_WEIGHT}")
     print(f"  FUSED       = {USE_FUSED_SCORING}  lambdas=0.0000:0.0001:1.0000 ({len(FUSION_LAMBDAS)} values)")
     print(f"  SEED        = {RANDOM_SEED}")
     print("=" * 60)
@@ -1010,6 +1264,29 @@ def main():
     save_feature_config(scaler, feature_config_path)
 
     # ================================================================
+    # [2b/7] 图内分析 + pairwise pair 构造
+    # ================================================================
+    train_image_info, train_image_analysis = compute_image_analysis(meta_train)
+    val_image_info, val_image_analysis = compute_image_analysis(meta_val)
+    print(f"  Train images: {train_image_analysis['num_images']} total, "
+          f"{train_image_analysis['num_fixable_images']} fixable")
+    print(f"  Val   images: {val_image_analysis['num_images']} total, "
+          f"{val_image_analysis['num_fixable_images']} fixable")
+
+    train_pair_loader = None
+    train_pair_stats = {"num_pairs": 0, "num_images_with_pairs": 0}
+    if USE_PAIRWISE:
+        train_pairs, train_pair_stats = build_pairs(X_train, meta_train, train_image_info)
+        print(f"  Train pairs: {train_pair_stats['num_pairs']} pairs from "
+              f"{train_pair_stats['num_images_with_pairs']} images")
+        if train_pairs:
+            train_pair_dataset = PairDataset(torch.from_numpy(X_train), train_pairs)
+            train_pair_loader = DataLoader(
+                train_pair_dataset, batch_size=BATCH_SIZE, shuffle=True,
+                num_workers=0, drop_last=False,
+            )
+
+    # ================================================================
     # [3/7] 构建 Dataset & DataLoader
     # ================================================================
     print("\n[3/7] 构建 DataLoader...")
@@ -1060,7 +1337,9 @@ def main():
 
     for epoch in range(1, NUM_EPOCHS + 1):
         # ---- train ----
-        train_loss = train_one_epoch(model, train_loader, criterion, optimizer, device)
+        train_loss_point, train_loss_pair = train_one_epoch(
+            model, train_loader, train_pair_loader, criterion, optimizer, device)
+        train_loss = LOSS_W_POINT * train_loss_point + LOSS_W_PAIR * train_loss_pair
 
         # ---- validate ----
         val_results = evaluate(model, val_loader, val_dataset, criterion, device,
@@ -1116,6 +1395,8 @@ def main():
         epoch_record = {
             "epoch": epoch,
             "train_loss": train_loss,
+            "train_loss_point": train_loss_point,
+            "train_loss_pair": train_loss_pair,
             "val_loss": val_loss,
             "val_auc": val_auc,
             "val_f1": cand_m["f1"],
@@ -1139,8 +1420,9 @@ def main():
         fused_str = ""
         if USE_FUSED_SCORING and math.isfinite(fused_mean_err):
             fused_str = f"  fused={fused_mean_err:.2f}(\u03bb={fused_best_lam:.4f})"
+        pair_str = f"  Lp={train_loss_point:.4f} Lr={train_loss_pair:.4f}" if USE_PAIRWISE else ""
         print(f"  Epoch {epoch:3d}/{NUM_EPOCHS}  "
-              f"train={train_loss:.4f}  "
+              f"train={train_loss:.4f}{pair_str}  "
               f"val={val_loss:.4f}  "
               f"auc={val_auc:.4f}  "
               f"reranker_err={reranker_mean_err:.2f}"
@@ -1185,11 +1467,32 @@ def main():
             )
         print(f"  已保存 best_fused 结果 (epoch {best_fused_epoch}, err={best_fused_score:.4f})")
 
+    # ---- 训练总结 JSON ----
+    train_summary = {
+        "num_train_images": train_image_analysis["num_images"],
+        "num_fixable_train_images": train_image_analysis["num_fixable_images"],
+        "num_train_pairs": train_pair_stats["num_pairs"],
+        "num_val_images": val_image_analysis["num_images"],
+        "num_fixable_val_images": val_image_analysis["num_fixable_images"],
+        "best_reranker_epoch": best_reranker_epoch,
+        "best_reranker_metric": best_reranker_score,
+        "best_fused_epoch": best_fused_epoch,
+        "best_fused_metric": best_fused_score,
+        "best_fused_lambda": best_fused_results.get("best_fusion_lambda", None) if best_fused_results else None,
+    }
+    save_json(train_summary, os.path.join(output_dir, "train_summary.json"))
+    print(f"  已保存 train_summary.json")
+
     # ---- 最终汇总 ----
     print("\n" + "=" * 60)
     print(f"  [7/7] 训练完成")
     print(f"  Best reranker: epoch {best_reranker_epoch}  (image_mean_err = {best_reranker_score:.4f})")
     print(f"  Best fused:    epoch {best_fused_epoch}  (image_mean_err = {best_fused_score:.4f})")
+    print(f"  Train: {train_image_analysis['num_images']} images, "
+          f"{train_image_analysis['num_fixable_images']} fixable, "
+          f"{train_pair_stats['num_pairs']} pairs")
+    print(f"  Val:   {val_image_analysis['num_images']} images, "
+          f"{val_image_analysis['num_fixable_images']} fixable")
     print(f"  输出目录: {output_dir}")
 
     def _print_image_level_table(tag, results_dict, epoch):
