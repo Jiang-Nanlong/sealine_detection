@@ -493,9 +493,16 @@ def run_inference(model, postprocessor, dataloader, device, include_entropy):
             if has_horizon_head:
                 raw_scores_i = outputs['pred_logits_raw_det'][i, :, 0].sigmoid().cpu()
                 horizon_logits_i = outputs['pred_logits_horizon'][i, :, 0].cpu()
+                combined_scores_i = outputs['pred_logits_combined'][i, :, 0].sigmoid().cpu()
                 result_entry['debug_raw_det_score_mean'] = float(raw_scores_i.mean())
                 result_entry['debug_horizon_logit_mean'] = float(horizon_logits_i.mean())
                 result_entry['debug_horizon_logit_std'] = float(horizon_logits_i.std())
+                result_entry['debug_combined_score_mean'] = float(combined_scores_i.mean())
+
+                if 'pred_fusion_gate' in outputs:
+                    gate_i = outputs['pred_fusion_gate'][i, :, 0].cpu()
+                    result_entry['debug_fusion_gate_mean'] = float(gate_i.mean())
+                    result_entry['debug_fusion_gate_std'] = float(gate_i.std())
 
             all_results.append(result_entry)
 
@@ -548,6 +555,9 @@ def evaluate_and_save(all_results, output_dir):
             rec['debug_raw_det_score_mean'] = r.get('debug_raw_det_score_mean')
             rec['debug_horizon_logit_mean'] = r.get('debug_horizon_logit_mean')
             rec['debug_horizon_logit_std'] = r.get('debug_horizon_logit_std')
+            rec['debug_combined_score_mean'] = r.get('debug_combined_score_mean')
+            rec['debug_fusion_gate_mean'] = r.get('debug_fusion_gate_mean')
+            rec['debug_fusion_gate_std'] = r.get('debug_fusion_gate_std')
 
         if num_lines == 0:
             num_no_lines += 1

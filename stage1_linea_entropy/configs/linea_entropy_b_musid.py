@@ -54,11 +54,12 @@ weight_dict = {'loss_logits': 4, 'loss_line': 5}
 # ============================================================
 enable_horizon_head = True
 horizon_num_sample_points = 16
-horizon_band_width = 3.0
+horizon_band_widths = [2.0, 4.0, 8.0]
 horizon_use_feat_context = True
 horizon_use_entropy_context = True
 horizon_use_gradient_context = True
 horizon_use_geometry = True
+horizon_use_adaptive_fusion_gate = True
 horizon_score_init_scale = 0.1
 horizon_hidden_dim = 256
 

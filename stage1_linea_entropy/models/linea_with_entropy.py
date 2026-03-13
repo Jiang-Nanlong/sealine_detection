@@ -150,7 +150,7 @@ class LINEAWithEntropyB(LINEA):
         if self.enable_horizon_head and self.horizon_head is not None and hs_last is not None:
             img_h, img_w = samples.shape[2], samples.shape[3]
 
-            horizon_logit, score_scale = self.horizon_head(
+            horizon_logit, fusion_gate, score_scale = self.horizon_head(
                 hs_last=hs_last,
                 pred_lines=out['pred_lines'],
                 encoder_feat=features[0],
@@ -161,7 +161,14 @@ class LINEAWithEntropyB(LINEA):
             )
 
             raw_logits = out['pred_logits']
-            combined = raw_logits + score_scale * horizon_logit
+
+            if fusion_gate is not None:
+                # 候选线自适应融合
+                combined = raw_logits + score_scale * fusion_gate * horizon_logit
+                out['pred_fusion_gate'] = fusion_gate
+            else:
+                # 回退：全局标量融合
+                combined = raw_logits + score_scale * horizon_logit
 
             out['pred_logits_raw_det'] = raw_logits
             out['pred_logits_horizon'] = horizon_logit
@@ -187,16 +194,23 @@ def build_linea_with_entropy_b(args):
     enable_hh = getattr(args, 'enable_horizon_head', True)
     horizon_head = None
     if enable_hh:
+        # 支持新的 band_widths 列表，同时兼容旧的单 band_width
+        band_widths = getattr(args, 'horizon_band_widths', None)
+        if band_widths is None:
+            bw = getattr(args, 'horizon_band_width', 3.0)
+            band_widths = [bw]
+
         horizon_head = HorizonScoringHead(
             d_model=args.hidden_dim,
             hidden_dim=getattr(args, 'horizon_hidden_dim', 256),
             num_classes=args.num_classes,
             num_sample_points=getattr(args, 'horizon_num_sample_points', 16),
-            band_width=getattr(args, 'horizon_band_width', 3.0),
+            band_widths=band_widths,
             use_feat_context=getattr(args, 'horizon_use_feat_context', True),
             use_entropy_context=getattr(args, 'horizon_use_entropy_context', True),
             use_gradient_context=getattr(args, 'horizon_use_gradient_context', True),
             use_geometry=getattr(args, 'horizon_use_geometry', True),
+            use_adaptive_fusion_gate=getattr(args, 'horizon_use_adaptive_fusion_gate', True),
             score_init_scale=getattr(args, 'horizon_score_init_scale', 0.1),
         )
 
