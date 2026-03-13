@@ -1,9 +1,10 @@
 """
 linea_with_entropy.py — 带局部熵注入的 LINEA 模型
 
-提供两种模型:
+提供三种模型:
   1. LINEAWithEntropy   — 原始单层加性注入 (LINEA_ENTROPY)
   2. LINEAWithEntropyA  — 多层门控 FiLM 注入 (LINEA_ENTROPY_A)
+  3. LINEAWithEntropyB  — detector 内置 horizon-aware scoring head (LINEA_ENTROPY_B)
 """
 
 import torch
@@ -111,6 +112,98 @@ def build_linea_with_entropy_a(args):
         backbone,
         encoder,
         decoder,
+    )
+
+    postprocessors = PostProcess()
+
+    return model, postprocessors
+
+
+# ============================================================
+# 主线 B: detector 内置 horizon-aware scoring head
+# ============================================================
+class LINEAWithEntropyB(LINEA):
+    """
+    LINEA 子类，encoder 使用 HybridEncoderWithEntropy，
+    decoder 输出经 HorizonScoringHead 增强。
+
+    当 enable_horizon_head=True 时：
+      combined_logit = raw_det_logit + score_scale * horizon_logit
+    当 enable_horizon_head=False 时：
+      退化为 LINEAWithEntropy 行为
+    """
+
+    def __init__(self, backbone, encoder, decoder,
+                 horizon_head=None, enable_horizon_head=True):
+        super().__init__(backbone, encoder, decoder)
+        self.enable_horizon_head = enable_horizon_head
+        self.horizon_head = horizon_head
+
+    def forward(self, samples, targets=None, entropy_map=None):
+        features = self.backbone(samples)
+        features = self.encoder(features, entropy_map=entropy_map)
+        out = self.decoder(features, targets)
+
+        # 移除 hs_last（不需要时清理；需要时由 horizon head 消费）
+        hs_last = out.pop('hs_last', None)
+
+        if self.enable_horizon_head and self.horizon_head is not None and hs_last is not None:
+            img_h, img_w = samples.shape[2], samples.shape[3]
+
+            horizon_logit, score_scale = self.horizon_head(
+                hs_last=hs_last,
+                pred_lines=out['pred_lines'],
+                encoder_feat=features[0],
+                images=samples,
+                entropy_map=entropy_map,
+                img_h=img_h,
+                img_w=img_w,
+            )
+
+            raw_logits = out['pred_logits']
+            combined = raw_logits + score_scale * horizon_logit
+
+            out['pred_logits_raw_det'] = raw_logits
+            out['pred_logits_horizon'] = horizon_logit
+            out['pred_logits_combined'] = combined
+            out['pred_logits'] = combined
+
+        return out
+
+
+def build_linea_with_entropy_b(args):
+    """
+    构建 LINEAWithEntropyB + PostProcess。
+    encoder: HybridEncoderWithEntropy（单层熵注入）
+    decoder: 标准 LINEA decoder
+    horizon_head: HorizonScoringHead（可配置）
+    """
+    from stage1_linea_entropy.models.horizon_scoring_head import HorizonScoringHead
+
+    backbone = build_hgnetv2(args)
+    encoder = build_hybrid_encoder_with_entropy(args)
+    decoder = build_decoder(args)
+
+    enable_hh = getattr(args, 'enable_horizon_head', True)
+    horizon_head = None
+    if enable_hh:
+        horizon_head = HorizonScoringHead(
+            d_model=args.hidden_dim,
+            hidden_dim=getattr(args, 'horizon_hidden_dim', 256),
+            num_classes=args.num_classes,
+            num_sample_points=getattr(args, 'horizon_num_sample_points', 16),
+            band_width=getattr(args, 'horizon_band_width', 3.0),
+            use_feat_context=getattr(args, 'horizon_use_feat_context', True),
+            use_entropy_context=getattr(args, 'horizon_use_entropy_context', True),
+            use_gradient_context=getattr(args, 'horizon_use_gradient_context', True),
+            use_geometry=getattr(args, 'horizon_use_geometry', True),
+            score_init_scale=getattr(args, 'horizon_score_init_scale', 0.1),
+        )
+
+    model = LINEAWithEntropyB(
+        backbone, encoder, decoder,
+        horizon_head=horizon_head,
+        enable_horizon_head=enable_hh,
     )
 
     postprocessors = PostProcess()

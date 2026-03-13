@@ -33,7 +33,7 @@ import stage1_linea_entropy.models
 # ============================================================
 # 顶部全局变量配置 — 在 PyCharm 中直接修改
 # ============================================================
-MODE = "baseline"                # "baseline" / "entropy" / "entropy_a"
+MODE = "baseline"                # "baseline" / "entropy" / "entropy_a" / "entropy_b"
 CONFIG_FILE = "stage1_linea_entropy/configs/linea_baseline_musid.py"
 WEIGHTS_PATH = "output/linea_baseline_musid_e100/best_checkpoint.pth"                # 权重文件路径（.pth）
 DEVICE = "cuda"
@@ -83,8 +83,8 @@ def load_config(config_file):
     args.musid_split_dir = str(_PROJECT_ROOT / SPLIT_DIR) if not Path(SPLIT_DIR).is_absolute() else SPLIT_DIR
 
     # 根据 MODE 覆盖 entropy_mode
-    # entropy_a 也需要 entropy_map, 所以映射到 'entropy'
-    args.entropy_mode = 'entropy' if MODE in ('entropy', 'entropy_a') else MODE
+    # entropy_a / entropy_b 也需要 entropy_map, 所以映射到 'entropy'
+    args.entropy_mode = 'entropy' if MODE in ('entropy', 'entropy_a', 'entropy_b') else MODE
 
     # 确保 pretrained 为 False（推理不需要下载预训练）
     args.pretrained = False
@@ -106,6 +106,7 @@ def build_model(args):
         "baseline": "LINEA",
         "entropy": "LINEA_ENTROPY",
         "entropy_a": "LINEA_ENTROPY_A",
+        "entropy_b": "LINEA_ENTROPY_B",
     }
     model_name = _mode_to_model.get(MODE, "LINEA")
 
@@ -449,6 +450,9 @@ def run_inference(model, postprocessor, dataloader, device, include_entropy):
         else:
             outputs = model(images)
 
+        # 检测 horizon head 额外输出字段
+        has_horizon_head = 'pred_logits_raw_det' in outputs
+
         # ---- PostProcess: 将归一化坐标转为像素坐标 ----
         # target_sizes: [B, 2] — (h, w) 用正方形尺寸（letterbox 后的）
         B = images.shape[0]
@@ -476,13 +480,24 @@ def run_inference(model, postprocessor, dataloader, device, include_entropy):
                 img_w=IMG_SIZE, img_h=IMG_SIZE,
             )
 
-            all_results.append({
+            result_entry = {
                 'stem': stem,
                 'gt_line': gt_line,
                 'pred_result': pred_result,
                 'img_tensor': images[i].cpu(),
                 'num_lines': pred_result['num_raw_lines'],
-            })
+                'has_horizon_head': has_horizon_head,
+            }
+
+            # 保存 horizon head 调试信息
+            if has_horizon_head:
+                raw_scores_i = outputs['pred_logits_raw_det'][i, :, 0].sigmoid().cpu()
+                horizon_logits_i = outputs['pred_logits_horizon'][i, :, 0].cpu()
+                result_entry['debug_raw_det_score_mean'] = float(raw_scores_i.mean())
+                result_entry['debug_horizon_logit_mean'] = float(horizon_logits_i.mean())
+                result_entry['debug_horizon_logit_std'] = float(horizon_logits_i.std())
+
+            all_results.append(result_entry)
 
         if (batch_idx + 1) % 50 == 0:
             print(f"  推理进度: {batch_idx + 1}/{len(dataloader)}")
@@ -527,6 +542,13 @@ def evaluate_and_save(all_results, output_dir):
             'best_score': pred['best_score'],
         }
 
+        # 保存 horizon head 调试信息到 per-sample record
+        if r.get('has_horizon_head'):
+            rec['has_horizon_head'] = True
+            rec['debug_raw_det_score_mean'] = r.get('debug_raw_det_score_mean')
+            rec['debug_horizon_logit_mean'] = r.get('debug_horizon_logit_mean')
+            rec['debug_horizon_logit_std'] = r.get('debug_horizon_logit_std')
+
         if num_lines == 0:
             num_no_lines += 1
 
@@ -550,6 +572,7 @@ def evaluate_and_save(all_results, output_dir):
     summary = {
         'mode': MODE,
         'weights_path': WEIGHTS_PATH,
+        'has_horizon_head': any(r.get('has_horizon_head', False) for r in all_results),
         'num_samples': len(all_results),
         'num_images_with_no_lines': num_no_lines,
         'num_images_with_no_candidate': num_no_candidate,
@@ -679,7 +702,7 @@ def main():
 
     # ---- 构建数据集 ----
     print("[4/6] 构建 test 数据集...")
-    include_entropy = (MODE in ("entropy", "entropy_a"))
+    include_entropy = (MODE in ("entropy", "entropy_a", "entropy_b"))
     test_dataset = build_test_dataset(args)
     print(f"  test 样本数: {len(test_dataset)}")
 

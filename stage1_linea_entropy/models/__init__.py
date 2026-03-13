@@ -5,15 +5,7 @@ stage1_linea_entropy/models/__init__.py — 模型构建入口
 
   LINEA_ENTROPY   — 原始单层加性熵注入 (build_linea_with_entropy)
   LINEA_ENTROPY_A — 多层门控 FiLM 熵注入 (build_linea_with_entropy_a)
-
-使用方式:
-  方式 1 — 直接调用:
-      from stage1_linea_entropy.models import build_linea_with_entropy
-      from stage1_linea_entropy.models import build_linea_with_entropy_a
-
-  方式 2 — 通过 LINEA 官方 registry:
-      import stage1_linea_entropy.models  # 触发注册
-      # config 中 modelname = 'LINEA_ENTROPY' 或 'LINEA_ENTROPY_A'
+  LINEA_ENTROPY_B — detector 内置 horizon-aware scoring head (build_linea_with_entropy_b)
 """
 
 from stage1_linea_entropy.models.entropy_branch import (
@@ -24,14 +16,19 @@ from stage1_linea_entropy.models.entropy_branch import (
 from stage1_linea_entropy.models.linea_with_entropy import (
     LINEAWithEntropy,
     LINEAWithEntropyA,
+    LINEAWithEntropyB,
     build_linea_with_entropy,
     build_linea_with_entropy_a,
+    build_linea_with_entropy_b,
 )
 from stage1_linea_entropy.models.encoder_with_entropy import (
     HybridEncoderWithEntropy,
     HybridEncoderWithEntropyA,
     build_hybrid_encoder_with_entropy,
     build_hybrid_encoder_with_entropy_a,
+)
+from stage1_linea_entropy.models.horizon_scoring_head import (
+    HorizonScoringHead,
 )
 
 # ---- 注册到 LINEA 官方 registry ----
@@ -42,3 +39,6 @@ if 'LINEA_ENTROPY' not in MODULE_BUILD_FUNCS._module_dict:
 
 if 'LINEA_ENTROPY_A' not in MODULE_BUILD_FUNCS._module_dict:
     MODULE_BUILD_FUNCS.registe_with_name(module_name='LINEA_ENTROPY_A')(build_linea_with_entropy_a)
+
+if 'LINEA_ENTROPY_B' not in MODULE_BUILD_FUNCS._module_dict:
+    MODULE_BUILD_FUNCS.registe_with_name(module_name='LINEA_ENTROPY_B')(build_linea_with_entropy_b)
