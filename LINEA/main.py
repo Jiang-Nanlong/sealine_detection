@@ -4,11 +4,18 @@ import argparse
 import datetime
 import json
 import random
+import sys
 import time
 from pathlib import Path
 from collections import Counter
 import os
 import numpy as np
+
+# 确保项目根目录在 sys.path 中，以便 import stage1_linea_entropy 等顶层包
+_LINEA_DIR = Path(__file__).resolve().parent
+_PROJECT_ROOT = _LINEA_DIR.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
 
 import torch
 from torch.utils.data import DataLoader, DistributedSampler

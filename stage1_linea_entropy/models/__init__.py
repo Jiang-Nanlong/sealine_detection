@@ -35,7 +35,7 @@ from stage1_linea_entropy.models.encoder_with_entropy import (
 )
 
 # ---- 注册到 LINEA 官方 registry ----
-from LINEA.models.registry import MODULE_BUILD_FUNCS
+from models.registry import MODULE_BUILD_FUNCS
 
 if 'LINEA_ENTROPY' not in MODULE_BUILD_FUNCS._module_dict:
     MODULE_BUILD_FUNCS.registe_with_name(module_name='LINEA_ENTROPY')(build_linea_with_entropy)

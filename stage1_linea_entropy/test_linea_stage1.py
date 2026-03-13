@@ -27,6 +27,9 @@ _PROJECT_ROOT = _SCRIPT_DIR.parent                     # sealine_detection/
 sys.path.insert(0, str(_PROJECT_ROOT))
 sys.path.insert(0, str(_PROJECT_ROOT / "LINEA"))
 
+# 显式导入以触发模型注册（LINEA_ENTROPY / LINEA_ENTROPY_A）
+import stage1_linea_entropy.models
+
 # ============================================================
 # 顶部全局变量配置 — 在 PyCharm 中直接修改
 # ============================================================
