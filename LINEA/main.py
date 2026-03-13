@@ -24,6 +24,12 @@ from engine import train_one_epoch, evaluate, test
 from tensorboardX import SummaryWriter
 from warmup import LinearWarmup
 
+# ---- 注册 stage1_linea_entropy 模型 (LINEA_ENTROPY / LINEA_ENTROPY_A) ----
+try:
+    import stage1_linea_entropy.models  # noqa: F401 — 触发 registry 注册
+except ImportError:
+    pass
+
 def get_args_parser():
     parser = argparse.ArgumentParser('Set transformer detector', add_help=False)
     parser.add_argument('--config_file', '-c', type=str, required=True)

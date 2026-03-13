@@ -30,7 +30,7 @@ sys.path.insert(0, str(_PROJECT_ROOT / "LINEA"))
 # ============================================================
 # 顶部全局变量配置 — 在 PyCharm 中直接修改
 # ============================================================
-MODE = "baseline"                # "baseline" 或 "entropy"
+MODE = "baseline"                # "baseline" / "entropy" / "entropy_a"
 CONFIG_FILE = "stage1_linea_entropy/configs/linea_baseline_musid.py"
 WEIGHTS_PATH = "output/linea_baseline_musid_e100/best_checkpoint.pth"                # 权重文件路径（.pth）
 DEVICE = "cuda"
@@ -80,7 +80,8 @@ def load_config(config_file):
     args.musid_split_dir = str(_PROJECT_ROOT / SPLIT_DIR) if not Path(SPLIT_DIR).is_absolute() else SPLIT_DIR
 
     # 根据 MODE 覆盖 entropy_mode
-    args.entropy_mode = MODE
+    # entropy_a 也需要 entropy_map, 所以映射到 'entropy'
+    args.entropy_mode = 'entropy' if MODE in ('entropy', 'entropy_a') else MODE
 
     # 确保 pretrained 为 False（推理不需要下载预训练）
     args.pretrained = False
@@ -94,11 +95,16 @@ def load_config(config_file):
 def build_model(args):
     """
     根据 args.modelname 用 LINEA 官方 registry 构建模型 + postprocessor。
-    baseline → LINEA；entropy → LINEA_ENTROPY。
+    baseline → LINEA; entropy → LINEA_ENTROPY; entropy_a → LINEA_ENTROPY_A。
     """
     from models.registry import MODULE_BUILD_FUNCS
 
-    model_name = "LINEA" if MODE == "baseline" else "LINEA_ENTROPY"
+    _mode_to_model = {
+        "baseline": "LINEA",
+        "entropy": "LINEA_ENTROPY",
+        "entropy_a": "LINEA_ENTROPY_A",
+    }
+    model_name = _mode_to_model.get(MODE, "LINEA")
 
     # 确保 config 中 modelname 与 MODE 匹配
     args.modelname = model_name
@@ -670,7 +676,7 @@ def main():
 
     # ---- 构建数据集 ----
     print("[4/6] 构建 test 数据集...")
-    include_entropy = (MODE == "entropy")
+    include_entropy = (MODE in ("entropy", "entropy_a"))
     test_dataset = build_test_dataset(args)
     print(f"  test 样本数: {len(test_dataset)}")
 

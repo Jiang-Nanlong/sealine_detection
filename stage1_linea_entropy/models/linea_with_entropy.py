@@ -1,38 +1,9 @@
 """
 linea_with_entropy.py — 带局部熵注入的 LINEA 模型
 
-核心思路：
-  继承原始 LINEA，仅覆写 forward()，将 entropy_map 传给
-  HybridEncoderWithEntropy。backbone / decoder / postprocessor 全部
-  复用原始 LINEA 实现，零改动。
-
-组件复用说明：
-  - backbone   : 原始 HGNetv2，不改动
-  - encoder    : 替换为 HybridEncoderWithEntropy（唯一变化）
-  - decoder    : 原始 LINEATransformer，不改动
-  - PostProcess: 原始 PostProcess，不改动
-  - criterion  : 由外部 build_criterion 构建，与本文件无关
-
-entropy_map 传递路径：
-  LINEAWithEntropy.forward(samples, targets, entropy_map)
-    → self.encoder(features, entropy_map=entropy_map)
-      → HybridEncoderWithEntropy.forward(feats, entropy_map)
-        → proj_feats[0] = proj_feats[0] + alpha * entropy_feat
-
-  原始 LINEA.forward 仅 3 行逻辑：
-    features = self.backbone(samples)
-    features = self.encoder(features)
-    out = self.decoder(features, targets)
-  本文件覆写 forward，唯一区别是给 encoder 多传一个 entropy_map 参数。
-
-预训练权重兼容说明：
-  模型结构为 model.backbone.* / model.encoder.* / model.decoder.*。
-  加载原始 LINEA checkpoint（strict=False）时：
-    - backbone.* / decoder.* 完全匹配
-    - encoder.* 中除以下两类 key 外完全匹配：
-      missing keys  : encoder.entropy_branch.*, encoder.alpha
-      unexpected keys: 无
-  alpha 初始为 0.0，加载后模型行为与原始 LINEA 完全一致。
+提供两种模型:
+  1. LINEAWithEntropy   — 原始单层加性注入 (LINEA_ENTROPY)
+  2. LINEAWithEntropyA  — 多层门控 FiLM 注入 (LINEA_ENTROPY_A)
 """
 
 import torch
@@ -42,7 +13,10 @@ from LINEA.models.linea.linea import LINEA, PostProcess
 from LINEA.models.linea.hgnetv2 import build_hgnetv2
 from LINEA.models.linea.decoder import build_decoder
 
-from stage1_linea_entropy.models.encoder_with_entropy import build_hybrid_encoder_with_entropy
+from stage1_linea_entropy.models.encoder_with_entropy import (
+    build_hybrid_encoder_with_entropy,
+    build_hybrid_encoder_with_entropy_a,
+)
 
 
 class LINEAWithEntropy(LINEA):
@@ -98,6 +72,42 @@ def build_linea_with_entropy(args):
     decoder = build_decoder(args)
 
     model = LINEAWithEntropy(
+        backbone,
+        encoder,
+        decoder,
+    )
+
+    postprocessors = PostProcess()
+
+    return model, postprocessors
+
+
+# ============================================================
+# 主线 A: 多层门控 FiLM 注入模型
+# ============================================================
+class LINEAWithEntropyA(LINEA):
+    """
+    LINEA 子类，encoder 替换为 HybridEncoderWithEntropyA。
+    支持多层门控式熵注入。
+    """
+
+    def forward(self, samples, targets=None, entropy_map=None):
+        features = self.backbone(samples)
+        features = self.encoder(features, entropy_map=entropy_map)
+        out = self.decoder(features, targets)
+        return out
+
+
+def build_linea_with_entropy_a(args):
+    """
+    构建 LINEAWithEntropyA + PostProcess。
+    encoder 使用 build_hybrid_encoder_with_entropy_a（多层门控注入）。
+    """
+    backbone = build_hgnetv2(args)
+    encoder = build_hybrid_encoder_with_entropy_a(args)
+    decoder = build_decoder(args)
+
+    model = LINEAWithEntropyA(
         backbone,
         encoder,
         decoder,
