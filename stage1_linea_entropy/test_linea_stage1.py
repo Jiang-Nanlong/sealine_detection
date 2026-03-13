@@ -492,12 +492,16 @@ def run_inference(model, postprocessor, dataloader, device, include_entropy):
             # 保存 horizon head 调试信息
             if has_horizon_head:
                 raw_scores_i = outputs['pred_logits_raw_det'][i, :, 0].sigmoid().cpu()
-                horizon_logits_i = outputs['pred_logits_horizon'][i, :, 0].cpu()
+                horizon_delta_i = outputs['pred_logits_horizon'][i, :, 0].cpu()
                 combined_scores_i = outputs['pred_logits_combined'][i, :, 0].sigmoid().cpu()
                 result_entry['debug_raw_det_score_mean'] = float(raw_scores_i.mean())
-                result_entry['debug_horizon_logit_mean'] = float(horizon_logits_i.mean())
-                result_entry['debug_horizon_logit_std'] = float(horizon_logits_i.std())
+                result_entry['debug_horizon_delta_mean'] = float(horizon_delta_i.mean())
+                result_entry['debug_horizon_delta_std'] = float(horizon_delta_i.std())
                 result_entry['debug_combined_score_mean'] = float(combined_scores_i.mean())
+
+                if 'pred_logits_raw_calibrated' in outputs:
+                    raw_cal_i = outputs['pred_logits_raw_calibrated'][i, :, 0].sigmoid().cpu()
+                    result_entry['debug_raw_calibrated_score_mean'] = float(raw_cal_i.mean())
 
                 if 'pred_fusion_gate' in outputs:
                     gate_i = outputs['pred_fusion_gate'][i, :, 0].cpu()
@@ -553,8 +557,9 @@ def evaluate_and_save(all_results, output_dir):
         if r.get('has_horizon_head'):
             rec['has_horizon_head'] = True
             rec['debug_raw_det_score_mean'] = r.get('debug_raw_det_score_mean')
-            rec['debug_horizon_logit_mean'] = r.get('debug_horizon_logit_mean')
-            rec['debug_horizon_logit_std'] = r.get('debug_horizon_logit_std')
+            rec['debug_raw_calibrated_score_mean'] = r.get('debug_raw_calibrated_score_mean')
+            rec['debug_horizon_delta_mean'] = r.get('debug_horizon_delta_mean')
+            rec['debug_horizon_delta_std'] = r.get('debug_horizon_delta_std')
             rec['debug_combined_score_mean'] = r.get('debug_combined_score_mean')
             rec['debug_fusion_gate_mean'] = r.get('debug_fusion_gate_mean')
             rec['debug_fusion_gate_std'] = r.get('debug_fusion_gate_std')
@@ -656,6 +661,37 @@ def evaluate_and_save(all_results, output_dir):
         print(f"  ≤10px: {summary['pct_le_10']:.1f}%")
         print(f"  ≤20px: {summary['pct_le_20']:.1f}%")
         print(f"  ≤50px: {summary['pct_le_50']:.1f}%")
+
+    # ---- horizon head 汇总统计 ----
+    hh_results = [r for r in all_results if r.get('has_horizon_head')]
+    if hh_results:
+        avg_raw = np.mean([r['debug_raw_det_score_mean'] for r in hh_results])
+        avg_delta = np.mean([r['debug_horizon_delta_mean'] for r in hh_results])
+        avg_combined = np.mean([r['debug_combined_score_mean'] for r in hh_results])
+        summary['horizon_head_stats'] = {
+            'avg_raw_det_score': float(avg_raw),
+            'avg_horizon_delta': float(avg_delta),
+            'avg_combined_score': float(avg_combined),
+        }
+        print(f"  --- Horizon Head Stats ---")
+        print(f"  Avg raw_det score:  {avg_raw:.4f}")
+        print(f"  Avg horizon_delta:  {avg_delta:.4f}")
+        print(f"  Avg combined score: {avg_combined:.4f}")
+
+        gate_means = [r['debug_fusion_gate_mean'] for r in hh_results if r.get('debug_fusion_gate_mean') is not None]
+        if gate_means:
+            gate_mean_all = np.mean(gate_means)
+            gate_std_all = np.std(gate_means)
+            summary['horizon_head_stats']['avg_fusion_gate'] = float(gate_mean_all)
+            summary['horizon_head_stats']['std_fusion_gate'] = float(gate_std_all)
+            print(f"  Avg fusion_gate:    {gate_mean_all:.4f} (std across images: {gate_std_all:.4f})")
+
+        raw_cal = [r.get('debug_raw_calibrated_score_mean') for r in hh_results if r.get('debug_raw_calibrated_score_mean') is not None]
+        if raw_cal:
+            avg_raw_cal = np.mean(raw_cal)
+            summary['horizon_head_stats']['avg_raw_calibrated_score'] = float(avg_raw_cal)
+            print(f"  Avg raw_calibrated: {avg_raw_cal:.4f}")
+
     print("=" * 60)
 
     return summary

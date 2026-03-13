@@ -519,6 +519,7 @@ class LINEATransformer(nn.Module):
             out = {'pred_logits': out_class[0], 'pred_lines': out_coords[0]}
 
         out['hs_stack'] = hs_stack  # [num_layers, bs, nq, d_model]
+        out['hs_last'] = hs_stack[-1]  # [bs, nq, d_model] — convenience alias
         out['dn_meta'] = dn_meta
 
         return out
