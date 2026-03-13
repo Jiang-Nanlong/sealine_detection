@@ -18,7 +18,7 @@ _base_ = [
 # ============================================================
 # 输出目录（独立于旧实验）
 # ============================================================
-output_dir = 'output/linea_entropy_a_musid_e100'
+output_dir = 'output/linea_entropy_a_musid_e150'
 
 # ============================================================
 # 模型
@@ -74,9 +74,9 @@ musid_split_dir   = 'splits_musid'
 batch_size_train = 4
 batch_size_val = 8
 
-epochs = 100
+epochs = 150
 lr = 0.00025
-lr_drop_list = [70, 85]
+lr_drop_list = [110, 135]
 clip_max_norm = 0.1
 save_checkpoint_interval = 10
 use_warmup = True
