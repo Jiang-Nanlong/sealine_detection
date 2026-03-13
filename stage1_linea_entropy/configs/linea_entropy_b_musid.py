@@ -60,6 +60,9 @@ horizon_use_entropy_context = True
 horizon_use_gradient_context = True
 horizon_use_geometry = True
 horizon_use_adaptive_fusion_gate = True
+horizon_use_multilayer_query = True
+horizon_num_query_layers = 3
+horizon_use_scale_attention = True
 horizon_score_init_scale = 0.1
 horizon_hidden_dim = 256
 

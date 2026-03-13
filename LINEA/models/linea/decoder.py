@@ -258,7 +258,7 @@ class TransformerDecoder(nn.Module):
         output = tgt
         output_detach = pred_corners_undetach = 0
 
-        intermediate = []
+        intermediate = []  # collect per-layer hidden states
         ref_points_detach = refpoints_unsigmoid.sigmoid()
 
         ref_points_initial = ref_points_detach
@@ -303,6 +303,7 @@ class TransformerDecoder(nn.Module):
             	dec_out_bboxes.append(inter_ref_bbox)
 
             pred_corners_undetach = pred_corners
+            intermediate.append(output)  # [nq, bs, d_model]
             if self.training:
             	ref_points_detach = inter_ref_bbox.detach() 
             	output_detach = output.detach()
@@ -310,7 +311,9 @@ class TransformerDecoder(nn.Module):
             	ref_points_detach = inter_ref_bbox
             	output_detach = output
 
-        return torch.stack(dec_out_bboxes).permute(0, 2, 1, 3), torch.stack(dec_out_logits).permute(0, 2, 1, 3), output.permute(1, 0, 2)
+        # hs_stack: [num_layers, bs, nq, d_model]
+        hs_stack = torch.stack(intermediate).permute(0, 2, 1, 3)
+        return torch.stack(dec_out_bboxes).permute(0, 2, 1, 3), torch.stack(dec_out_logits).permute(0, 2, 1, 3), hs_stack
 
 class LINEATransformer(nn.Module):
     def __init__(
@@ -483,7 +486,7 @@ class LINEATransformer(nn.Module):
         # preprocess memory for MSDeformableLineAttention
         value = memory.unflatten(2, (self.n_heads, -1)) # (bs, \sum{hxw}, n_heads, d_model//n_heads)
         value = value.permute(0, 2, 3, 1).flatten(0, 1).split(split_sizes, dim=-1)
-        out_coords, out_class, hs_last = self.decoder(
+        out_coords, out_class, hs_stack = self.decoder(
                 tgt=tgt, 
                 memory=value, #memory.transpose(0, 1), 
                 pos=None,
@@ -496,7 +499,7 @@ class LINEATransformer(nn.Module):
             if dn_meta is not None:
                 dn_out_coords, out_coords = torch.split(out_coords, [dn_meta['pad_size'], self.num_queries], dim=2)
                 dn_out_class, out_class = torch.split(out_class, [dn_meta['pad_size'], self.num_queries], dim=2)
-                _, hs_last = torch.split(hs_last, [dn_meta['pad_size'], self.num_queries], dim=1)
+                _, hs_stack = torch.split(hs_stack, [dn_meta['pad_size'], self.num_queries], dim=2)
 
             out = {'pred_logits': out_class[-1], 'pred_lines': out_coords[-1]}
 
@@ -515,7 +518,7 @@ class LINEATransformer(nn.Module):
         else:
             out = {'pred_logits': out_class[0], 'pred_lines': out_coords[0]}
 
-        out['hs_last'] = hs_last
+        out['hs_stack'] = hs_stack  # [num_layers, bs, nq, d_model]
         out['dn_meta'] = dn_meta
 
         return out

@@ -127,10 +127,9 @@ class LINEAWithEntropyB(LINEA):
     LINEA 子类，encoder 使用 HybridEncoderWithEntropy，
     decoder 输出经 HorizonScoringHead 增强。
 
-    当 enable_horizon_head=True 时：
-      combined_logit = raw_det_logit + score_scale * horizon_logit
-    当 enable_horizon_head=False 时：
-      退化为 LINEAWithEntropy 行为
+    v3 融合公式：
+      raw_calibrated = RawCalibrationHead(query, raw_logits)
+      combined = raw_calibrated + gate * score_scale * horizon_delta
     """
 
     def __init__(self, backbone, encoder, decoder,
@@ -144,15 +143,17 @@ class LINEAWithEntropyB(LINEA):
         features = self.encoder(features, entropy_map=entropy_map)
         out = self.decoder(features, targets)
 
-        # 移除 hs_last（不需要时清理；需要时由 horizon head 消费）
-        hs_last = out.pop('hs_last', None)
+        # 取出 hs_stack（decoder 暴露的多层隐状态）
+        hs_stack = out.pop('hs_stack', None)
 
-        if self.enable_horizon_head and self.horizon_head is not None and hs_last is not None:
+        if self.enable_horizon_head and self.horizon_head is not None and hs_stack is not None:
             img_h, img_w = samples.shape[2], samples.shape[3]
+            raw_logits = out['pred_logits']
 
-            horizon_logit, fusion_gate, score_scale = self.horizon_head(
-                hs_last=hs_last,
+            horizon_delta, fusion_gate, raw_calibrated, score_scale = self.horizon_head(
+                hs_stack=hs_stack,
                 pred_lines=out['pred_lines'],
+                raw_logits=raw_logits,
                 encoder_feat=features[0],
                 images=samples,
                 entropy_map=entropy_map,
@@ -160,18 +161,16 @@ class LINEAWithEntropyB(LINEA):
                 img_w=img_w,
             )
 
-            raw_logits = out['pred_logits']
-
             if fusion_gate is not None:
-                # 候选线自适应融合
-                combined = raw_logits + score_scale * fusion_gate * horizon_logit
+                # calibrated residual fusion
+                combined = raw_calibrated + score_scale * fusion_gate * horizon_delta
                 out['pred_fusion_gate'] = fusion_gate
             else:
-                # 回退：全局标量融合
-                combined = raw_logits + score_scale * horizon_logit
+                combined = raw_calibrated + score_scale * horizon_delta
 
             out['pred_logits_raw_det'] = raw_logits
-            out['pred_logits_horizon'] = horizon_logit
+            out['pred_logits_raw_calibrated'] = raw_calibrated
+            out['pred_logits_horizon'] = horizon_delta
             out['pred_logits_combined'] = combined
             out['pred_logits'] = combined
 
@@ -211,6 +210,9 @@ def build_linea_with_entropy_b(args):
             use_gradient_context=getattr(args, 'horizon_use_gradient_context', True),
             use_geometry=getattr(args, 'horizon_use_geometry', True),
             use_adaptive_fusion_gate=getattr(args, 'horizon_use_adaptive_fusion_gate', True),
+            use_multilayer_query=getattr(args, 'horizon_use_multilayer_query', True),
+            num_query_layers=getattr(args, 'horizon_num_query_layers', 3),
+            use_scale_attention=getattr(args, 'horizon_use_scale_attention', True),
             score_init_scale=getattr(args, 'horizon_score_init_scale', 0.1),
         )
 
