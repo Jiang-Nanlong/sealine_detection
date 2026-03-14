@@ -1,9 +1,12 @@
 """
 entropy_branch.py — 局部熵特征提取分支
 
-提供两种分支：
-  1. EntropyBranch        — 原始单尺度分支 (向后兼容 LINEA_ENTROPY)
-  2. MultiScaleEntropyBranch — 多尺度门控分支 (用于 LINEA_ENTROPY_A)
+提供以下模块：
+  1. EntropyBranch            — 原始单尺度分支 (向后兼容 LINEA_ENTROPY)
+  2. EntropyQualityEstimator  — 熵先验质量评估模块 (Scheme 3)
+  3. AdaptiveResidualGate     — 实例自适应残差门控 (Scheme 1)
+  4. GatedFiLMLayer           — SG-CFM 空间门控通道调制 (Scheme 4 修复版)
+  5. MultiScaleEntropyBranch  — 多尺度自适应熵注入分支 (用于 LINEA_ENTROPY_A)
 
 直接运行本文件可进行 shape 自测。
 """
@@ -52,31 +55,100 @@ class EntropyBranch(nn.Module):
 
 
 # ============================================================
-# 单层门控调制模块 (GatedFiLM)
+# 熵先验质量评估模块 (Scheme 3)
+# ============================================================
+class EntropyQualityEstimator(nn.Module):
+    """
+    评估当前 entropy_map 是否包含可靠的海天线先验信号。
+
+    输入 : [B, 1, H, W]  — 原始局部熵图
+    输出 : [B, 1, 1, 1]  — 质量分数 q ∈ [0, 1]
+
+    q → 0 表示熵图不可靠（如强反光/雾天），整个熵注入被抑制；
+    q → 1 表示熵图包含清晰的海天线信号，正常注入。
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.AdaptiveAvgPool2d(8),      # [B, 1, 8, 8]
+            nn.Flatten(1),                # [B, 64]
+            nn.Linear(64, 32),
+            nn.ReLU(inplace=True),
+            nn.Linear(32, 1),
+        )
+        # 初始化最后一层 bias 使 sigmoid 输出 ≈ 0.5（中性起步）
+        nn.init.constant_(self.net[-1].bias, 0.0)
+
+    def forward(self, entropy_map: torch.Tensor) -> torch.Tensor:
+        return torch.sigmoid(self.net(entropy_map)).view(-1, 1, 1, 1)  # [B, 1, 1, 1]
+
+
+# ============================================================
+# 实例自适应残差门控 (Scheme 1)
+# ============================================================
+class AdaptiveResidualGate(nn.Module):
+    """
+    基于主干特征与熵特征的联合上下文，为每个样本、每个层级
+    动态生成残差融合权重 g ∈ [0, 1]。
+
+    g → 0: 完全忽略 FiLM 调制（保持原始特征）
+    g → 1: 完全应用 FiLM 调制
+
+    输入 :
+      feat     [B, C, H, W] — 主干 proj_feat
+      ent_feat [B, C, H, W] — 熵特征
+    输出 :
+      gate     [B, 1, 1, 1] — 实例级残差门
+    """
+
+    def __init__(self, channels):
+        super().__init__()
+        self.gate = nn.Sequential(
+            nn.Linear(channels * 2, channels // 4),
+            nn.ReLU(inplace=True),
+            nn.Linear(channels // 4, 1),
+        )
+        # 初始化 bias 使 sigmoid(-2) ≈ 0.12，起步时保守注入
+        nn.init.constant_(self.gate[-1].bias, -2.0)
+
+    def forward(self, feat: torch.Tensor, ent_feat: torch.Tensor) -> torch.Tensor:
+        # 全局平均池化后拼接
+        f_pool = feat.mean(dim=[2, 3])       # [B, C]
+        e_pool = ent_feat.mean(dim=[2, 3])   # [B, C]
+        g = torch.sigmoid(self.gate(torch.cat([f_pool, e_pool], dim=1)))  # [B, 1]
+        return g.unsqueeze(-1).unsqueeze(-1)  # [B, 1, 1, 1]
+
+
+# ============================================================
+# 单层门控调制模块 (SG-CFM: Spatially-Gated Channel-wise Feature Modulation)
 # ============================================================
 class GatedFiLMLayer(nn.Module):
     """
-    对单个尺度 proj_feat 进行门控 FiLM 调制。
+    对单个尺度 proj_feat 进行门控 FiLM 调制 + 实例自适应残差门控。
 
     给定 entropy feature (与 feat 同尺寸同通道)，产生：
       - spatial_gate : [B, 1, H, W]   — 空间位置门
       - gamma        : [B, C, 1, 1]   — 通道乘性调制
       - beta         : [B, C, 1, 1]   — 通道加性调制
-      - ent_feat_out : [B, C, H, W]   — 空间熵特征（加性分量）
 
-    融合公式：
-      modulated = feat * (1 + alpha * tanh(gamma) * spatial_gate)
-                + alpha * ent_feat * spatial_gate
-                + alpha * beta
+    融合公式 (方案 4 修复版)：
+      α⁺ = softplus(alpha)                               # 保证非负
+      delta = α⁺ · tanh(γ) · sg · feat                   # 乘性调制
+            + α⁺ · ent_feat · sg                          # 加性熵注入
+            + α⁺ · β · sg                                 # 通道偏置（也过空间门）
+      modulated = feat + g · delta                        # g 为实例自适应残差门
 
-    alpha 初始化为 0.1 使模块从训练起即有小幅作用。
+    alpha 初始化为 0.0 (零初始化残差)，训练时由梯度驱动增长。
     """
 
-    def __init__(self, channels, use_spatial_gate=True, use_channel_mod=True):
+    def __init__(self, channels, use_spatial_gate=True, use_channel_mod=True,
+                 use_adaptive_gate=True):
         super().__init__()
         self.channels = channels
         self.use_spatial_gate = use_spatial_gate
         self.use_channel_mod = use_channel_mod
+        self.use_adaptive_gate = use_adaptive_gate
 
         # 空间门：entropy_feat → 1-channel sigmoid gate
         if use_spatial_gate:
@@ -96,8 +168,12 @@ class GatedFiLMLayer(nn.Module):
                 nn.Linear(channels // 4, channels * 2),  # gamma + beta
             )
 
-        # 可学习缩放因子，初始化 0.1 使模块起步便有作用
-        self.alpha = nn.Parameter(torch.tensor(0.1))
+        # 实例自适应残差门控 (Scheme 1)
+        if use_adaptive_gate:
+            self.residual_gate = AdaptiveResidualGate(channels)
+
+        # 可学习缩放因子，零初始化 (方案 4)
+        self.alpha = nn.Parameter(torch.tensor(0.0))
 
     def forward(self, feat, ent_feat):
         """
@@ -108,7 +184,8 @@ class GatedFiLMLayer(nn.Module):
         Returns:
             modulated: [B, C, H, W] — 调制后的特征
         """
-        alpha = self.alpha
+        # softplus 保证 alpha 非负 (方案 4)
+        alpha = F.softplus(self.alpha)
 
         # spatial gate
         if self.use_spatial_gate:
@@ -128,12 +205,20 @@ class GatedFiLMLayer(nn.Module):
                                 device=feat.device, dtype=feat.dtype)
             beta = torch.zeros_like(gamma)
 
-        # 门控 FiLM 融合
-        modulated = (
-            feat * (1.0 + alpha * torch.tanh(gamma) * sg)
+        # 计算调制增量 delta (方案 4: β 也过空间门)
+        delta = (
+            alpha * torch.tanh(gamma) * sg * feat
             + alpha * ent_feat * sg
-            + alpha * beta
+            + alpha * beta * sg
         )
+
+        # 实例自适应残差门控 (方案 1)
+        if self.use_adaptive_gate:
+            g = self.residual_gate(feat, ent_feat)  # [B, 1, 1, 1]
+            modulated = feat + g * delta
+        else:
+            modulated = feat + delta
+
         return modulated
 
 
@@ -165,13 +250,19 @@ class MultiScaleEntropyBranch(nn.Module):
 
     def __init__(self, hidden_dim=256, inject_levels=(0, 1, 2),
                  feat_strides=(8, 16, 32),
-                 use_spatial_gate=True, use_channel_mod=True):
+                 use_spatial_gate=True, use_channel_mod=True,
+                 use_adaptive_gate=True, use_quality_gate=True):
         super().__init__()
         self.hidden_dim = hidden_dim
         self.inject_levels = list(inject_levels)
         self.feat_strides = list(feat_strides)
         self.use_spatial_gate = use_spatial_gate
         self.use_channel_mod = use_channel_mod
+        self.use_quality_gate = use_quality_gate
+
+        # 熵先验质量评估 (Scheme 3)
+        if use_quality_gate:
+            self.quality_estimator = EntropyQualityEstimator()
 
         # 共享 stem: [B,1,H,W] → [B, stem_ch, H/4, W/4]  (stride=4)
         stem_ch = 64
@@ -214,19 +305,29 @@ class MultiScaleEntropyBranch(nn.Module):
                 hidden_dim,
                 use_spatial_gate=use_spatial_gate,
                 use_channel_mod=use_channel_mod,
+                use_adaptive_gate=use_adaptive_gate,
             )
 
     def extract_entropy_features(self, entropy_map):
         """
         提取各级熵特征 (不做 FiLM 调制本身)。
 
+        如果启用了 quality_gate，则用质量分数 q 对所有层级的
+        熵特征做统一缩放，使不可靠的熵图被自动抑制。
+
         Returns:
             dict: {level_idx: ent_feat_tensor}
         """
+        # 质量评估 (Scheme 3)
+        if self.use_quality_gate:
+            q = self.quality_estimator(entropy_map)  # [B, 1, 1, 1]
+        else:
+            q = 1.0
+
         stem_feat = self.stem(entropy_map)  # [B, stem_ch, H/4, W/4]
         ent_feats = {}
         for lvl in self.inject_levels:
-            ent_feats[lvl] = self.level_heads[str(lvl)](stem_feat)
+            ent_feats[lvl] = self.level_heads[str(lvl)](stem_feat) * q
         return ent_feats
 
     def modulate(self, lvl, feat, ent_feat):
@@ -257,13 +358,15 @@ def main():
     print('input :', tuple(x.shape))
     print('output:', tuple(y.shape))  # expected [B, 256, H/2, W/2]
 
-    print("\n=== MultiScaleEntropyBranch (gated FiLM) ===")
+    print("\n=== MultiScaleEntropyBranch (gated FiLM + quality/adaptive gates) ===")
     ms_branch = MultiScaleEntropyBranch(
         hidden_dim=256,
         inject_levels=[0, 1, 2],
         feat_strides=[8, 16, 32],
         use_spatial_gate=True,
         use_channel_mod=True,
+        use_adaptive_gate=True,
+        use_quality_gate=True,
     )
     ent_map = torch.randn(TEST_BATCH, 1, TEST_H, TEST_W)
     ent_feats = ms_branch.extract_entropy_features(ent_map)

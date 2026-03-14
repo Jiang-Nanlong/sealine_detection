@@ -18,7 +18,7 @@ _base_ = [
 # ============================================================
 # 输出目录（独立于旧实验）
 # ============================================================
-output_dir = 'output/linea_entropy_a_musid_e150'
+output_dir = 'output/linea_entropy_a_musid_v2_e150'
 
 # ============================================================
 # 模型
@@ -50,13 +50,15 @@ reg_scale = 4
 weight_dict = {'loss_logits': 4, 'loss_line': 5}
 
 # ============================================================
-# 主线 A 新增配置 — 多层门控 FiLM 熵注入
+# 主线 A 新增配置 — 多层门控 FiLM 熵注入 + 自适应门控
 # ============================================================
 enable_multiscale_entropy = True
 entropy_inject_levels = [0, 1, 2]
 entropy_fusion_type = 'gated_film'
 entropy_use_spatial_gate = True
 entropy_use_channel_modulation = True
+entropy_use_adaptive_gate = True       # 实例自适应残差门控 (IARG)
+entropy_use_quality_gate = True        # 熵先验质量评估门控
 
 # ============================================================
 # 数据集

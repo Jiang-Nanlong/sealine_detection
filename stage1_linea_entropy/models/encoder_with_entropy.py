@@ -146,6 +146,8 @@ class HybridEncoderWithEntropyA(HybridEncoderAsymConv):
                  entropy_inject_levels=(0, 1, 2),
                  entropy_use_spatial_gate=True,
                  entropy_use_channel_modulation=True,
+                 entropy_use_adaptive_gate=True,
+                 entropy_use_quality_gate=True,
                  **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -159,6 +161,8 @@ class HybridEncoderWithEntropyA(HybridEncoderAsymConv):
                 feat_strides=self.feat_strides[:self.n_levels],
                 use_spatial_gate=entropy_use_spatial_gate,
                 use_channel_mod=entropy_use_channel_modulation,
+                use_adaptive_gate=entropy_use_adaptive_gate,
+                use_quality_gate=entropy_use_quality_gate,
             )
         else:
             # 回退到单层加性注入 (类似旧版)
@@ -238,6 +242,8 @@ def build_hybrid_encoder_with_entropy_a(args):
     inject_levels = getattr(args, 'entropy_inject_levels', [0, 1, 2])
     use_sg = getattr(args, 'entropy_use_spatial_gate', True)
     use_cm = getattr(args, 'entropy_use_channel_modulation', True)
+    use_ag = getattr(args, 'entropy_use_adaptive_gate', True)
+    use_qg = getattr(args, 'entropy_use_quality_gate', True)
 
     return HybridEncoderWithEntropyA(
         in_channels=args.in_channels_encoder,
@@ -258,4 +264,6 @@ def build_hybrid_encoder_with_entropy_a(args):
         entropy_inject_levels=inject_levels,
         entropy_use_spatial_gate=use_sg,
         entropy_use_channel_modulation=use_cm,
+        entropy_use_adaptive_gate=use_ag,
+        entropy_use_quality_gate=use_qg,
     )
