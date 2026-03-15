@@ -44,3 +44,4 @@ output/linea_entropy_a_musid_e150
 weight
 output/linea_entropy_b_musid_e100
 output/linea_entropy_a_musid_v2_e150/*.pth
+output/linea_entropy_a_musid_v3_e150/*.pth
