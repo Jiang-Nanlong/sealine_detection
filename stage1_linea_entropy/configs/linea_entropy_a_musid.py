@@ -18,7 +18,7 @@ _base_ = [
 # ============================================================
 # 输出目录（独立于旧实验）
 # ============================================================
-output_dir = 'output/linea_entropy_a_musid_v2_e150'
+output_dir = 'output/linea_entropy_a_musid_v3_e150'
 
 # ============================================================
 # 模型
@@ -53,7 +53,7 @@ weight_dict = {'loss_logits': 4, 'loss_line': 5}
 # 主线 A 新增配置 — 多层门控 FiLM 熵注入 + 自适应门控
 # ============================================================
 enable_multiscale_entropy = True
-entropy_inject_levels = [0, 1, 2]
+entropy_inject_levels = [0]
 entropy_fusion_type = 'gated_film'
 entropy_use_spatial_gate = True
 entropy_use_channel_modulation = True

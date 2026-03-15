@@ -35,7 +35,7 @@ import stage1_linea_entropy.models
 # ============================================================
 MODE = "entropy_a"                # "baseline" / "entropy" / "entropy_a" / "entropy_b"
 CONFIG_FILE = "stage1_linea_entropy/configs/linea_entropy_a_musid.py"
-WEIGHTS_PATH = "output/linea_entropy_a_musid_v2_e150/best_checkpoint.pth"                # 权重文件路径（.pth）
+WEIGHTS_PATH = "output/linea_entropy_a_musid_v3_e150/best_checkpoint.pth"                # 权重文件路径（.pth）
 DEVICE = "cuda"
 
 CSV_FILE = ""                    # 留空则由 config / build_musid_dataset 自动决定
@@ -47,7 +47,7 @@ IMG_SIZE = 640
 BATCH_SIZE = 1
 NUM_WORKERS = 0
 
-SAVE_ROOT = "stage1_linea_entropy/test_outputs_v2"
+SAVE_ROOT = "stage1_linea_entropy/test_outputs_v3"
 SAVE_VIS = True
 SAVE_VIS_MAX = 100
 
