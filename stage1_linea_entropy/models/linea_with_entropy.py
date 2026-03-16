@@ -127,16 +127,22 @@ class LINEAWithEntropyB(LINEA):
     LINEA 子类，encoder 使用 HybridEncoderWithEntropy，
     decoder 输出经 HorizonScoringHead 增强。
 
-    v3 融合公式：
-      raw_calibrated = RawCalibrationHead(query, raw_logits)
-      combined = raw_calibrated + gate * score_scale * horizon_delta
+    融合公式（取决于 use_raw_calibration）：
+      use_raw_calibration=True :
+        base = RawCalibrationHead(query, raw_logits)
+      use_raw_calibration=False:
+        base = raw_logits  (无快捷路径，迫使梯度经过 horizon 分支)
+
+      combined = base + score_scale * [gate *] horizon_delta
     """
 
     def __init__(self, backbone, encoder, decoder,
-                 horizon_head=None, enable_horizon_head=True):
+                 horizon_head=None, enable_horizon_head=True,
+                 use_raw_calibration=True):
         super().__init__(backbone, encoder, decoder)
         self.enable_horizon_head = enable_horizon_head
         self.horizon_head = horizon_head
+        self.use_raw_calibration = use_raw_calibration
 
     def forward(self, samples, targets=None, entropy_map=None):
         features = self.backbone(samples)
@@ -161,12 +167,14 @@ class LINEAWithEntropyB(LINEA):
                 img_w=img_w,
             )
 
+            # 选择基础 logit：有校准头则用校准后的，否则直接用 raw
+            base_logits = raw_calibrated if self.use_raw_calibration else raw_logits
+
             if fusion_gate is not None:
-                # calibrated residual fusion
-                combined = raw_calibrated + score_scale * fusion_gate * horizon_delta
+                combined = base_logits + score_scale * fusion_gate * horizon_delta
                 out['pred_fusion_gate'] = fusion_gate
             else:
-                combined = raw_calibrated + score_scale * horizon_delta
+                combined = base_logits + score_scale * horizon_delta
 
             out['pred_logits_raw_det'] = raw_logits
             out['pred_logits_raw_calibrated'] = raw_calibrated
@@ -220,6 +228,7 @@ def build_linea_with_entropy_b(args):
         backbone, encoder, decoder,
         horizon_head=horizon_head,
         enable_horizon_head=enable_hh,
+        use_raw_calibration=getattr(args, 'horizon_use_raw_calibration', True),
     )
 
     postprocessors = PostProcess()

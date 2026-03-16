@@ -18,7 +18,7 @@ _base_ = [
 # ============================================================
 # 输出目录（独立于旧实验）
 # ============================================================
-output_dir = 'output/linea_entropy_b_musid_v1_e150'
+output_dir = 'output/linea_entropy_b_musid_v2_e150'
 
 # ============================================================
 # 模型
@@ -59,12 +59,13 @@ horizon_use_feat_context = True
 horizon_use_entropy_context = True
 horizon_use_gradient_context = True
 horizon_use_geometry = True
-horizon_use_adaptive_fusion_gate = True
+horizon_use_adaptive_fusion_gate = False   # v2: 禁用 gate（防止 gate 塌缩屏蔽 horizon 分支）
 horizon_use_multilayer_query = True
 horizon_num_query_layers = 3
 horizon_use_scale_attention = True
-horizon_score_init_scale = 0.1
+horizon_score_init_scale = 1.0             # v2: 0.1→1.0（增强 horizon delta 梯度信号）
 horizon_hidden_dim = 256
+horizon_use_raw_calibration = False        # v2: 禁用 calibration 快捷路径
 
 # ============================================================
 # 数据集
