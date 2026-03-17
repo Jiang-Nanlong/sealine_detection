@@ -1,27 +1,27 @@
 {
   "mode": "entropy_b",
-  "weights_path": "output/linea_entropy_b_musid_v1_e150/best_checkpoint.pth",
+  "weights_path": "output/linea_entropy_b_musid_v2_e150/best_checkpoint.pth",
   "has_horizon_head": true,
   "num_samples": 268,
   "num_images_with_no_lines": 0,
   "num_images_with_no_candidate": 0,
   "num_valid_predictions": 268,
   "avg_num_lines": 1100.0,
-  "mean_endpoint_error": 7.211972581521489,
-  "median_endpoint_error": 0.2820510973882696,
-  "max_endpoint_error": 230.02338499227352,
-  "min_endpoint_error": 0.02095241059328401,
-  "std_endpoint_error": 30.54324903080191,
+  "mean_endpoint_error": 10.020485746354987,
+  "median_endpoint_error": 0.24638484514074932,
+  "max_endpoint_error": 370.25703377151183,
+  "min_endpoint_error": 0.007740746938191521,
+  "std_endpoint_error": 52.799029962836315,
   "pct_le_5": 92.91044776119402,
-  "pct_le_10": 94.02985074626866,
-  "pct_le_20": 94.77611940298507,
-  "pct_le_50": 95.52238805970148,
+  "pct_le_10": 94.40298507462687,
+  "pct_le_20": 95.8955223880597,
+  "pct_le_50": 97.01492537313433,
   "best_sample": {
     "stem": "DSC_1635_3",
-    "endpoint_error": 0.02095241059328401
+    "endpoint_error": 0.007740746938191521
   },
   "worst_sample": {
-    "stem": "DSC_1596_7",
-    "endpoint_error": 230.02338499227352
+    "stem": "DSC_2177_5",
+    "endpoint_error": 370.25703377151183
   }
 }
