@@ -2,8 +2,9 @@
 stage1_linea_entropy/datasets — MU-SID dataset 构建入口
 
 模式控制（通过 args.entropy_mode）：
-  'baseline' → include_entropy=False, dataset 返回 2-tuple (image, target)
-  'entropy'  → include_entropy=True,  dataset 返回 4-tuple (image, target, entropy_map, meta)
+  'baseline'   → include_entropy=False, dataset 返回 2-tuple (image, target)
+  'entropy'    → include_entropy=True,  dataset 返回 4-tuple, entropy_map [1, H, W]
+  'entropy_ms' → include_entropy=True,  dataset 返回 4-tuple, entropy_map [3, H, W] (多尺度)
 
 使用方式：
   from stage1_linea_entropy.datasets import build_musid_dataset
@@ -17,7 +18,7 @@ stage1_linea_entropy/datasets — MU-SID dataset 构建入口
   eval_spatial_size  : list or int — 正方形尺寸 (e.g. [640, 640] 或 640)
 
 可选 args 字段：
-  entropy_mode       : str  — 'baseline' / 'entropy'（默认 'baseline'）
+  entropy_mode       : str  — 'baseline' / 'entropy' / 'entropy_ms'（默认 'baseline'）
 """
 
 import os
@@ -52,7 +53,8 @@ def build_musid_dataset(image_set, args):
         sz = sz[0]
 
     mode = getattr(args, 'entropy_mode', 'baseline')
-    include_entropy = (mode == 'entropy')
+    include_entropy = (mode in ('entropy', 'entropy_ms'))
+    multiscale_entropy = (mode == 'entropy_ms')
 
     return MUSIDLineaEntropyDataset(
         csv_file=csv_file,
@@ -61,4 +63,5 @@ def build_musid_dataset(image_set, args):
         img_size=sz,
         image_set=image_set,
         include_entropy=include_entropy,
+        multiscale_entropy=multiscale_entropy,
     )

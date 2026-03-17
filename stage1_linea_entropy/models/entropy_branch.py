@@ -55,6 +55,157 @@ class EntropyBranch(nn.Module):
 
 
 # ============================================================
+# 多尺度熵先验提取分支 (Multi-Scale Local Entropy Prior, MSLEP)
+# ============================================================
+class MultiScaleEntropyPriorBranch(nn.Module):
+    """
+    多尺度熵先验提取: 接受 N 通道熵图 (不同窗口尺度), CNN 提取后输出 [B, 256, H/2, W/2].
+
+    Input : [B, in_channels, H, W]   — 多尺度熵图 (如 3 通道: 5x5, 11x11, 21x21 窗口)
+    Output: [B, 256, H/2, W/2]
+
+    与原始 EntropyBranch 的区别:
+      1. in_channels 可配置 (1 or 3 or N)
+      2. 第一个 conv 用 in_channels 通道输入
+    """
+
+    def __init__(self, in_channels=3):
+        super().__init__()
+        self.in_channels = in_channels
+        self.net = nn.Sequential(
+            nn.Conv2d(in_channels, 64, kernel_size=3, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+
+            nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1, bias=False),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+
+            nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1, bias=False),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+        )
+        self.out_channels = 256
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """x: [B, in_channels, H, W] — 多尺度局部熵图"""
+        return self.net(x)
+
+
+# ============================================================
+# 空间自适应注入模块 (Spatial Adaptive Injection, SAI)
+# ============================================================
+class SpatialAdaptiveInjection(nn.Module):
+    """
+    生成空间注意力权重图, 控制每个位置的熵注入强度.
+
+    不同空间位置对熵信息的依赖程度不同:
+      - 海天线附近区域应获得更强的熵注入信号
+      - 天空/水面纯色区域的熵信息噪声较大, 应被抑制
+
+    Input:
+      proj_feat   : [B, C, H, W] — encoder 投影特征
+      entropy_feat: [B, C, H, W] — 熵分支提取的特征
+
+    Output:
+      injected    : [B, C, H, W] — 注入后的特征
+
+    公式:
+      attn = σ(Conv1x1(entropy_feat))       # 空间注意力 [B, 1, H, W]
+      injected = proj_feat + attn * entropy_feat
+    """
+
+    def __init__(self, channels=256):
+        super().__init__()
+        self.attn_conv = nn.Sequential(
+            nn.Conv2d(channels, channels // 4, 1, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(channels // 4, 1, 1, bias=True),
+        )
+        # 初始化: bias 设小正值, 使初始 attn ≈ 0.5 (不完全屏蔽)
+        nn.init.zeros_(self.attn_conv[-1].weight)
+        nn.init.zeros_(self.attn_conv[-1].bias)
+
+    def forward(self, proj_feat, entropy_feat):
+        attn = torch.sigmoid(self.attn_conv(entropy_feat))  # [B, 1, H, W]
+        return proj_feat + attn * entropy_feat, attn
+
+
+# ============================================================
+# 熵引导注意力偏置模块 (Entropy-Guided Attention Bias, EGAB)
+# ============================================================
+class EntropyGuidedAttentionBias(nn.Module):
+    """
+    在 decoder cross-attention 输出后, 用熵图引导对 attention 结果做空间加权.
+
+    核心思想: 将熵图下采样到各 encoder 特征层级的分辨率,
+    对 decoder 隐状态做 cross-attention 后的残差修正:
+      delta = MLP(query || entropy_at_refpoints)
+      output = output + alpha * delta
+
+    也支持直接对 encoder memory 在 cross-attn 前做熵值加权.
+
+    两种模式:
+      1. 'post_attn' — 在 cross-attention 后做残差修正 （默认, 安全）
+      2. 'memory_bias' — 对 encoder memory 做逐位置熵值加权
+    """
+
+    def __init__(self, d_model=256, mode='post_attn'):
+        super().__init__()
+        self.d_model = d_model
+        self.mode = mode
+
+        if mode == 'post_attn':
+            # 轻量 MLP: 从 query + 采样熵值 → 残差修正
+            self.entropy_proj = nn.Sequential(
+                nn.Linear(d_model + 1, d_model // 4),
+                nn.ReLU(inplace=True),
+                nn.Linear(d_model // 4, d_model),
+            )
+            self.alpha = nn.Parameter(torch.tensor(0.0))
+            # 零初始化: 初始时不影响原始行为
+            nn.init.zeros_(self.entropy_proj[-1].weight)
+            nn.init.zeros_(self.entropy_proj[-1].bias)
+
+        elif mode == 'memory_bias':
+            # 从熵值生成逐位置缩放因子
+            self.bias_proj = nn.Sequential(
+                nn.Linear(1, d_model // 4),
+                nn.ReLU(inplace=True),
+                nn.Linear(d_model // 4, d_model),
+            )
+            self.alpha = nn.Parameter(torch.tensor(0.0))
+            nn.init.zeros_(self.bias_proj[-1].weight)
+            nn.init.zeros_(self.bias_proj[-1].bias)
+
+    def compute_memory_bias(self, entropy_flat):
+        """
+        对 flattened encoder memory 做熵值偏置.
+
+        Args:
+            entropy_flat: [B, sum_HW, 1] — 各层级展平后的熵值
+
+        Returns:
+            bias: [B, sum_HW, d_model] — 加到 memory 上的偏置
+        """
+        return F.softplus(self.alpha) * self.bias_proj(entropy_flat)
+
+    def compute_post_attn_residual(self, query, entropy_at_ref):
+        """
+        Cross-attention 后的残差修正.
+
+        Args:
+            query          : [nq, B, d_model]
+            entropy_at_ref : [nq, B, 1] — 参考点处的熵值
+
+        Returns:
+            delta: [nq, B, d_model]
+        """
+        x = torch.cat([query, entropy_at_ref], dim=-1)  # [nq, B, d_model+1]
+        return F.softplus(self.alpha) * self.entropy_proj(x)
+
+
+# ============================================================
 # 熵先验质量评估模块 (Scheme 3)
 # ============================================================
 class EntropyQualityEstimator(nn.Module):

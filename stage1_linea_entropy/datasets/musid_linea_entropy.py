@@ -107,16 +107,22 @@ class MUSIDLineaEntropyDataset(Dataset):
     使用 letterbox（等比缩放 + 右下角零填充）到正方形。
 
     Args:
-        csv_file       : MU-SID split CSV (stem, x1, y1, x2, y2, ...)
-        img_dir        : 原始图像目录
-        entropy_dir    : 预计算 entropy .npy 目录
-        img_size       : 输出正方形尺寸（默认 640）
-        image_set      : 'train' / 'val' / 'test'
-        include_entropy: True → 返回 4-tuple; False → 返回 2-tuple (baseline)
+        csv_file            : MU-SID split CSV (stem, x1, y1, x2, y2, ...)
+        img_dir             : 原始图像目录
+        entropy_dir         : 预计算 entropy .npy 目录
+        img_size            : 输出正方形尺寸（默认 640）
+        image_set           : 'train' / 'val' / 'test'
+        include_entropy     : True → 返回 4-tuple; False → 返回 2-tuple (baseline)
+        multiscale_entropy  : True → entropy_map [3, sz, sz] (MSLEP 多尺度);
+                              False → entropy_map [1, sz, sz] (默认单通道)
     """
 
+    # MSLEP 多尺度平均池化核大小 —— 从细节到粗粒度
+    _MS_KERNELS = [1, 5, 11]
+
     def __init__(self, csv_file, img_dir, entropy_dir,
-                 img_size=640, image_set='train', include_entropy=True):
+                 img_size=640, image_set='train', include_entropy=True,
+                 multiscale_entropy=False):
         if not os.path.isfile(csv_file):
             raise FileNotFoundError(f'CSV not found: {csv_file}')
         if not os.path.isdir(img_dir):
@@ -130,6 +136,7 @@ class MUSIDLineaEntropyDataset(Dataset):
         self.sz = int(img_size)
         self.image_set = image_set
         self.include_entropy = include_entropy
+        self.multiscale_entropy = multiscale_entropy
         self.is_train = 'train' in image_set
 
     def __len__(self):
@@ -215,7 +222,23 @@ class MUSIDLineaEntropyDataset(Dataset):
             'new_h': new_h,
         }
         if self.include_entropy:
-            entropy_tensor = torch.from_numpy(ent_sq).unsqueeze(0)  # [1, sz, sz]
+            ent_tensor = torch.from_numpy(ent_sq).unsqueeze(0)  # [1, sz, sz]
+            if self.multiscale_entropy:
+                # MSLEP: 用不同大小的平均池化构造多尺度 entropy 通道
+                channels = []
+                for k in self._MS_KERNELS:
+                    if k <= 1:
+                        channels.append(ent_tensor)
+                    else:
+                        pad = k // 2
+                        smoothed = torch.nn.functional.avg_pool2d(
+                            ent_tensor.unsqueeze(0), kernel_size=k,
+                            stride=1, padding=pad,
+                        ).squeeze(0)  # [1, sz, sz]
+                        channels.append(smoothed)
+                entropy_tensor = torch.cat(channels, dim=0)  # [3, sz, sz]
+            else:
+                entropy_tensor = ent_tensor  # [1, sz, sz]
             return image_tensor, target, entropy_tensor, meta
         else:
             return image_tensor, target, meta

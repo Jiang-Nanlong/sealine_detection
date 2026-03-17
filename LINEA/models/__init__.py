@@ -21,6 +21,10 @@ def _build_linea_with_entropy_b_lazy(args):
     from stage1_linea_entropy.models.linea_with_entropy import build_linea_with_entropy_b
     return build_linea_with_entropy_b(args)
 
+def _build_linea_with_entropy_b_enhanced_lazy(args):
+    from stage1_linea_entropy.models.linea_with_entropy import build_linea_with_entropy_b_enhanced
+    return build_linea_with_entropy_b_enhanced(args)
+
 if 'LINEA_ENTROPY' not in MODULE_BUILD_FUNCS._module_dict:
     MODULE_BUILD_FUNCS.registe_with_name(module_name='LINEA_ENTROPY')(_build_linea_with_entropy_lazy)
 
@@ -29,4 +33,7 @@ if 'LINEA_ENTROPY_A' not in MODULE_BUILD_FUNCS._module_dict:
 
 if 'LINEA_ENTROPY_B' not in MODULE_BUILD_FUNCS._module_dict:
     MODULE_BUILD_FUNCS.registe_with_name(module_name='LINEA_ENTROPY_B')(_build_linea_with_entropy_b_lazy)
+
+if 'LINEA_ENTROPY_B_ENHANCED' not in MODULE_BUILD_FUNCS._module_dict:
+    MODULE_BUILD_FUNCS.registe_with_name(module_name='LINEA_ENTROPY_B_ENHANCED')(_build_linea_with_entropy_b_enhanced_lazy)
 

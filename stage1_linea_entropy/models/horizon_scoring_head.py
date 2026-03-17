@@ -238,7 +238,8 @@ class HorizonScoringHead(nn.Module):
                  use_adaptive_fusion_gate=True,
                  use_multilayer_query=True, num_query_layers=3,
                  use_scale_attention=True,
-                 score_init_scale=0.1):
+                 score_init_scale=0.1,
+                 clamp_delta=False):
         super().__init__()
         self.use_feat_context = use_feat_context
         self.use_entropy_context = use_entropy_context
@@ -247,6 +248,7 @@ class HorizonScoringHead(nn.Module):
         self.use_adaptive_fusion_gate = use_adaptive_fusion_gate
         self.use_multilayer_query = use_multilayer_query
         self.use_scale_attention = use_scale_attention
+        self.clamp_delta = clamp_delta
         self.num_classes = num_classes
 
         n_widths = len(band_widths)
@@ -468,6 +470,8 @@ class HorizonScoringHead(nn.Module):
         # --- Horizon delta ---
         x = torch.cat(head_parts, dim=-1)
         horizon_delta = self.head(x)
+        if self.clamp_delta:
+            horizon_delta = torch.tanh(horizon_delta)
 
         # --- Raw calibration ---
         raw_calibrated = self.raw_calibration(query_feat, raw_logits)
