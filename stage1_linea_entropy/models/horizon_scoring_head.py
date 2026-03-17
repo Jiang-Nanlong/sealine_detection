@@ -239,7 +239,8 @@ class HorizonScoringHead(nn.Module):
                  use_multilayer_query=True, num_query_layers=3,
                  use_scale_attention=True,
                  score_init_scale=0.1,
-                 clamp_delta=False):
+                 clamp_delta=False,
+                 entropy_channels=1):
         super().__init__()
         self.use_feat_context = use_feat_context
         self.use_entropy_context = use_entropy_context
@@ -278,7 +279,7 @@ class HorizonScoringHead(nn.Module):
         # Entropy context
         if use_entropy_context:
             self.ent_sampler = MultiScaleContextSampler(num_sample_points, band_widths)
-            ent_triple = 3  # 1-ch * 3 (c, u, l)
+            ent_triple = entropy_channels * 3  # channels * 3 (center, upper, lower)
             ent_enc_dim = max(32, hidden_dim // 4)
             self.ent_scale_encs = nn.ModuleList([
                 nn.Sequential(nn.Linear(ent_triple, ent_enc_dim), nn.ReLU(inplace=True))

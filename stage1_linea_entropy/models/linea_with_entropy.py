@@ -226,6 +226,7 @@ def build_linea_with_entropy_b(args):
             use_scale_attention=getattr(args, 'horizon_use_scale_attention', True),
             score_init_scale=getattr(args, 'horizon_score_init_scale', 0.1),
             clamp_delta=getattr(args, 'horizon_clamp_delta', False),
+            entropy_channels=getattr(args, 'entropy_in_channels', 1),
         )
 
     model = LINEAWithEntropyB(
@@ -427,6 +428,7 @@ def build_linea_with_entropy_b_enhanced(args):
             use_scale_attention=getattr(args, 'horizon_use_scale_attention', True),
             score_init_scale=getattr(args, 'horizon_score_init_scale', 1.0),
             clamp_delta=getattr(args, 'horizon_clamp_delta', False),
+            entropy_channels=getattr(args, 'entropy_in_channels', 1),
         )
 
     model = LINEAWithEntropyBEnhanced(
