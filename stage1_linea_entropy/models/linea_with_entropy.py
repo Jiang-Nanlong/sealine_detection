@@ -296,9 +296,9 @@ class LINEAWithEntropyBEnhanced(LINEA):
         sampled = F.grid_sample(
             entropy_map, grid, mode='bilinear',
             padding_mode='border', align_corners=False,
-        )  # [B, 1, nq, 1]
+        )  # [B, C, nq, 1]  (C=1 or 3)
 
-        return sampled.squeeze(1).squeeze(-1).permute(1, 0).unsqueeze(-1)  # [nq, B, 1]
+        return sampled.mean(dim=1).squeeze(-1).permute(1, 0).unsqueeze(-1)  # [nq, B, 1]
 
     def forward(self, samples, targets=None, entropy_map=None):
         features = self.backbone(samples)
