@@ -35,14 +35,5 @@ test1/weights
 test1/weights_smd
 test1/weights_buoy
 stage1_scalelsd_entropy/weights
-output/linea_baseline_musid
-output/linea_entropy_musid
-output/linea_baseline_musid_e100
-output/linea_entropy_musid_e100
-output/linea_entropy_musid_e200
-output/linea_entropy_a_musid_e150
 weight
-output/linea_entropy_b_musid_e100
-output/linea_entropy_a_musid_v2_e150/*.pth
-output/linea_entropy_a_musid_v3_e150/*.pth
-output/linea_entropy_b_musid_v1_e150/*.pth
+output/**/*.pth
