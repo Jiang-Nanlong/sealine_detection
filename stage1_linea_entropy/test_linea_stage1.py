@@ -33,9 +33,9 @@ import stage1_linea_entropy.models
 # ============================================================
 # 顶部全局变量配置 — 在 PyCharm 中直接修改
 # ============================================================
-MODE = "entropy_b"                # "baseline" / "entropy" / "entropy_a" / "entropy_b"
-CONFIG_FILE = "stage1_linea_entropy/configs/linea_entropy_b_musid.py"
-WEIGHTS_PATH = "output/linea_entropy_b_musid_v2_e150/best_checkpoint.pth"                # 权重文件路径（.pth）
+MODE = "entropy_b_enhanced"       # "baseline" / "entropy" / "entropy_a" / "entropy_b" / "entropy_b_enhanced"
+CONFIG_FILE = "stage1_linea_entropy/configs/linea_entropy_b_enhanced_musid.py"
+WEIGHTS_PATH = "output/linea_entropy_b_enhanced_musid_v1_e150/best_checkpoint.pth"       # 权重文件路径（.pth）
 DEVICE = "cuda"
 
 CSV_FILE = ""                    # 留空则由 config / build_musid_dataset 自动决定
@@ -84,7 +84,13 @@ def load_config(config_file):
 
     # 根据 MODE 覆盖 entropy_mode
     # entropy_a / entropy_b 也需要 entropy_map, 所以映射到 'entropy'
-    args.entropy_mode = 'entropy' if MODE in ('entropy', 'entropy_a', 'entropy_b') else MODE
+    # entropy_b_enhanced 使用 entropy_ms (3 通道多尺度熵图), 保留 config 中原始值
+    if MODE == 'entropy_b_enhanced':
+        args.entropy_mode = getattr(args, 'entropy_mode', 'entropy_ms')
+    elif MODE in ('entropy', 'entropy_a', 'entropy_b'):
+        args.entropy_mode = 'entropy'
+    else:
+        args.entropy_mode = MODE
 
     # 确保 pretrained 为 False（推理不需要下载预训练）
     args.pretrained = False
@@ -107,6 +113,7 @@ def build_model(args):
         "entropy": "LINEA_ENTROPY",
         "entropy_a": "LINEA_ENTROPY_A",
         "entropy_b": "LINEA_ENTROPY_B",
+        "entropy_b_enhanced": "LINEA_ENTROPY_B_ENHANCED",
     }
     model_name = _mode_to_model.get(MODE, "LINEA")
 
@@ -748,7 +755,7 @@ def main():
 
     # ---- 构建数据集 ----
     print("[4/6] 构建 test 数据集...")
-    include_entropy = (MODE in ("entropy", "entropy_a", "entropy_b"))
+    include_entropy = (MODE in ("entropy", "entropy_a", "entropy_b", "entropy_b_enhanced"))
     test_dataset = build_test_dataset(args)
     print(f"  test 样本数: {len(test_dataset)}")
 

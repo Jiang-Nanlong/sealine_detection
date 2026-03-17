@@ -1,0 +1,27 @@
+{
+  "mode": "entropy_b_enhanced",
+  "weights_path": "output/linea_entropy_b_enhanced_musid_v1_e150/best_checkpoint.pth",
+  "has_horizon_head": true,
+  "num_samples": 268,
+  "num_images_with_no_lines": 0,
+  "num_images_with_no_candidate": 0,
+  "num_valid_predictions": 268,
+  "avg_num_lines": 1100.0,
+  "mean_endpoint_error": 7.847663159765707,
+  "median_endpoint_error": 0.3060017286982337,
+  "max_endpoint_error": 287.71874755602033,
+  "min_endpoint_error": 0.01553161008894645,
+  "std_endpoint_error": 38.80652460133958,
+  "pct_le_5": 93.28358208955224,
+  "pct_le_10": 94.02985074626866,
+  "pct_le_20": 95.1492537313433,
+  "pct_le_50": 96.64179104477611,
+  "best_sample": {
+    "stem": "DSC_1713_3",
+    "endpoint_error": 0.01553161008894645
+  },
+  "worst_sample": {
+    "stem": "DSC_1018_3",
+    "endpoint_error": 287.71874755602033
+  }
+}
