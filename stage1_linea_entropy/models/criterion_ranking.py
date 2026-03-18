@@ -22,7 +22,6 @@ import torch.nn.functional as F
 
 from LINEA.models.linea.criterion import LINEACriterion
 from LINEA.models.linea.matcher import build_matcher
-from LINEA.models.registry import MODULE_BUILD_FUNCS
 
 
 class LINEACriterionWithRanking(LINEACriterion):
@@ -126,7 +125,6 @@ class LINEACriterionWithRanking(LINEACriterion):
         return loss_map[loss](outputs, targets, indices, num_boxes, **kwargs)
 
 
-@MODULE_BUILD_FUNCS.registe_with_name(module_name='LINEACRITERION_RANKING')
 def build_criterion_ranking(args):
     num_classes = args.num_classes
     matcher = build_matcher(args)
