@@ -37,3 +37,11 @@ if 'LINEA_ENTROPY_B' not in MODULE_BUILD_FUNCS._module_dict:
 if 'LINEA_ENTROPY_B_ENHANCED' not in MODULE_BUILD_FUNCS._module_dict:
     MODULE_BUILD_FUNCS.registe_with_name(module_name='LINEA_ENTROPY_B_ENHANCED')(_build_linea_with_entropy_b_enhanced_lazy)
 
+# ---- 延迟注册自定义 criterion（主线 C: pairwise ranking loss）----
+def _build_criterion_ranking_lazy(args):
+    from stage1_linea_entropy.models.criterion_ranking import build_criterion_ranking
+    return build_criterion_ranking(args)
+
+if 'LINEACRITERION_RANKING' not in MODULE_BUILD_FUNCS._module_dict:
+    MODULE_BUILD_FUNCS.registe_with_name(module_name='LINEACRITERION_RANKING')(_build_criterion_ranking_lazy)
+

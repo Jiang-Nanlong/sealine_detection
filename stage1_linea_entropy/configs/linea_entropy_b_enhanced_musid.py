@@ -1,5 +1,5 @@
 """
-linea_entropy_b_enhanced_musid.py — MSLEP + SAI + EGAB + HASH 增强版，MU-SID 训练配置
+linea_entropy_b_enhanced_musid.py — MSLEP + SAI + EGAB + HASH + Ranking 增强版，MU-SID 训练配置
 
 用法：
   python LINEA/main.py -c stage1_linea_entropy/configs/linea_entropy_b_enhanced_musid.py
@@ -8,7 +8,8 @@ linea_entropy_b_enhanced_musid.py — MSLEP + SAI + EGAB + HASH 增强版，MU-S
   - MSLEP: 多尺度局部熵先验提取 (3 通道: 5×5, 11×11, 21×21 窗口)
   - SAI:   空间自适应注入 (sigmoid attention-weighted injection)
   - EGAB:  熵引导注意力偏置 (post-attention residual correction)
-  - HASH:  Horizon-Aware Scoring Head (内部重评分)
+  - HASH:  Horizon-Aware Scoring Head (内部重评分, tanh 限幅)
+  - Ranking: 图内排序损失 (detector-side pairwise ranking)
 数据：MU-SID，letterbox 到 640×640，entropy_mode='entropy_ms'
 """
 
@@ -22,7 +23,7 @@ _base_ = [
 # ============================================================
 # 输出目录
 # ============================================================
-output_dir = 'output/linea_entropy_b_enhanced_musid_v1_e150'
+output_dir = 'output/linea_entropy_b_enhanced_musid_v2_e130'
 
 # ============================================================
 # 模型
@@ -51,7 +52,11 @@ reg_max = 16
 reg_scale = 4
 
 # ---- criterion ----
-weight_dict = {'loss_logits': 4, 'loss_line': 5}
+criterionname = 'LINEACRITERION_RANKING'
+weight_dict = {'loss_logits': 4, 'loss_line': 5, 'loss_ranking': 2}
+losses = ['labels', 'lines', 'ranking']
+ranking_margin = 0.3
+ranking_num_pairs = 50
 
 # ============================================================
 # 方向一：MSLEP — 多尺度局部熵先验提取
