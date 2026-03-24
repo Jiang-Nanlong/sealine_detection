@@ -13,8 +13,8 @@ import os
 # ============================================================
 # 全局配置 — 在 PyCharm 中直接修改这两个变量后运行
 # ============================================================
-INPUT_IMAGE = r"D:\请替换为你的图片路径.jpg"
-OUTPUT_DIR  = r"D:\repository\sealine_detection\chapter4\fig_mslep"
+INPUT_IMAGE = r"F:\code_manager\Menglong Cao\sealine_detection\Hashmani's Dataset\clear\DSC_0717_4.JPG"
+OUTPUT_DIR  = r"F:\code_manager\Menglong Cao\sealine_detection\chapter4\fig_mslep"
 # ============================================================
 
 import cv2
@@ -62,12 +62,12 @@ def main():
         raise FileNotFoundError(f'无法读取图片: {INPUT_IMAGE}')
 
     # 1. 原始彩色图
-    cv2.imwrite(os.path.join(args.output, 'original.png'), bgr)
+    cv2.imwrite(os.path.join(OUTPUT_DIR, 'original.png'), bgr)
     print(f'[1/5] original.png  saved  ({bgr.shape[1]}x{bgr.shape[0]})')
 
     # 2. Blue 通道灰度图
     blue = bgr[:, :, 0]  # OpenCV BGR, channel 0 = Blue
-    cv2.imwrite(os.path.join(args.output, 'blue_channel.png'), blue)
+    cv2.imwrite(os.path.join(OUTPUT_DIR, 'blue_channel.png'), blue)
     print(f'[2/5] blue_channel.png  saved')
 
     # 3. 局部熵图 (disk r=4, 对应约 window_size=9)
