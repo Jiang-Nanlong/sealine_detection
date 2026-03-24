@@ -13,8 +13,8 @@ generate_mslep_figure.py — 生成 MSLEP 模块示意图所需的子图
   6. entropy_k11.png    — 多尺度熵图 (AvgPool k=11)
 """
 
-INPUT_DIR = ""
-OUTPUT_DIR = "chapter4/fig_mslep"
+INPUT_DIR = r"F:\code_manager\Menglong Cao\sealine_detection\Hashmani's Dataset\clear\DSC_0717_7.JPG"
+OUTPUT_DIR = r"F:\code_manager\Menglong Cao\sealine_detection\chapter4\fig_mslep"
 
 import argparse
 import os
