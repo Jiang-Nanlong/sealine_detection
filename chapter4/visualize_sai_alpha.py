@@ -32,11 +32,11 @@ import stage1_linea_entropy.models  # noqa: F401 — 触发模型注册
 # 全局变量 — 在 PyCharm 中直接修改
 # ============================================================
 CONFIG_FILE = "stage1_linea_entropy/configs/linea_entropy_b_enhanced_musid.py"
-WEIGHTS_PATH = "output/linea_entropy_b_enhanced_musid_v1_e150/best_checkpoint.pth"
+WEIGHTS_PATH = r"F:\code_manager\Menglong Cao\sealine_detection\output\linea_entropy_b_enhanced_musid_v2_e130\best_checkpoint.pth"
 
 # 测试图像 (原图 + 预计算熵图)
-IMAGE_PATH = "Hashmani's Dataset/MU-SID/1.jpg"
-ENTROPY_DIR = "Hashmani's Dataset/MU-SID_entropy_blue"
+IMAGE_PATH = "F:\code_manager\Menglong Cao\sealine_detection\Hashmani's Dataset\clear\DSC_0717_7.JPG"
+ENTROPY_DIR = "F:\code_manager\Menglong Cao\sealine_detection\Hashmani's Dataset\MU-SID_entropy_blue"
 
 IMG_SIZE = 640
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
