@@ -1,19 +1,19 @@
 """
-batch_test_ablation.py — 批量测试消融实验（全部 6 组，统一指标重跑）
+batch_test_ablation.py — 批量测试消融实验（全部 7 组，统一指标重跑）
 
 用法：
-  在 PyCharm 中直接运行本文件，会依次测试 6 个模型并将结果分别保存。
+  在 PyCharm 中直接运行本文件，会依次测试 7 个模型并将结果分别保存。
 
-输出目录：stage1_linea_entropy/test_outputs_v4/
+输出目录：stage1_linea_entropy/test_outputs_v5/
 """
 
 import stage1_linea_entropy.test_linea_stage1 as T
 
 # 改为 v4 避免覆盖旧结果
-T.SAVE_ROOT = "stage1_linea_entropy/test_outputs_v4"
+T.SAVE_ROOT = "stage1_linea_entropy/test_outputs_v5"
 
 # ============================================================
-# 定义 6 组消融实验配置
+# 定义 7 组消融实验配置
 # ============================================================
 TEST_CONFIGS = [
     {
@@ -41,13 +41,19 @@ TEST_CONFIGS = [
         "WEIGHTS_PATH": "output/ablation_mslep_sai_musid_e130/best_checkpoint.pth",
     },
     {
-        "name": "5. Enhanced v1 (MSLEP+SAI+EGAB+HASH)",
+        "name": "5. +MSLEP+SAI+EGAB",
+        "MODE": "entropy_b_enhanced",
+        "CONFIG_FILE": "stage1_linea_entropy/configs/ablation_mslep_sai_egab_musid.py",
+        "WEIGHTS_PATH": "output/ablation_mslep_sai_egab_musid_e130/best_checkpoint.pth",
+    },
+    {
+        "name": "6. +MSLEP+SAI+EGAB+HASH (Enhanced v1)",
         "MODE": "entropy_b_enhanced",
         "CONFIG_FILE": "stage1_linea_entropy/configs/linea_entropy_b_enhanced_musid.py",
         "WEIGHTS_PATH": "output/linea_entropy_b_enhanced_musid_v1_e150/best_checkpoint.pth",
     },
     {
-        "name": "6. Enhanced v2 (MSLEP+SAI+EGAB+HASH+Ranking)",
+        "name": "7. +MSLEP+SAI+EGAB+HASH+Ranking (Enhanced v2)",
         "MODE": "entropy_b_enhanced",
         "CONFIG_FILE": "stage1_linea_entropy/configs/linea_entropy_b_enhanced_musid.py",
         "WEIGHTS_PATH": "output/linea_entropy_b_enhanced_musid_v2_e130/best_checkpoint.pth",
