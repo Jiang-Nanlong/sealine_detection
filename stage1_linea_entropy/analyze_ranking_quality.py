@@ -25,7 +25,7 @@ import matplotlib.pyplot as plt
 # ============================================================
 IMG_SIZE = 640
 BATCH_SIZE = 1
-NUM_WORKERS = 4
+NUM_WORKERS = 0
 DEVICE = "cuda"
 
 # 分析的实验组
