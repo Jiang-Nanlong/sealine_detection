@@ -33,13 +33,13 @@ LOG_CONFIGS = [
         "linestyle": "--",
     },
     {
-        "tag": "+MSLEP+SAI+EGAB (130 ep)",
-        "log_path": "output/linea_entropy_b_enhanced_musid_v2_e130/log.txt",
+        "tag": "+MSLEP+SAI+EGAB+HASH, std loss (150 ep)",
+        "log_path": "output/linea_entropy_b_enhanced_musid_v1_e150/log.txt",
         "color": "#ff7f0e",
         "linestyle": "-.",
     },
     {
-        "tag": "Full model (130 ep)",
+        "tag": "Full, +ranking loss (130 ep)",
         "log_path": "output/linea_entropy_b_enhanced_musid_v2_e130/log.txt",
         "color": "#d62728",
         "linestyle": "-",
