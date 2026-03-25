@@ -392,12 +392,16 @@ def draw_result(img_tensor, gt_line, pred_result, save_path, img_size,
 def make_output_dir(save_root, mode, weights_path):
     """
     自动生成输出目录名：
-      {save_root} / {mode}__{weights_stem}
+      {save_root} / {mode}__{parent_dir_name}
 
-    例如：stage1_linea_entropy/test_outputs/baseline__checkpoint_best
+    例如：stage1_linea_entropy/test_outputs_v3/entropy_b_enhanced__ablation_mslep_only_musid_e130
     """
-    weights_stem = Path(weights_path).stem if weights_path else "no_weights"
-    dir_name = f"{mode}__{weights_stem}"
+    if weights_path:
+        # 用权重文件的父目录名（每个实验唯一）
+        parent_name = Path(weights_path).parent.name
+        dir_name = f"{mode}__{parent_name}"
+    else:
+        dir_name = f"{mode}__no_weights"
     out_dir = os.path.join(save_root, dir_name)
     os.makedirs(out_dir, exist_ok=True)
     if SAVE_VIS:
