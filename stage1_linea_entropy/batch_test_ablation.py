@@ -41,10 +41,10 @@ TEST_CONFIGS = [
         "WEIGHTS_PATH": "output/ablation_mslep_sai_musid_e130/best_checkpoint.pth",
     },
     {
-        "name": "5. +MSLEP+SAI+EGAB",
+        "name": "5. +MSLEP+SAI+EGAB (v2 weights, HASH off at inference)",
         "MODE": "entropy_b_enhanced",
         "CONFIG_FILE": "stage1_linea_entropy/configs/ablation_mslep_sai_egab_musid.py",
-        "WEIGHTS_PATH": "output/ablation_mslep_sai_egab_musid_e130/best_checkpoint.pth",
+        "WEIGHTS_PATH": "output/linea_entropy_b_enhanced_musid_v2_e130/best_checkpoint.pth",
     },
     {
         "name": "6. +MSLEP+SAI+EGAB+HASH (Enhanced v1)",
