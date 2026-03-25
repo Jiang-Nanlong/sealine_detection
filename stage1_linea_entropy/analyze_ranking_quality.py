@@ -37,7 +37,7 @@ EXPERIMENTS = [
         "weights": "output/linea_baseline_musid_e100/best_checkpoint.pth",
     },
     {
-        "tag": "w/o HASH(std)",
+        "tag": "no-HASH(v1)",
         "mode": "entropy_b_enhanced",
         "config": "stage1_linea_entropy/configs/ablation_mslep_sai_egab_musid.py",
         "weights": "output/linea_entropy_b_enhanced_musid_v1_e150/best_checkpoint.pth",
