@@ -1,39 +1,56 @@
 """
-batch_test_ablation.py — 批量测试消融实验（Enhanced v2 / MSLEP only / MSLEP+SAI）
+batch_test_ablation.py — 批量测试消融实验（全部 6 组，统一指标重跑）
 
 用法：
-  在 PyCharm 中直接运行本文件，会依次测试 3 个模型并将结果分别保存。
+  在 PyCharm 中直接运行本文件，会依次测试 6 个模型并将结果分别保存。
 
-输出目录结构：
-  stage1_linea_entropy/test_outputs_v3/
-    entropy_b_enhanced__linea_entropy_b_enhanced_musid_v2_e130/
-    entropy_b_enhanced__ablation_mslep_only_musid_e130/
-    entropy_b_enhanced__ablation_mslep_sai_musid_e130/
+输出目录：stage1_linea_entropy/test_outputs_v4/
 """
 
 import stage1_linea_entropy.test_linea_stage1 as T
 
+# 改为 v4 避免覆盖旧结果
+T.SAVE_ROOT = "stage1_linea_entropy/test_outputs_v4"
+
 # ============================================================
-# 定义 3 组测试配置
+# 定义 6 组消融实验配置
 # ============================================================
 TEST_CONFIGS = [
     {
-        "name": "Enhanced v2 (MSLEP+SAI+EGAB+HASH+Ranking)",
-        "MODE": "entropy_b_enhanced",
-        "CONFIG_FILE": "stage1_linea_entropy/configs/linea_entropy_b_enhanced_musid.py",
-        "WEIGHTS_PATH": "output/linea_entropy_b_enhanced_musid_v2_e130/best_checkpoint.pth",
+        "name": "1. Baseline (LINEA-L, no entropy)",
+        "MODE": "baseline",
+        "CONFIG_FILE": "stage1_linea_entropy/configs/linea_baseline_musid.py",
+        "WEIGHTS_PATH": "output/linea_baseline_musid_e100/best_checkpoint.pth",
     },
     {
-        "name": "Ablation: MSLEP only",
+        "name": "2. +单尺度熵注入 (LINEA_ENTROPY)",
+        "MODE": "entropy",
+        "CONFIG_FILE": "stage1_linea_entropy/configs/linea_entropy_musid.py",
+        "WEIGHTS_PATH": "output/linea_entropy_musid_e100/best_checkpoint.pth",
+    },
+    {
+        "name": "3. +MSLEP only",
         "MODE": "entropy_b_enhanced",
         "CONFIG_FILE": "stage1_linea_entropy/configs/ablation_mslep_only_musid.py",
         "WEIGHTS_PATH": "output/ablation_mslep_only_musid_e130/best_checkpoint.pth",
     },
     {
-        "name": "Ablation: MSLEP + SAI",
+        "name": "4. +MSLEP + SAI",
         "MODE": "entropy_b_enhanced",
         "CONFIG_FILE": "stage1_linea_entropy/configs/ablation_mslep_sai_musid.py",
         "WEIGHTS_PATH": "output/ablation_mslep_sai_musid_e130/best_checkpoint.pth",
+    },
+    {
+        "name": "5. Enhanced v1 (MSLEP+SAI+EGAB+HASH)",
+        "MODE": "entropy_b_enhanced",
+        "CONFIG_FILE": "stage1_linea_entropy/configs/linea_entropy_b_enhanced_musid.py",
+        "WEIGHTS_PATH": "output/linea_entropy_b_enhanced_musid_v1_e150/best_checkpoint.pth",
+    },
+    {
+        "name": "6. Enhanced v2 (MSLEP+SAI+EGAB+HASH+Ranking)",
+        "MODE": "entropy_b_enhanced",
+        "CONFIG_FILE": "stage1_linea_entropy/configs/linea_entropy_b_enhanced_musid.py",
+        "WEIGHTS_PATH": "output/linea_entropy_b_enhanced_musid_v2_e130/best_checkpoint.pth",
     },
 ]
 

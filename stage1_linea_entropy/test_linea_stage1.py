@@ -288,11 +288,6 @@ def compute_endpoint_error(pred_line, gt_line):
     """
     计算预测线段与 GT 海天线的 endpoint error（像素）。
 
-    注意：当前误差在 letterbox 后的 640×640 正方形坐标系下计算，
-    不是原始 1920×1080 图像坐标系。这对 baseline vs entropy 的
-    相对对比完全有效（两者使用相同坐标系）。
-    如需论文最终像素误差，可后续按 scale 映射回原图坐标系。
-
     端点顺序无关：尝试两种匹配，取误差更小的。
 
     Args:
@@ -312,6 +307,119 @@ def compute_endpoint_error(pred_line, gt_line):
     err_b = (np.linalg.norm(p1 - g2) + np.linalg.norm(p2 - g1)) / 2.0
 
     return min(err_a, err_b)
+
+
+def _line_to_rho_theta(line):
+    """
+    将端点表示 (x1, y1, x2, y2) 转换为 (ρ, θ) 极坐标参数。
+
+    直线方程: x*cos(θ) + y*sin(θ) = ρ
+    θ 为法线与 x 轴的夹角，ρ 为原点到直线的有符号距离。
+
+    Returns:
+        (rho, theta_rad) — ρ (像素), θ (弧度, 范围 [0, π))
+    """
+    x1, y1, x2, y2 = line
+    dx = x2 - x1
+    dy = y2 - y1
+    # 直线方向角 (与 x 轴夹角)
+    alpha = math.atan2(dy, dx)
+    # 法线方向 θ = alpha + π/2, 归一化到 [0, π)
+    theta = alpha + math.pi / 2.0
+    theta = theta % math.pi
+    # ρ = x1*cos(θ) + y1*sin(θ)
+    rho = x1 * math.cos(theta) + y1 * math.sin(theta)
+    # 保证 ρ >= 0
+    if rho < 0:
+        rho = -rho
+        theta = (theta + math.pi) % math.pi
+    return rho, theta
+
+
+def compute_unified_metrics(pred_line, gt_line, img_w):
+    """
+    计算与第5章对齐的统一评价指标。
+
+    在 letterbox 640×640 坐标系下计算，输出包括：
+      - rho_err:    |ρ| 误差 (px) — 法向距离位置偏移
+      - theta_err:  θ 误差 (°) — 方向误差 (wrap 到 [0°, 90°])
+      - line_dist:  LineDist (px) — 预测线上均匀采样点到 GT 直线的平均距离
+      - edge_y:     Edge-Y (px) — 两条线在图像左右边界处 y 坐标差的平均值
+      - ve:         VE (px) — 图像中心列处两条线的垂直坐标差 (带符号)
+      - ae:         AE (°) — 两条直线倾角差 (wrap 到 [-90°, 90°])
+
+    Args:
+        pred_line : ndarray [4] — (x1, y1, x2, y2)
+        gt_line   : ndarray [4] — (x1, y1, x2, y2)
+        img_w     : int — 图像宽度 (用于 Edge-Y 和 VE 计算)
+
+    Returns:
+        dict — 各指标值
+    """
+    # ---- ρ, θ 误差 ----
+    rho_p, theta_p = _line_to_rho_theta(pred_line)
+    rho_g, theta_g = _line_to_rho_theta(gt_line)
+    rho_err = abs(rho_p - rho_g)
+    # θ 误差: wrap 到 [0°, 90°]（方向等价性: θ 和 θ+180° 描述同一条线）
+    theta_diff_rad = abs(theta_p - theta_g)
+    if theta_diff_rad > math.pi / 2:
+        theta_diff_rad = math.pi - theta_diff_rad
+    theta_err_deg = math.degrees(theta_diff_rad)
+
+    # ---- LineDist: 预测线上均匀采样 N 点到 GT 直线的平均距离 ----
+    n_samples = 100
+    px1, py1, px2, py2 = pred_line
+    gx1, gy1, gx2, gy2 = gt_line
+    t = np.linspace(0, 1, n_samples)
+    sample_x = px1 + t * (px2 - px1)
+    sample_y = py1 + t * (py2 - py1)
+    # GT 直线 ax + by + c = 0
+    a = gy2 - gy1
+    b = gx1 - gx2
+    c = gx2 * gy1 - gx1 * gy2
+    denom = math.sqrt(a * a + b * b)
+    if denom < 1e-12:
+        line_dist = 0.0
+    else:
+        dists = np.abs(a * sample_x + b * sample_y + c) / denom
+        line_dist = float(np.mean(dists))
+
+    # ---- Edge-Y: 两条线在 x=0 和 x=img_w 处 y 值之差的平均值 ----
+    def _y_at_x(line, x):
+        x1, y1, x2, y2 = line
+        dx = x2 - x1
+        if abs(dx) < 1e-12:
+            return (y1 + y2) / 2.0
+        return y1 + (x - x1) * (y2 - y1) / dx
+
+    pred_y_left = _y_at_x(pred_line, 0)
+    pred_y_right = _y_at_x(pred_line, img_w)
+    gt_y_left = _y_at_x(gt_line, 0)
+    gt_y_right = _y_at_x(gt_line, img_w)
+    edge_y = (abs(pred_y_left - gt_y_left) + abs(pred_y_right - gt_y_right)) / 2.0
+
+    # ---- VE: 图像中心列处的垂直坐标差 (带符号, pred - gt) ----
+    center_x = img_w / 2.0
+    ve = _y_at_x(pred_line, center_x) - _y_at_x(gt_line, center_x)
+
+    # ---- AE: 倾角差 (带符号, wrap 到 [-90°, 90°]) ----
+    angle_pred = math.degrees(math.atan2(py2 - py1, px2 - px1))
+    angle_gt = math.degrees(math.atan2(gy2 - gy1, gx2 - gx1))
+    ae = angle_pred - angle_gt
+    # wrap 到 [-90, 90]
+    while ae > 90:
+        ae -= 180
+    while ae < -90:
+        ae += 180
+
+    return {
+        'rho_err': rho_err,
+        'theta_err': theta_err_deg,
+        'line_dist': line_dist,
+        'edge_y': edge_y,
+        've': ve,
+        'ae': ae,
+    }
 
 
 def gt_line_from_target(target, img_size):
@@ -580,8 +688,15 @@ def evaluate_and_save(all_results, output_dir):
 
         if pred['has_candidate']:
             err = compute_endpoint_error(pred['best_line'], gt_line)
+            metrics = compute_unified_metrics(pred['best_line'], gt_line, IMG_SIZE)
             rec['best_line'] = pred['best_line'].tolist()
             rec['endpoint_error'] = err
+            rec['rho_err'] = metrics['rho_err']
+            rec['theta_err'] = metrics['theta_err']
+            rec['line_dist'] = metrics['line_dist']
+            rec['edge_y'] = metrics['edge_y']
+            rec['ve'] = metrics['ve']
+            rec['ae'] = metrics['ae']
             errors.append(err)
         else:
             rec['best_line'] = None
@@ -639,6 +754,59 @@ def evaluate_and_save(all_results, output_dir):
         summary['pct_le_20'] = None
         summary['pct_le_50'] = None
 
+    # ---- 统一评价指标统计 ----
+    valid_records = [r for r in records if r['endpoint_error'] is not None]
+    if valid_records:
+        rho_errs = np.array([r['rho_err'] for r in valid_records])
+        theta_errs = np.array([r['theta_err'] for r in valid_records])
+        line_dists = np.array([r['line_dist'] for r in valid_records])
+        edge_ys = np.array([r['edge_y'] for r in valid_records])
+        ves = np.array([r['ve'] for r in valid_records])  # 带符号
+        aes = np.array([r['ae'] for r in valid_records])  # 带符号
+
+        summary['unified_metrics'] = {
+            # |ρ| 误差
+            'rho_mean': float(np.mean(rho_errs)),
+            'rho_median': float(np.median(rho_errs)),
+            'rho_p90': float(np.percentile(rho_errs, 90)),
+            'rho_p95': float(np.percentile(rho_errs, 95)),
+            'rho_max': float(np.max(rho_errs)),
+            'pct_rho_le_5': float(np.mean(rho_errs <= 5) * 100),
+            'pct_rho_le_10': float(np.mean(rho_errs <= 10) * 100),
+            'pct_rho_le_20': float(np.mean(rho_errs <= 20) * 100),
+            # θ 误差
+            'theta_mean': float(np.mean(theta_errs)),
+            'theta_median': float(np.median(theta_errs)),
+            'theta_p90': float(np.percentile(theta_errs, 90)),
+            'theta_p95': float(np.percentile(theta_errs, 95)),
+            'theta_max': float(np.max(theta_errs)),
+            'pct_theta_le_1': float(np.mean(theta_errs <= 1) * 100),
+            'pct_theta_le_2': float(np.mean(theta_errs <= 2) * 100),
+            'pct_theta_le_5': float(np.mean(theta_errs <= 5) * 100),
+            # LineDist
+            'linedist_mean': float(np.mean(line_dists)),
+            'linedist_median': float(np.median(line_dists)),
+            'linedist_p95': float(np.percentile(line_dists, 95)),
+            'linedist_max': float(np.max(line_dists)),
+            # Edge-Y
+            'edgey_mean': float(np.mean(edge_ys)),
+            'edgey_median': float(np.median(edge_ys)),
+            'edgey_p95': float(np.percentile(edge_ys, 95)),
+            'edgey_max': float(np.max(edge_ys)),
+            # VE (带符号)
+            've_mean': float(np.mean(np.abs(ves))),
+            've_signed_mean': float(np.mean(ves)),
+            've_std': float(np.std(ves)),
+            've_p95': float(np.percentile(np.abs(ves), 95)),
+            'pct_ve_le_10': float(np.mean(np.abs(ves) <= 10) * 100),
+            # AE (带符号)
+            'ae_mean': float(np.mean(np.abs(aes))),
+            'ae_signed_mean': float(np.mean(aes)),
+            'ae_std': float(np.std(aes)),
+            'ae_p95': float(np.percentile(np.abs(aes), 95)),
+            'pct_ae_le_1': float(np.mean(np.abs(aes) <= 1) * 100),
+        }
+
     # ---- worst top-20 ----
     valid_records = [r for r in records if r['endpoint_error'] is not None]
     valid_records_sorted = sorted(valid_records, key=lambda x: x['endpoint_error'], reverse=True)
@@ -672,6 +840,17 @@ def evaluate_and_save(all_results, output_dir):
         print(f"  ≤10px: {summary['pct_le_10']:.1f}%")
         print(f"  ≤20px: {summary['pct_le_20']:.1f}%")
         print(f"  ≤50px: {summary['pct_le_50']:.1f}%")
+
+    # ---- 打印统一评价指标 ----
+    um = summary.get('unified_metrics')
+    if um:
+        print(f"  --- 统一评价指标 (letterbox {IMG_SIZE}×{IMG_SIZE}) ---")
+        print(f"  |ρ| mean={um['rho_mean']:.2f}  median={um['rho_median']:.2f}  P95={um['rho_p95']:.2f}  max={um['rho_max']:.2f}")
+        print(f"  θ   mean={um['theta_mean']:.4f}°  median={um['theta_median']:.4f}°  P95={um['theta_p95']:.4f}°")
+        print(f"  LineDist  mean={um['linedist_mean']:.2f}  P95={um['linedist_p95']:.2f}")
+        print(f"  Edge-Y    mean={um['edgey_mean']:.2f}  P95={um['edgey_p95']:.2f}")
+        print(f"  VE  mean={um['ve_mean']:.2f}±{um['ve_std']:.2f}  P95={um['ve_p95']:.2f}  ≤10px={um['pct_ve_le_10']:.1f}%")
+        print(f"  AE  mean={um['ae_mean']:.4f}°±{um['ae_std']:.4f}°  P95={um['ae_p95']:.4f}°  ≤1°={um['pct_ae_le_1']:.1f}%")
 
     # ---- horizon head 汇总统计 ----
     hh_results = [r for r in all_results if r.get('has_horizon_head')]
