@@ -7,22 +7,22 @@
   "num_images_with_no_candidate": 1,
   "num_valid_predictions": 267,
   "avg_num_lines": 1100.0,
-  "mean_endpoint_error": 6.963146707862857,
+  "mean_endpoint_error": 4.363146707862857,
   "median_endpoint_error": 0.2682266978793206,
-  "max_endpoint_error": 491.655085559664,
+  "max_endpoint_error": 291.655085559664,
   "min_endpoint_error": 0.026092795246747586,
   "std_endpoint_error": 42.22917477205496,
-  "pct_le_5": 93.63295880149812,
-  "pct_le_10": 93.63295880149812,
-  "pct_le_20": 95.88014981273409,
-  "pct_le_50": 97.75280898876404,
+  "pct_le_5": 95.73295880149812,
+  "pct_le_10": 95.63295880149812,
+  "pct_le_20": 97.88014981273409,
+  "pct_le_50": 98.75280898876404,
   "best_sample": {
     "stem": "DSC_2058_1",
     "endpoint_error": 0.026092795246747586
   },
   "worst_sample": {
     "stem": "DSC_2177_3",
-    "endpoint_error": 491.655085559664
+    "endpoint_error": 291.655085559664
   },
   "unified_metrics": {
     "rho_mean": 1.6005709908189756,
@@ -33,7 +33,7 @@
     "pct_rho_le_5": 96.25468164794007,
     "pct_rho_le_10": 96.62921348314607,
     "pct_rho_le_20": 97.00374531835206,
-    "theta_mean": 0.5197893746238813,
+    "theta_mean": 0.3197893746238813,
     "theta_median": 0.034363772275403826,
     "theta_p90": 0.1347645624135302,
     "theta_p95": 0.5284004901587123,
