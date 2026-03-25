@@ -497,17 +497,27 @@ def draw_result(img_tensor, gt_line, pred_result, save_path, img_size,
 # ============================================================
 # 7. 输出目录生成
 # ============================================================
-def make_output_dir(save_root, mode, weights_path):
+def make_output_dir(save_root, mode, weights_path, config_file=None):
     """
     自动生成输出目录名：
       {save_root} / {mode}__{parent_dir_name}
+    若提供 config_file 且 config 名与 weights 父目录名不同，则追加 config 名以避免冲突：
+      {save_root} / {mode}__{parent_dir_name}__{config_stem}
 
-    例如：stage1_linea_entropy/test_outputs_v3/entropy_b_enhanced__ablation_mslep_only_musid_e130
+    例如：stage1_linea_entropy/test_outputs_v5/entropy_b_enhanced__linea_entropy_b_enhanced_musid_v2_e130__ablation_mslep_sai_egab_musid
     """
     if weights_path:
         # 用权重文件的父目录名（每个实验唯一）
         parent_name = Path(weights_path).parent.name
-        dir_name = f"{mode}__{parent_name}"
+        # 如果 config 名与 weights 父目录名不同，追加 config stem 避免冲突
+        if config_file:
+            config_stem = Path(config_file).stem
+            if config_stem not in parent_name:
+                dir_name = f"{mode}__{parent_name}__{config_stem}"
+            else:
+                dir_name = f"{mode}__{parent_name}"
+        else:
+            dir_name = f"{mode}__{parent_name}"
     else:
         dir_name = f"{mode}__no_weights"
     out_dir = os.path.join(save_root, dir_name)
@@ -959,7 +969,7 @@ def main():
 
     # ---- 保存结果 ----
     print("[6/6] 保存结果...")
-    output_dir = make_output_dir(SAVE_ROOT, MODE, WEIGHTS_PATH)
+    output_dir = make_output_dir(SAVE_ROOT, MODE, WEIGHTS_PATH, CONFIG_FILE)
     print(f"  输出目录: {output_dir}")
 
     evaluate_and_save(all_results, output_dir)
