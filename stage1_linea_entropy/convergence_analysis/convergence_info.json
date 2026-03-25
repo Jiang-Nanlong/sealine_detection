@@ -1,0 +1,23 @@
+[
+  {
+    "tag": "Baseline LINEA-L (100 ep)",
+    "total_epochs": 100,
+    "convergence_epoch": 82,
+    "final_test_loss": 0.4796,
+    "min_test_loss": 0.4462
+  },
+  {
+    "tag": "+MSLEP+SAI (130 ep)",
+    "total_epochs": 130,
+    "convergence_epoch": 102,
+    "final_test_loss": 0.4552,
+    "min_test_loss": 0.4495
+  },
+  {
+    "tag": "+MSLEP+SAI+EGAB (130 ep)",
+    "total_epochs": 130,
+    "convergence_epoch": 109,
+    "final_test_loss": 0.2507,
+    "min_test_loss": 0.1939
+  }
+]
