@@ -1,0 +1,27 @@
+{
+  "mode": "entropy_b_enhanced",
+  "weights_path": "output/ablation_mslep_sai_musid_e130/best_checkpoint.pth",
+  "has_horizon_head": false,
+  "num_samples": 268,
+  "num_images_with_no_lines": 0,
+  "num_images_with_no_candidate": 0,
+  "num_valid_predictions": 268,
+  "avg_num_lines": 1100.0,
+  "mean_endpoint_error": 8.291093839833145,
+  "median_endpoint_error": 0.2651252915444917,
+  "max_endpoint_error": 229.43826614403034,
+  "min_endpoint_error": 0.010967001192483573,
+  "std_endpoint_error": 34.42639725625301,
+  "pct_le_5": 92.91044776119402,
+  "pct_le_10": 93.28358208955224,
+  "pct_le_20": 94.02985074626866,
+  "pct_le_50": 95.1492537313433,
+  "best_sample": {
+    "stem": "DSC_3305_9",
+    "endpoint_error": 0.010967001192483573
+  },
+  "worst_sample": {
+    "stem": "DSC_1596_7",
+    "endpoint_error": 229.43826614403034
+  }
+}

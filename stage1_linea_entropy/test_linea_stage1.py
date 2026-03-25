@@ -34,8 +34,8 @@ import stage1_linea_entropy.models
 # 顶部全局变量配置 — 在 PyCharm 中直接修改
 # ============================================================
 MODE = "entropy_b_enhanced"       # "baseline" / "entropy" / "entropy_a" / "entropy_b" / "entropy_b_enhanced"
-CONFIG_FILE = "stage1_linea_entropy/configs/linea_entropy_b_enhanced_musid.py"
-WEIGHTS_PATH = "output/linea_entropy_b_enhanced_musid_v1_e150/best_checkpoint.pth"       # 权重文件路径（.pth）
+CONFIG_FILE = "stage1_linea_entropy/configs/ablation_mslep_sai_musid.py"
+WEIGHTS_PATH = "output/ablation_mslep_sai_musid_e130/best_checkpoint.pth"       # 权重文件路径（.pth）
 DEVICE = "cuda"
 
 CSV_FILE = ""                    # 留空则由 config / build_musid_dataset 自动决定
