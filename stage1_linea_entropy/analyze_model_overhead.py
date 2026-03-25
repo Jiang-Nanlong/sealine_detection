@@ -31,31 +31,31 @@ BENCH_ITERS = 200
 
 EXPERIMENTS = [
     {
-        "tag": "①基线LINEA-L",
+        "tag": "Baseline",
         "mode": "baseline",
         "config": "stage1_linea_entropy/configs/linea_baseline_musid.py",
         "weights": "output/linea_baseline_musid_e100/best_checkpoint.pth",
     },
     {
-        "tag": "③+MSLEP",
+        "tag": "+MSLEP",
         "mode": "entropy_b_enhanced",
         "config": "stage1_linea_entropy/configs/ablation_mslep_only_musid.py",
         "weights": "output/ablation_mslep_only_musid_e130/best_checkpoint.pth",
     },
     {
-        "tag": "④+MSLEP+SAI",
+        "tag": "+MSLEP+SAI",
         "mode": "entropy_b_enhanced",
         "config": "stage1_linea_entropy/configs/ablation_mslep_sai_musid.py",
         "weights": "output/ablation_mslep_sai_musid_e130/best_checkpoint.pth",
     },
     {
-        "tag": "⑤+MSLEP+SAI+EGAB",
+        "tag": "+MSLEP+SAI+EGAB",
         "mode": "entropy_b_enhanced",
         "config": "stage1_linea_entropy/configs/ablation_mslep_sai_egab_musid.py",
         "weights": "output/linea_entropy_b_enhanced_musid_v2_e130/best_checkpoint.pth",
     },
     {
-        "tag": "⑦全量(+HASH+排序损失)",
+        "tag": "Full(+HASH+Rank)",
         "mode": "entropy_b_enhanced",
         "config": "stage1_linea_entropy/configs/linea_entropy_b_enhanced_musid.py",
         "weights": "output/linea_entropy_b_enhanced_musid_v2_e130/best_checkpoint.pth",

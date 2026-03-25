@@ -31,25 +31,25 @@ DEVICE = "cuda"
 # 分析的实验组
 EXPERIMENTS = [
     {
-        "tag": "①基线 LINEA-L",
+        "tag": "Baseline",
         "mode": "baseline",
         "config": "stage1_linea_entropy/configs/linea_baseline_musid.py",
         "weights": "output/linea_baseline_musid_e100/best_checkpoint.pth",
     },
     {
-        "tag": "⑤+MSLEP+SAI+EGAB",
+        "tag": "+EGAB",
         "mode": "entropy_b_enhanced",
         "config": "stage1_linea_entropy/configs/ablation_mslep_sai_egab_musid.py",
         "weights": "output/linea_entropy_b_enhanced_musid_v2_e130/best_checkpoint.pth",
     },
     {
-        "tag": "⑥+HASH（标准损失）",
+        "tag": "+HASH(std)",
         "mode": "entropy_b_enhanced",
         "config": "stage1_linea_entropy/configs/linea_entropy_b_enhanced_musid.py",
         "weights": "output/linea_entropy_b_enhanced_musid_v1_e150/best_checkpoint.pth",
     },
     {
-        "tag": "⑦全量（+排序损失）",
+        "tag": "Full(+Rank)",
         "mode": "entropy_b_enhanced",
         "config": "stage1_linea_entropy/configs/linea_entropy_b_enhanced_musid.py",
         "weights": "output/linea_entropy_b_enhanced_musid_v2_e130/best_checkpoint.pth",

@@ -21,26 +21,25 @@ import matplotlib.pyplot as plt
 # ============================================================
 LOG_CONFIGS = [
     {
-        "tag": "①基线 LINEA-L (100 epochs)",
+        "tag": "Baseline LINEA-L (100 ep)",
         "log_path": "output/linea_baseline_musid_e100/log.txt",
         "color": "#1f77b4",
         "linestyle": "-",
     },
     {
-        "tag": "④+MSLEP+SAI (130 epochs)",
+        "tag": "+MSLEP+SAI (130 ep)",
         "log_path": "output/ablation_mslep_sai_musid_e130/log.txt",
         "color": "#2ca02c",
         "linestyle": "--",
     },
     {
-        "tag": "⑤+MSLEP+SAI+EGAB (130 epochs)",
+        "tag": "+MSLEP+SAI+EGAB (130 ep)",
         "log_path": "output/linea_entropy_b_enhanced_musid_v2_e130/log.txt",
         "color": "#ff7f0e",
         "linestyle": "-.",
-        "note": "与⑦共享前半程训练，区别仅在是否有HASH",
     },
     {
-        "tag": "⑦全量 (130 epochs)",
+        "tag": "Full model (130 ep)",
         "log_path": "output/linea_entropy_b_enhanced_musid_v2_e130/log.txt",
         "color": "#d62728",
         "linestyle": "-",
