@@ -398,6 +398,7 @@ def plot_ranking_figures(summaries, all_per_image, output_dir):
     ax.set_xticklabels(short_tags, fontsize=11)
     ax.legend(fontsize=10)
     ax.grid(axis='y', alpha=0.3)
+    ax.set_ylim(0, max(max(gt_epe), max(actual_epe)) * 1.25)
     plt.tight_layout()
     fig.savefig(os.path.join(output_dir, 'ranking_epe_comparison.png'), dpi=150, bbox_inches='tight')
     plt.close(fig)
