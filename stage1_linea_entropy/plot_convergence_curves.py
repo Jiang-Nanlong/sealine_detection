@@ -39,8 +39,9 @@ LOG_CONFIGS = [
         "linestyle": "--",
     },
     {
-        "tag": "+HASH, std loss (150 ep)",
+        "tag": "+HASH, std loss (130 ep)",
         "log_path": "output/linea_entropy_b_enhanced_musid_v1_e150/log.txt",
+        "max_epoch": 130,
         "color": "#ff7f0e",
         "linestyle": "-.",
     },
@@ -302,6 +303,9 @@ def main():
             continue
 
         records = parse_log(log_path)
+        # 截断到 max_epoch（如有指定）
+        if 'max_epoch' in cfg:
+            records = [r for r in records if r['epoch'] <= cfg['max_epoch']]
         print(f"  {cfg['tag']}: {len(records)} epochs loaded (epoch {records[0]['epoch']}-{records[-1]['epoch']})")
 
         all_data.append((cfg, records))
