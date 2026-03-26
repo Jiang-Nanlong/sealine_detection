@@ -293,10 +293,13 @@ def plot_overhead_figures(results, output_dir):
     ax1.set_xticks(x)
     ax1.set_xticklabels(short_tags, fontsize=10)
     ax1.set_title('Parameters vs Inference Speed Trade-off', fontsize=13)
+    # 扩大参数量纵轴范围，防止柱状图顶部被图例遮挡
+    ax1.set_ylim(0, max(params_M) * 1.35)
+    ax2.set_ylim(min(fps_vals) - 5, max(fps_vals) + 8)
     # 合并图例
     h1, l1 = ax1.get_legend_handles_labels()
     h2, l2 = ax2.get_legend_handles_labels()
-    ax1.legend(h1 + h2, l1 + l2, loc='upper left', fontsize=10)
+    ax1.legend(h1 + h2, l1 + l2, loc='upper right', fontsize=10)
     ax1.grid(axis='y', alpha=0.3)
     plt.tight_layout()
     fig.savefig(os.path.join(output_dir, 'overhead_params_vs_fps.png'), dpi=150, bbox_inches='tight')
