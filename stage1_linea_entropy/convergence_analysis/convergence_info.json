@@ -21,7 +21,7 @@
     "min_test_loss": 0.4071
   },
   {
-    "tag": "+HASH, std loss (150 ep)",
+    "tag": "+HASH, std loss (130 ep)",
     "total_epochs": 130,
     "convergence_epoch": 114,
     "final_test_loss": 0.1433,
