@@ -9,8 +9,8 @@
       "encoder": 5735680,
       "decoder": 6497010
     },
-    "fps": 37.9,
-    "ms_per_img": 26.4,
+    "fps": 39.3,
+    "ms_per_img": 25.4,
     "delta_params": 0,
     "delta_params_M": 0.0,
     "delta_params_pct": 0.0,
@@ -31,7 +31,7 @@
     "delta_params": 371265,
     "delta_params_M": 0.37,
     "delta_params_pct": 1.44,
-    "fps_ratio": 0.929
+    "fps_ratio": 0.896
   },
   {
     "tag": "+MSLEP+SAI",
@@ -43,12 +43,12 @@
       "encoder": 6123393,
       "decoder": 6497010
     },
-    "fps": 35.2,
+    "fps": 35.3,
     "ms_per_img": 28.4,
     "delta_params": 387713,
     "delta_params_M": 0.39,
     "delta_params_pct": 1.51,
-    "fps_ratio": 0.929
+    "fps_ratio": 0.898
   },
   {
     "tag": "+MSLEP+SAI+EGAB",
@@ -61,12 +61,12 @@
       "decoder": 6497010,
       "egab": 33153
     },
-    "fps": 35.0,
-    "ms_per_img": 28.6,
+    "fps": 34.9,
+    "ms_per_img": 28.7,
     "delta_params": 420866,
     "delta_params_M": 0.42,
     "delta_params_pct": 1.64,
-    "fps_ratio": 0.923
+    "fps_ratio": 0.888
   },
   {
     "tag": "Full(+HASH+Rank)",
@@ -85,6 +85,6 @@
     "delta_params": 1562319,
     "delta_params_M": 1.56,
     "delta_params_pct": 6.07,
-    "fps_ratio": 0.776
+    "fps_ratio": 0.748
   }
 ]

@@ -16,20 +16,20 @@
     "epe_loss_ratio": 1.0443738216113425
   },
   {
-    "tag": "no-HASH(v1)",
+    "tag": "EGAB(standalone)",
     "num_samples": 268,
-    "rank_mean": 6.175373134328358,
+    "rank_mean": 13.257462686567164,
     "rank_median": 1.0,
     "rank_p95": 1.0,
-    "rank_max": 951,
-    "top1_rate": 97.38805970149254,
-    "top5_rate": 98.13432835820896,
+    "rank_max": 1062,
+    "top1_rate": 98.50746268656717,
+    "top5_rate": 98.50746268656717,
     "top10_rate": 98.50746268656717,
-    "score_gap_mean": 0.9308355397252894,
-    "score_gap_median": 0.9831748902797699,
-    "gt_best_epe_mean": 1.3128703861174311,
-    "actual_selected_epe_mean": 1.9900042047564146,
-    "epe_loss_ratio": 1.5157659322650123
+    "score_gap_mean": 0.9520683728936893,
+    "score_gap_median": 0.9827172756195068,
+    "gt_best_epe_mean": 3.5054309957817056,
+    "actual_selected_epe_mean": 3.588826028822079,
+    "epe_loss_ratio": 1.0237902366758118
   },
   {
     "tag": "+HASH(std)",

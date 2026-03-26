@@ -16,6 +16,20 @@
   {
     "tag": "+MSLEP+SAI+EGAB (130 ep)",
     "total_epochs": 130,
+    "convergence_epoch": 100,
+    "final_test_loss": 0.4384,
+    "min_test_loss": 0.4071
+  },
+  {
+    "tag": "+HASH, std loss (150 ep)",
+    "total_epochs": 130,
+    "convergence_epoch": 114,
+    "final_test_loss": 0.1433,
+    "min_test_loss": 0.1131
+  },
+  {
+    "tag": "Full, +ranking loss (130 ep)",
+    "total_epochs": 130,
     "convergence_epoch": 109,
     "final_test_loss": 0.2507,
     "min_test_loss": 0.1939
