@@ -33,7 +33,13 @@ LOG_CONFIGS = [
         "linestyle": "--",
     },
     {
-        "tag": "+MSLEP+SAI+EGAB+HASH, std loss (150 ep)",
+        "tag": "+MSLEP+SAI+EGAB (130 ep)",
+        "log_path": "output/ablation_mslep_sai_egab_musid_standalone_e130/log.txt",
+        "color": "#9467bd",
+        "linestyle": "--",
+    },
+    {
+        "tag": "+HASH, std loss (150 ep)",
         "log_path": "output/linea_entropy_b_enhanced_musid_v1_e150/log.txt",
         "color": "#ff7f0e",
         "linestyle": "-.",

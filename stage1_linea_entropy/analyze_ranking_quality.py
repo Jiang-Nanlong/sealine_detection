@@ -37,10 +37,10 @@ EXPERIMENTS = [
         "weights": "output/linea_baseline_musid_e100/best_checkpoint.pth",
     },
     {
-        "tag": "no-HASH(v1)",
+        "tag": "EGAB(standalone)",
         "mode": "entropy_b_enhanced",
         "config": "stage1_linea_entropy/configs/ablation_mslep_sai_egab_musid.py",
-        "weights": "output/linea_entropy_b_enhanced_musid_v1_e150/best_checkpoint.pth",
+        "weights": "output/ablation_mslep_sai_egab_musid_standalone_e130/best_checkpoint.pth",
     },
     {
         "tag": "+HASH(std)",
