@@ -276,7 +276,48 @@ def plot_overhead_figures(results, output_dir):
     plt.close(fig)
     print(f"  已保存: overhead_latency.png")
 
-    # --- 图 4: 参数增量 + FPS 双轴图 ---
+    # --- 图 4: 子模块参数堆叠柱状图 + FPS 折线（合并图）---
+    # 收集所有子模块名
+    all_modules = set()
+    for r in results:
+        all_modules.update(r['module_params'].keys())
+    all_modules = sorted(all_modules)
+    module_colors = plt.cm.Set3(np.linspace(0, 1, max(len(all_modules), 3)))
+
+    fig, ax1 = plt.subplots(figsize=(10, 6))
+    bottom = np.zeros(len(results))
+    for j, mod in enumerate(all_modules):
+        vals = [r['module_params'].get(mod, 0) / 1e6 for r in results]
+        ax1.bar(x, vals, 0.5, bottom=bottom, label=mod, color=module_colors[j], edgecolor='white')
+        bottom += np.array(vals)
+
+    # FPS 折线叠加在右侧 y 轴
+    ax2 = ax1.twinx()
+    fps_vals = [r['fps'] for r in results]
+    ax2.plot(x, fps_vals, 's-', color='#C44E52', linewidth=2.5, markersize=9, label='FPS', zorder=5)
+    for i, fps in enumerate(fps_vals):
+        ax2.text(x[i], fps + 0.6, f'{fps:.1f}', ha='center', va='bottom',
+                 fontsize=9, color='#C44E52', fontweight='bold')
+
+    ax1.set_ylabel('Parameters (M)', fontsize=12)
+    ax2.set_ylabel('FPS', fontsize=12, color='#C44E52')
+    ax1.set_title('Parameter Breakdown & Inference Speed', fontsize=13)
+    ax1.set_xticks(x)
+    ax1.set_xticklabels(short_tags, fontsize=10)
+    ax1.set_ylim(0, max(bottom) * 1.35)
+    ax2.set_ylim(min(fps_vals) - 5, max(fps_vals) + 8)
+    # 合并两个坐标轴的图例
+    h1, l1 = ax1.get_legend_handles_labels()
+    h2, l2 = ax2.get_legend_handles_labels()
+    ax1.legend(h1 + h2, l1 + l2, fontsize=8, loc='upper left', ncol=2)
+    ax1.grid(axis='y', alpha=0.3)
+    plt.tight_layout()
+    fig.savefig(os.path.join(output_dir, 'overhead_combined.png'), dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    print(f"  已保存: overhead_combined.png")
+
+    # 同时保留原始分开的两张图（备用）
+    # --- 图 4b: 参数增量 + FPS 双轴图（纯色柱）---
     fig, ax1 = plt.subplots(figsize=(9, 5.5))
     ax2 = ax1.twinx()
     w = 0.5
