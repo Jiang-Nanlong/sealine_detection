@@ -279,8 +279,8 @@ def plot_overhead_figures(results, output_dir):
     # --- 图 4: 参数增量 + FPS 双轴图 ---
     fig, ax1 = plt.subplots(figsize=(9, 5.5))
     ax2 = ax1.twinx()
-    w = 0.35
-    bars1 = ax1.bar(x - w/2, params_M, w, label='Params (M)', color='#4C72B0', edgecolor='white', alpha=0.8)
+    w = 0.5
+    bars1 = ax1.bar(x, params_M, w, label='Params (M)', color='#4C72B0', edgecolor='white', alpha=0.8)
     line = ax2.plot(x, fps_vals, 'o-', color='#C44E52', linewidth=2, markersize=8, label='FPS', zorder=5)
     for i, (bar, fps) in enumerate(zip(bars1, fps_vals)):
         h = bar.get_height()
@@ -324,6 +324,7 @@ def plot_overhead_figures(results, output_dir):
     ax.set_title('Parameter Distribution by Module', fontsize=13)
     ax.set_xticks(x)
     ax.set_xticklabels(short_tags, fontsize=10)
+    ax.set_ylim(0, max(bottom) * 1.3)
     ax.legend(fontsize=8, loc='upper left', ncol=2)
     ax.grid(axis='y', alpha=0.3)
     plt.tight_layout()
