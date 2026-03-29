@@ -11,11 +11,19 @@ from collections import Counter
 import os
 import numpy as np
 
-# 确保项目根目录在 sys.path 中，以便 import method1_linea_entropy 等顶层包
-_LINEA_DIR = Path(__file__).resolve().parent
-_PROJECT_ROOT = _LINEA_DIR.parent
+# 确保路径正确：LINEA 自身的包 (datasets/models/util) 优先，项目根次之
+_LINEA_DIR = Path(__file__).resolve().parent  # method1_linea_entropy/LINEA/
+_METHOD1_DIR = _LINEA_DIR.parent  # method1_linea_entropy/
+_PROJECT_ROOT = _METHOD1_DIR.parent  # sealine_detection/
+# LINEA/ 最优先 → from datasets/models/util 找 LINEA 内部的包
+if str(_LINEA_DIR) not in sys.path:
+    sys.path.insert(0, str(_LINEA_DIR))
+# method1/ 次之 → from LINEA.models... 可找到 LINEA 子目录
+if str(_METHOD1_DIR) not in sys.path:
+    sys.path.insert(1, str(_METHOD1_DIR))
+# 项目根 → from method1_linea_entropy.xxx 可用
 if str(_PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(_PROJECT_ROOT))
+    sys.path.insert(2, str(_PROJECT_ROOT))
 
 import torch
 from torch.utils.data import DataLoader, DistributedSampler
@@ -37,14 +45,15 @@ try:
 except ImportError:
     pass
 
+
 def get_args_parser():
     parser = argparse.ArgumentParser('Set transformer detector', add_help=False)
     parser.add_argument('--config_file', '-c', type=str, required=True)
     parser.add_argument('--options',
-        nargs='+',
-        action=DictAction,
-        help='override some settings in the used config, the key-value pair '
-        'in xxx=yyy format will be merged into config file.')
+                        nargs='+',
+                        action=DictAction,
+                        help='override some settings in the used config, the key-value pair '
+                             'in xxx=yyy format will be merged into config file.')
 
     # dataset parameters
     parser.add_argument('--coco_path', type=str, default='data/wireframe_processed')
@@ -81,6 +90,7 @@ def create(args, classname):
     build_func = MODULE_BUILD_FUNCS.get(class_module)
     return build_func(args)
 
+
 def main(args):
     utils.init_distributed_mode(args)
     # load cfg file and update the args
@@ -88,11 +98,11 @@ def main(args):
     cfg = SLConfig.fromfile(args.config_file)
     if args.options is not None:
         cfg.merge_from_dict(args.options)
-    
+
     cfg_dict = cfg._cfg_dict.to_dict()
     args_vars = vars(args)
 
-    for k,v in cfg_dict.items():
+    for k, v in cfg_dict.items():
         if k not in args_vars:
             setattr(args, k, v)
         else:
@@ -108,7 +118,7 @@ def main(args):
 
     # setup eval_spatial_size
     if isinstance(args.eval_spatial_size, int):
-        size = args.eval_spatial_size 
+        size = args.eval_spatial_size
         args.eval_spatial_size = [size, size]
 
     assert args.eval_spatial_size[0] == args.eval_spatial_size[1], 'We only support square shapes'
@@ -129,7 +139,8 @@ def main(args):
 
     model_without_ddp = model
     if args.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=args.find_unused_params)
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu],
+                                                          find_unused_parameters=args.find_unused_params)
         model_without_ddp = model.module
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
@@ -143,7 +154,8 @@ def main(args):
         else:
             sampler_val = torch.utils.data.SequentialSampler(dataset_val)
 
-        data_loader_val = DataLoader(dataset_val, 64, sampler=sampler_val, drop_last=False, collate_fn=BatchImageCollateFunction(), num_workers=args.num_workers)
+        data_loader_val = DataLoader(dataset_val, 64, sampler=sampler_val, drop_last=False,
+                                     collate_fn=BatchImageCollateFunction(), num_workers=args.num_workers)
     else:
         dataset_train = build_dataset(image_set='train', args=args)
         dataset_val = build_dataset(image_set='val', args=args)
@@ -153,24 +165,25 @@ def main(args):
         else:
             sampler_train = torch.utils.data.RandomSampler(dataset_train)
             sampler_val = torch.utils.data.SequentialSampler(dataset_val)
-        
-        data_loader_train = DataLoader(dataset_train, 
-                                        args.batch_size_train, 
-                                        sampler=sampler_train, 
-                                        drop_last=True,
-                                        collate_fn=BatchImageCollateFunction(base_size=args.eval_spatial_size[0], base_size_repeat=3), 
-                                        # pin_memory=dataset_train.pin_memory,
-                                        num_workers=args.num_workers)
-        data_loader_val = DataLoader(dataset_val, 
-                                        args.batch_size_val, 
-                                        sampler=sampler_val, 
-                                        drop_last=False,
-                                        collate_fn=BatchImageCollateFunction(base_size=args.eval_spatial_size[0]), 
-                                        # pin_memory=dataset_val.pin_memory,
-                                        num_workers=args.num_workers)
+
+        data_loader_train = DataLoader(dataset_train,
+                                       args.batch_size_train,
+                                       sampler=sampler_train,
+                                       drop_last=True,
+                                       collate_fn=BatchImageCollateFunction(base_size=args.eval_spatial_size[0],
+                                                                            base_size_repeat=3),
+                                       # pin_memory=dataset_train.pin_memory,
+                                       num_workers=args.num_workers)
+        data_loader_val = DataLoader(dataset_val,
+                                     args.batch_size_val,
+                                     sampler=sampler_val,
+                                     drop_last=False,
+                                     collate_fn=BatchImageCollateFunction(base_size=args.eval_spatial_size[0]),
+                                     # pin_memory=dataset_val.pin_memory,
+                                     num_workers=args.num_workers)
 
     # setup lr_drop_list
-    if isinstance(args.lr_drop_list , int):
+    if isinstance(args.lr_drop_list, int):
         args.lr_drop_list = [args.lr_drop_list]
     lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=args.lr_drop_list, gamma=0.1)
     warmup_scheduler = LinearWarmup(lr_scheduler, args.warmup_iters) if args.use_warmup else None
@@ -178,7 +191,7 @@ def main(args):
     output_dir = Path(args.output_dir)
 
     if args.resume:
-        checkpoint = torch.load(args.resume, map_location='cpu', weights_only=False)   
+        checkpoint = torch.load(args.resume, map_location='cpu', weights_only=False)
         model_without_ddp.load_state_dict(checkpoint['model'], strict=False)
 
         if not args.eval and 'optimizer' in checkpoint and 'lr_scheduler' in checkpoint and 'epoch' in checkpoint:
@@ -193,7 +206,8 @@ def main(args):
             # todo: this is a hack for doing experiment that resume from checkpoint and also modify lr scheduler (e.g., decrease lr in advance).
             args.override_resumed_lr_drop = True
             if args.override_resumed_lr_drop:
-                print('Warning: (hack) args.override_resumed_lr_drop is set to True, so args.lr_drop would override lr_drop in resumed lr_scheduler.')
+                print(
+                    'Warning: (hack) args.override_resumed_lr_drop is set to True, so args.lr_drop would override lr_drop in resumed lr_scheduler.')
                 lr_scheduler.milestones = Counter(args.lr_drop_list)
                 lr_scheduler.base_lrs = list(map(lambda group: group['initial_lr'], optimizer.param_groups))
             lr_scheduler.step(lr_scheduler.last_epoch)
@@ -202,12 +216,12 @@ def main(args):
     if args.eval:
         evaluator = LineEvaluator()
         test_stats = test(model, criterion, postprocessors, evaluator,
-                        data_loader_val, device, args.output_dir, args=args)
+                          data_loader_val, device, args.output_dir, args=args)
         return
 
     print(stats(model_without_ddp, args))
 
-    print("-"*41 + " Start training " + "-"*42)
+    print("-" * 41 + " Start training " + "-" * 42)
     start_time = time.time()
     best_val_loss = float('inf')
     for epoch in range(args.start_epoch, args.epochs):
@@ -216,7 +230,7 @@ def main(args):
             sampler_train.set_epoch(epoch)
         train_stats = train_one_epoch(
             model, criterion, data_loader_train, optimizer, device, epoch,
-            args.clip_max_norm, lr_scheduler=lr_scheduler, warmup_scheduler=warmup_scheduler, 
+            args.clip_max_norm, lr_scheduler=lr_scheduler, warmup_scheduler=warmup_scheduler,
             writer=writer, args=args)
         if args.output_dir:
             checkpoint_paths = [output_dir / 'checkpoint.pth']
@@ -241,7 +255,7 @@ def main(args):
                     'args': args,
                 }
                 utils.save_on_master(weights, checkpoint_path)
-                
+
         # eval
         test_stats = evaluate(
             model, criterion, postprocessors, data_loader_val, device, args.output_dir, args=args
@@ -268,19 +282,19 @@ def main(args):
         if utils.is_main_process():
             for k in test_stats:
                 writer.add_scalar(f'Test/{k}'.format(k), test_stats[k], epoch)
-            
+
         log_stats = {
-                **{f'train_{k}': v for k, v in train_stats.items()},
-                **{f'test_{k}': v for k, v in test_stats.items()},
-                'epoch': epoch,
-                'n_parameters': n_parameters
-            }
+            **{f'train_{k}': v for k, v in train_stats.items()},
+            **{f'test_{k}': v for k, v in test_stats.items()},
+            'epoch': epoch,
+            'n_parameters': n_parameters
+        }
 
         try:
             log_stats.update({'now_time': str(datetime.datetime.now())})
         except:
             pass
-        
+
         epoch_time = time.time() - epoch_start_time
         epoch_time_str = str(datetime.timedelta(seconds=int(epoch_time)))
         log_stats['epoch_time'] = epoch_time_str
@@ -288,7 +302,7 @@ def main(args):
         if args.output_dir and utils.is_main_process():
             with (output_dir / "log.txt").open("a") as f:
                 f.write(json.dumps(log_stats) + "\n")
-                
+
     writer.close()
 
     total_time = time.time() - start_time

@@ -32,7 +32,7 @@ class HybridEncoderWithEntropy(HybridEncoderAsymConv):
         super().__init__(*args, **kwargs)
 
         # ---- 新增：局部熵注入组件 ----
-        self.entropy_branch = EntropyBranch()           # [B, 1, H, W] → [B, 256, H/2, W/2]
+        self.entropy_branch = EntropyBranch(out_channels=self.hidden_dim)  # 匹配 hidden_dim
         self.alpha = nn.Parameter(torch.tensor(0.0))    # 可学习缩放因子，初始 0
 
     def forward(self, feats, entropy_map=None):

@@ -28,27 +28,29 @@ TEST_W = 1024
 class EntropyBranch(nn.Module):
     """
     Input : [B, 1, H, W]
-    Output: [B, 256, H/2, W/2]
+    Output: [B, out_channels, H/2, W/2]
 
     Designed to align with injection at LINEA HybridEncoder proj_feats[0].
+    out_channels should match hidden_dim (default 256 for backward compat).
     """
 
-    def __init__(self):
+    def __init__(self, out_channels=256):
         super().__init__()
+        mid = max(out_channels // 2, 32)
         self.net = nn.Sequential(
             nn.Conv2d(1, 64, kernel_size=3, stride=2, padding=1, bias=False),
             nn.BatchNorm2d(64),
             nn.ReLU(inplace=True),
 
-            nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1, bias=False),
-            nn.BatchNorm2d(128),
+            nn.Conv2d(64, mid, kernel_size=3, stride=1, padding=1, bias=False),
+            nn.BatchNorm2d(mid),
             nn.ReLU(inplace=True),
 
-            nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1, bias=False),
-            nn.BatchNorm2d(256),
+            nn.Conv2d(mid, out_channels, kernel_size=3, stride=1, padding=1, bias=False),
+            nn.BatchNorm2d(out_channels),
             nn.ReLU(inplace=True),
         )
-        self.out_channels = 256
+        self.out_channels = out_channels
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x)
