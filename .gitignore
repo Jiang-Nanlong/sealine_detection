@@ -4,8 +4,7 @@ __pycache__/
 weights/
 weights_new/
 test4/FusionCache_SMD_1024x576/
-Hashmani's Dataset
-Hashmani's Dataset/**/*.JPG
+Hashmani's Dataset/MU-SID_entropy_blue/*.JPG
 Hashmani's Dataset/**/*.npy
 Singapore Maritime Dataset/
 paper_figures_4panels/
