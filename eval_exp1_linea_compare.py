@@ -145,7 +145,7 @@ def evaluate_model(model_info):
     dataset_val = build_dataset(image_set='test', args=cfg)
     sampler_val = torch.utils.data.SequentialSampler(dataset_val)
     data_loader_val = DataLoader(
-        dataset_val, 64, sampler=sampler_val, drop_last=False,
+        dataset_val, 4, sampler=sampler_val, drop_last=False,
         collate_fn=BatchImageCollateFunction(), num_workers=4
     )
     print(f"  测试集样本数: {len(dataset_val)}")
