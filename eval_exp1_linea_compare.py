@@ -155,7 +155,12 @@ def evaluate_model(model_info):
     criterion_name = getattr(cfg, 'criterionname', 'LINEACRITERION')
     criterion_build = MBF.get(criterion_name)
     if criterion_build is not None:
-        criterion, _ = criterion_build(cfg)
+        crit_out = criterion_build(cfg)
+        # 有的 build 返回 (criterion, extras)，有的直接返回 criterion
+        if isinstance(crit_out, tuple):
+            criterion = crit_out[0]
+        else:
+            criterion = crit_out
         criterion = criterion.to(DEVICE)
     else:
         criterion = None
