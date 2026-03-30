@@ -4,8 +4,9 @@ __pycache__/
 weights/
 weights_new/
 test4/FusionCache_SMD_1024x576/
-Hashmani's Dataset/FusionCache_1024x576/
-Hashmani's Dataset/OfflineCache/
+Hashmani's Dataset/**/*.jpg
+Hashmani's Dataset/**/*.JPG
+Hashmani's Dataset/**/*.npy
 Singapore Maritime Dataset/
 paper_figures_4panels/
 test4/manual_review/
@@ -25,7 +26,6 @@ Buoy
 eval_full_outputs
 eval_outputs
 eval_sweep_topk
-test_2/
 test5/visualization
 test5/visualization_buoy
 test5/visualization_smd
