@@ -264,7 +264,8 @@ def main():
     unet.load_state_dict(state, strict=False)
     unet.dce_net = None  # 关掉 Zero-DCE
     unet.eval()
-    print("[INFO] UNet 加载完成")
+    unet.half()  # FP16 (与部署一致)
+    print("[INFO] UNet 加载完成 (FP16)")
 
     # ---- 加载 CNN ----
     print("[INFO] 加载 CNN ...")
@@ -285,6 +286,18 @@ def main():
     FULL_W, FULL_H = 1024, 576
     ORIG_W, ORIG_H = 1920, 1080
     RADON_H, RADON_W = 2240, 180
+
+    # ---- Warmup (消除 CUDA/cudnn 首次运行开销) ----
+    print("[INFO] Warmup ...")
+    with torch.no_grad():
+        dummy_small = torch.randn(1, 3, SEGONLY_H, SEGONLY_W, device=device, dtype=torch.float16)
+        dummy_full = torch.randn(1, 3, FULL_H, FULL_W, device=device, dtype=torch.float16)
+        for _ in range(3):
+            unet(dummy_small, target=None, enable_restoration=False, enable_segmentation=True)
+            unet(dummy_full, target=None, enable_restoration=True, enable_segmentation=True)
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+    print("[INFO] Warmup 完成")
 
     # ---- 评估 ----
     results = []  # 逐样本结果
@@ -316,8 +329,8 @@ def main():
         # ================================================================
         img_small = cv2.resize(img_bgr, (SEGONLY_W, SEGONLY_H))
         img_rgb_small = cv2.cvtColor(img_small, cv2.COLOR_BGR2RGB)
-        tensor_small = torch.from_numpy(img_rgb_small).float().permute(2, 0, 1).unsqueeze(0) / 255.0
-        tensor_small = tensor_small.to(device)
+        tensor_small = torch.from_numpy(img_rgb_small).permute(2, 0, 1).unsqueeze(0).to(
+            device=device, dtype=torch.float16) * (1.0 / 255.0)
 
         t0 = time.time()
         with torch.no_grad():
@@ -351,8 +364,8 @@ def main():
         # ================================================================
         img_full = cv2.resize(img_bgr, (FULL_W, FULL_H))
         img_rgb_full = cv2.cvtColor(img_full, cv2.COLOR_BGR2RGB)
-        tensor_full = torch.from_numpy(img_rgb_full).float().permute(2, 0, 1).unsqueeze(0) / 255.0
-        tensor_full = tensor_full.to(device)
+        tensor_full = torch.from_numpy(img_rgb_full).permute(2, 0, 1).unsqueeze(0).to(
+            device=device, dtype=torch.float16) * (1.0 / 255.0)
 
         t0 = time.time()
         with torch.no_grad():

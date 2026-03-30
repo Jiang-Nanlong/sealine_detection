@@ -25,7 +25,7 @@
 
 ## 5.3 模型轻量化：LINEA-N（约 800~1000字）
 
-从 LINEA-L（EfficientNet-B4 backbone，hidden_dim=256，6层 decoder，27M 参数）出发，说明面向嵌入式部署的轻量化设计。具体措施包括将 backbone 替换为 EfficientNet-B0、将 Transformer decoder 层数从6层缩减至3层、隐层维度从256降至128，以及将多尺度熵注入简化为单尺度。通过这些修改得到 LINEA-N（约4.27M 参数，相比 LINEA-L 减少约84%）。分析每项修改对模型容量和计算量的影响，以及为何这些精简在海天线检测这一相对简单的视觉任务上是可接受的。
+从 LINEA-L（HGNetv2-B4 backbone，hidden_dim=256，6层 decoder，27M 参数）出发，说明面向嵌入式部署的轻量化设计。具体措施包括将 backbone 替换为 HGNetv2-B0、将 Transformer decoder 层数从6层缩减至3层、隐层维度从256降至128，以及将多尺度熵注入简化为单尺度。通过这些修改得到 LINEA-N（约4.27M 参数，相比 LINEA-L 减少约84%）。分析每项修改对模型容量和计算量的影响，以及为何这些精简在海天线检测这一相对简单的视觉任务上是可接受的。
 
 
 ## 5.4 TensorRT 推理加速（约 800~1000字）
