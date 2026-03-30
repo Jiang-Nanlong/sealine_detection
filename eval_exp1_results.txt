@@ -1,0 +1,57 @@
+========================================================================
+  实验 1: LINEA-L vs LINEA-N 精度对比 (MU-SID 测试集)
+========================================================================
+
+指标                                    LINEA-L              LINEA-N
+----------------------------------------------------------------
+Backbone                           HGNetv2_B4           HGNetv2_B0
+Hidden Dim                                256                  128
+Decoder Layers                              6                    3
+Entropy Mode                       entropy_ms              entropy
+参数量                                27,302,689            4,066,586
+推理速度 (ms)                                31.2                 16.0
+FPS                                      32.1                 62.5
+                                                                  
+sAP@5                                    94.0                 93.7
+sAP@10                                   94.4                 94.7
+sAP@15                                   94.8                 95.2
+
+参数压缩比: 6.7x (27,302,689 → 4,066,586)
+推理加速比: 1.9x (31.2ms → 16.0ms)
+sAP@10 变化: +0.3 (94.4 → 94.7)
+
+注: 推理速度在当前设备上测量，Jetson 上会有所不同。
+    sAP@N 表示在 N 像素端点距离阈值下的结构平均精度 (%)。
+
+
+--- Raw JSON ---
+{
+  "name": "LINEA-L (Entropy-B-Enhanced)",
+  "backbone": "HGNetv2_B4",
+  "hidden_dim": 256,
+  "dec_layers": 6,
+  "total_params": 27302689,
+  "trainable_params": 27302687,
+  "infer_ms": 31.190719604492188,
+  "fps": 32.06081849602395,
+  "img_size": 640,
+  "entropy_mode": "entropy_ms",
+  "sAP5": 94.0300703048706,
+  "sAP10": 94.38637495040894,
+  "sAP15": 94.75111961364746
+}
+{
+  "name": "LINEA-N (Entropy, 轻量版)",
+  "backbone": "HGNetv2_B0",
+  "hidden_dim": 128,
+  "dec_layers": 3,
+  "total_params": 4066586,
+  "trainable_params": 4066584,
+  "infer_ms": 16.012558937072754,
+  "fps": 62.450980129401444,
+  "img_size": 640,
+  "entropy_mode": "entropy",
+  "sAP5": 93.67123246192932,
+  "sAP10": 94.68674063682556,
+  "sAP15": 95.22215127944946
+}

@@ -4,7 +4,7 @@ __pycache__/
 weights/
 weights_new/
 test4/FusionCache_SMD_1024x576/
-Hashmani's Dataset/**/*.jpg
+Hashmani's Dataset
 Hashmani's Dataset/**/*.JPG
 Hashmani's Dataset/**/*.npy
 Singapore Maritime Dataset/
