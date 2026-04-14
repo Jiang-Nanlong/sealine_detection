@@ -224,7 +224,7 @@ class LINEADetectorFast:
                         (x1, max(y1 - 10, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
         info = {
-            "method": "LINEA Fast (FP16)",
+            "method": "ESRLE Fast (FP16)",
             "infer_ms": infer_ms,
             "fps": 1000.0 / infer_ms if infer_ms > 0 else 0,
             "num_candidates": len(pred_lines),

@@ -1,4 +1,4 @@
-"""生成图5-12: LINEA-L与LINEA-N检测结果对比可视化
+"""生成图5-12: ESRLE-L与ESRLE-N检测结果对比可视化
 选4张不同难度的MU-SID测试图，每张图两行并排展示两个模型的预测线vs GT线
 使用正确的letterbox预处理（与训练一致）
 """
@@ -169,9 +169,9 @@ def main():
     stems = SELECTED_STEMS
     print(f"Selected images: {stems}")
 
-    print("Loading LINEA-L...")
+    print("Loading ESRLE-L...")
     model_l, post_l, ent_mode_l = load_linea(LINEA_L_CFG, LINEA_L_WTS, device)
-    print("Loading LINEA-N...")
+    print("Loading ESRLE-N...")
     model_n, post_n, ent_mode_n = load_linea(LINEA_N_CFG, LINEA_N_WTS, device)
 
     # ── Warmup ──
@@ -196,8 +196,8 @@ def main():
         line_n, score_n = detect_linea(model_n, post_n, img_bgr, ent_mode_n, device)
 
         for row, (line, label, score) in enumerate([
-            (line_l, 'LINEA-L', score_l),
-            (line_n, 'LINEA-N', score_n)
+            (line_l, 'ESRLE-L', score_l),
+            (line_n, 'ESRLE-N', score_n)
         ]):
             axes[row, col].imshow(img_rgb)
             if gt is not None:

@@ -98,7 +98,7 @@ class MainWindow(QMainWindow):
         # 方法选择
         ctrl_layout.addWidget(QLabel("检测方法:"))
         self._method_combo = QComboBox()
-        self._method_combo.addItem("LINEA Entropy-Enhanced Transformer", "linea")
+        self._method_combo.addItem("ESRLE-L Entropy-Enhanced Transformer", "linea")
         self._method_combo.addItem("UNet + Radon + ResNet-34", "unet_radon")
         self._method_combo.setMinimumWidth(280)
         ctrl_layout.addWidget(self._method_combo)

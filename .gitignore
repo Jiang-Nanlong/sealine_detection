@@ -36,3 +36,7 @@ test1/weights_buoy
 stage1_scalelsd_entropy/weights
 weight
 output/**/*.pth
+thesis_ch345.txt
+thesis_sections_supplementary.txt
+thesis_drafts\thesis_full_text.txt
+thesis_drafts\thesis_full_text_v2.txt

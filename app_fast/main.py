@@ -100,8 +100,8 @@ class MainWindow(QMainWindow):
         self._method_combo = QComboBox()
         self._method_combo.addItem("方法二: UNet-Seg TRT (推荐, ~160fps)", "unet_trt")
         self._method_combo.addItem("方法二: UNet-Seg PyTorch FP16 (~20fps)", "unet_seg")
-        self._method_combo.addItem("方法一: LINEA Entropy Transformer (~2fps)", "linea")
-        self._method_combo.addItem("方法一: LINEA-N 轻量版 (~5fps)", "linea_n")
+        self._method_combo.addItem("方法一: ESRLE-L Entropy Transformer (~2fps)", "linea")
+        self._method_combo.addItem("方法一: ESRLE-N 轻量版 (~5fps)", "linea_n")
         self._method_combo.setMinimumWidth(340)
         ctrl_layout.addWidget(self._method_combo)
 

@@ -21,7 +21,7 @@ import matplotlib.pyplot as plt
 # ============================================================
 LOG_CONFIGS = [
     {
-        "tag": "Baseline LINEA-L (100 ep)",
+        "tag": "Baseline (100 ep)",
         "log_path": "output/linea_baseline_musid_e100/log.txt",
         "color": "#1f77b4",
         "linestyle": "-",
