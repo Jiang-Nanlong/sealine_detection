@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-海天线检测系统 — Jetson Xavier NX 优化版 PyQt5 GUI
+海平线检测系统 — Jetson Xavier NX 优化版 PyQt5 GUI
 
 优化点：
   - 异步推理流水线：捕获与推理解耦，显示帧率可达 30fps
@@ -70,7 +70,7 @@ class ModelLoadThread(QThread):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("海天线检测系统")
+        self.setWindowTitle("海平线检测系统")
         self.setMinimumSize(960, 640)
 
         self._detector = None
@@ -98,8 +98,8 @@ class MainWindow(QMainWindow):
 
         ctrl_layout.addWidget(QLabel("检测方法:"))
         self._method_combo = QComboBox()
-        self._method_combo.addItem("方法二: UNet-Seg TRT (推荐, ~160fps)", "unet_trt")
-        self._method_combo.addItem("方法二: UNet-Seg PyTorch FP16 (~20fps)", "unet_seg")
+        self._method_combo.addItem("方法二: Seg TRT (推荐, ~160fps)", "unet_trt")
+        self._method_combo.addItem("方法二: Seg PyTorch FP16 (~20fps)", "unet_seg")
         self._method_combo.addItem("方法一: ESRLE-L Entropy Transformer (~2fps)", "linea")
         self._method_combo.addItem("方法一: ESRLE-N 轻量版 (~5fps)", "linea_n")
         self._method_combo.setMinimumWidth(340)

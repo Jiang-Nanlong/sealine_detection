@@ -38,6 +38,9 @@ weight
 output/**/*.pth
 thesis_ch345.txt
 thesis_sections_supplementary.txt
-thesis_drafts\thesis_full_text.txt
-thesis_drafts\thesis_full_text_v2.txt
-thesis_drafts\_docx_temp
+thesis_drafts/*.txt
+thesis_drafts/*.pdf
+thesis_drafts/*.docx
+thesis_drafts/_docx_temp
+archive/thesis/
+*.pdf

@@ -17,7 +17,6 @@ for bar, t, f in zip(bars, times, fps):
             f'{t} ms\n({f:.1f} FPS)', ha='center', va='bottom', fontsize=11, fontweight='bold')
 
 ax.set_ylabel('Inference Time per Frame (ms)', fontsize=13)
-ax.set_title('UNet Inference on Jetson Xavier NX', fontsize=14)
 ax.set_ylim(0, 200)
 ax.tick_params(axis='both', labelsize=11)
 

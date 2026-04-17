@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-海天线检测系统 — PyQt5 GUI 应用
+海平线检测系统 — PyQt5 GUI 应用
 
 功能：
-  - 两种检测方法切换（LINEA / UNet+Radon+ResNet-34）
+  - 两种检测方法切换（LINEA / 分割网络+Radon+ResNet-34）
   - 摄像头实时检测 / 上传图片检测
   - 性能指标显示
 """
@@ -38,7 +38,7 @@ WEIGHTS_DIR = _PROJECT_ROOT / "weights"
 LINEA_CONFIG = str(_PROJECT_ROOT / "method1_linea_entropy" / "configs" / "linea_entropy_b_enhanced_musid.py")
 LINEA_WEIGHTS = str(WEIGHTS_DIR / "linea_entropy_b_enhanced_best.pth")
 
-# 方法二：UNet + Radon + ResNet-34（4 通道）
+# 方法二：分割网络 + Radon + ResNet-34（4 通道）
 UNET_WEIGHTS = str(WEIGHTS_DIR / "rghnet_best_c2.pth")
 DCE_WEIGHTS = str(WEIGHTS_DIR / "Epoch99.pth")
 CNN_WEIGHTS = str(WEIGHTS_DIR / "best_fusion_cnn_4ch.pth")
@@ -70,7 +70,7 @@ class ModelLoadThread(QThread):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("海天线检测系统")
+        self.setWindowTitle("海平线检测系统")
         self.setMinimumSize(960, 640)
 
         self._detector = None
@@ -99,7 +99,7 @@ class MainWindow(QMainWindow):
         ctrl_layout.addWidget(QLabel("检测方法:"))
         self._method_combo = QComboBox()
         self._method_combo.addItem("ESRLE-L Entropy-Enhanced Transformer", "linea")
-        self._method_combo.addItem("UNet + Radon + ResNet-34", "unet_radon")
+        self._method_combo.addItem("分割网络 + Radon + ResNet-34", "unet_radon")
         self._method_combo.setMinimumWidth(280)
         ctrl_layout.addWidget(self._method_combo)
 

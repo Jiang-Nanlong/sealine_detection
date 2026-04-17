@@ -1,6 +1,6 @@
 [
   {
-    "tag": "Baseline LINEA-L (100 ep)",
+    "tag": "Baseline (100 ep)",
     "total_epochs": 100,
     "convergence_epoch": 82,
     "final_test_loss": 0.4796,

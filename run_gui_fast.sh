@@ -1,5 +1,5 @@
 #!/bin/bash
-# 启动 Jetson 优化版海天线检测 GUI (TensorRT 加速)
+# 启动 Jetson 优化版海平线检测 GUI (TensorRT 加速)
 cd "$(dirname "$0")"
 
 # 设置 Jetson 最高性能模式 (需要 sudo 密码)
