@@ -136,7 +136,7 @@ def build_trt_engine(onnx_path, engine_path=None, fp16=True):
     print(f"[TRT] Building engine (this may take several minutes)...")
     print(f"  Command: {' '.join(cmd)}")
     
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
     
     if result.returncode != 0:
         print(f"[TRT] Build FAILED:")

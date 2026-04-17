@@ -13,7 +13,7 @@ if [ ! -f "weights/unet_seg_288x512.engine" ]; then
     python3 app_fast/export_trt.py
 fi
 
-export DISPLAY=${DISPLAY:-:0}
+export DISPLAY=${DISPLAY:-:1}
 
 echo "Starting optimized sealine detection GUI (TensorRT)..."
 python3 app_fast/main.py
